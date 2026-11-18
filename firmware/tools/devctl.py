@@ -511,12 +511,12 @@ IMU_DUMP_BATCH = 5
 
 def parse_imu_dump(payloads):
     """Return (rows, gaps) from LOG payloads; rows are (index, x, y, z) raw counts, gaps counts index discontinuities and a lost tail."""
-    rows, gaps, expect_next, total = [], 0, None, None
+    rows, gaps, expect_next, total = [], 0, 0, None
     for p in payloads:
         m = IMU_DUMP_LINE.search(p)
         if m:
             first = int(m.group(1))
-            if expect_next is not None and first != expect_next:
+            if first != expect_next:
                 gaps += 1
             for k, triple in enumerate(m.group(2).decode().split(";")):
                 x, y, z = (int(v) for v in triple.split(","))
@@ -526,7 +526,7 @@ def parse_imu_dump(payloads):
         m = IMU_DUMP_DONE.search(p)
         if m:
             total = int(m.group(1))
-    if total is not None and (expect_next is None or total - expect_next >= IMU_DUMP_BATCH):
+    if total is not None and total - expect_next >= IMU_DUMP_BATCH:
         gaps += 1
     return rows, gaps
 
