@@ -2,6 +2,8 @@
 #include <math.h>
 #include "app_config.h"
 
+_Static_assert(BRT_MIN_PERCENT >= 2 * DISP_DIM_PERCENT, "BRT_MIN_PERCENT must be at least twice DISP_DIM_PERCENT");
+
 /* Timestamps older than this are held at it, so a 32-bit clock wrap cannot make them look recent. */
 #define STALE_AGE 0x80000000u
 
@@ -43,8 +45,30 @@ void dp_init(dpower_t *d, uint32_t now)
     d->level = DISP_ACTIVE_PERCENT;
     d->force = -1;
     d->ramp_from = d->ramp_to = DISP_ACTIVE_PERCENT;
+    d->active = DISP_ACTIVE_PERCENT;
     d->hold = false;
     d->cause = DP_CAUSE_BOOT;
+}
+
+void dp_set_active(dpower_t *d, int pct)
+{
+    pct = pct < BRT_MIN_PERCENT ? BRT_MIN_PERCENT : pct > 100 ? 100 : pct;
+    if (d->ramp_to == d->active) {
+        if (d->level == d->active) {
+            d->ramp_from = d->level = pct;
+        }
+        d->ramp_to = pct;
+    }
+    d->active = pct;
+}
+
+void dp_bump(dpower_t *d, uint32_t now, int pct)
+{
+    if (d->ramp_to != d->active || d->level != d->active) {
+        return;
+    }
+    d->ramp_from = d->level = pct;
+    d->ramp_t0 = now;
 }
 
 void dp_activity(dpower_t *d, uint32_t now, dp_cause_t cause)
@@ -118,7 +142,7 @@ dp_out_t dp_update(dpower_t *d, uint32_t now)
     saturate_age(&d->state_since, now);
     saturate_age(&d->ramp_t0, now);
     dp_stage_t st = d->force >= 0 ? (dp_stage_t)d->force : pick_stage(d, now);
-    int want = st == DP_ACTIVE ? DISP_ACTIVE_PERCENT : (st == DP_DIM ? DISP_DIM_PERCENT : DISP_FLOOR_PERCENT);
+    int want = st == DP_ACTIVE ? d->active : (st == DP_DIM ? DISP_DIM_PERCENT : DISP_FLOOR_PERCENT);
     if (want != d->ramp_to) {
         d->ramp_from = d->level;
         d->ramp_to = want;

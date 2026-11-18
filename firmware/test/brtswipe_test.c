@@ -3,7 +3,10 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "brtmap.h"
+#include "dpower.h"
 #include "volknob.h"
+#include "volstate.h"
 
 #define CTR 232.5
 #define PITCH ((double)BRT_TRAVEL_PX / BRT_STEPS)
@@ -444,6 +447,72 @@ static void test_g15_lost(void)
     assert(vk_release(&s.k, s.t) == 0);
 }
 
+typedef struct {
+    sw_t sw;
+    volst_t s;
+    dpower_t d;
+} bglue_t;
+
+/* Mirrors the brightness part of ui.c knob_events with bright.c reduced to its volst_t. */
+static void bglue_events(bglue_t *g, int ev)
+{
+    if (ev & VK_EV_BRT_ARM) {
+        vk_swipe_rebase(&g->sw.k, brt_index(vs_knob_arm(&g->s)));
+        dp_set_active(&g->d, vs_effective(&g->s));
+    }
+    if (ev & VK_EV_BRT) {
+        vs_knob_set(&g->s, brt_level(g->sw.k.bi));
+        dp_set_active(&g->d, vs_effective(&g->s));
+    }
+    if (ev & (VK_EV_BRT_COMMIT | VK_EV_BRT_CANCEL)) {
+        vs_knob_end(&g->s, (ev & VK_EV_BRT_CANCEL) != 0);
+        dp_set_active(&g->d, vs_effective(&g->s));
+    }
+    g->sw.ev |= ev;
+}
+
+static void bglue_at(bglue_t *g, double fu, uint32_t dt)
+{
+    g->sw.fu = fu;
+    g->sw.t += dt;
+    bglue_events(g, vk_move(&g->sw.k, g->sw.x0, g->sw.y0 - (int)lround(fu), g->sw.t));
+}
+
+static void test_g16_glue(void)
+{
+    bglue_t g;
+    vs_load_range(&g.s, VS_LOAD_ABSENT, 0, BRT_MIN_PERCENT, 100, DISP_ACTIVE_PERCENT);
+    dp_init(&g.d, 0);
+    dp_set_active(&g.d, vs_effective(&g.s));
+    sw_press(&g.sw, 233, 233, 0, false, -1);
+    int user_at_press = g.s.user;
+    assert(vs_host_set(&g.s, (const uint8_t[]){49, VOL_MODE_PERSIST}, 2));
+    dp_set_active(&g.d, vs_effective(&g.s));
+    for (int i = 1; i <= 12; i++) {
+        bglue_at(&g, 4 * i, 8);
+    }
+    assert((g.sw.ev & VK_EV_BRT_ARM) && g.sw.k.bi0 == brt_index(49) && brt_level(g.sw.k.bi) == 49 && g.s.base == 49);
+    /* Rebasing at the press would start the swipe at the old level: the red proof. */
+    assert(brt_level(brt_index(user_at_press)) != 49);
+    for (int i = 1; i <= 10; i++) {
+        bglue_at(&g, BRT_ARM_PX + 3 * i, 8);
+        assert(dp_update(&g.d, g.sw.t).level_pct == brt_level(g.sw.k.bi) && g.s.user == brt_level(g.sw.k.bi));
+    }
+    assert(g.sw.k.bi == brt_index(49) + 4 && g.s.user == 60);
+    bglue_at(&g, g.sw.fu + 160, 200);
+    assert((g.sw.ev & VK_EV_BRT_CANCEL) && g.s.user == 49 && dp_update(&g.d, g.sw.t).level_pct == 49 && !g.s.knob);
+    assert(vs_needs_save(&g.s));
+    vs_saved(&g.s, 49);
+
+    sw_press(&g.sw, 233, 233, 0, false, -1);
+    for (int i = 1; i <= 22; i++) {
+        bglue_at(&g, 4 * i, 8);
+    }
+    assert(brt_level(g.sw.k.bi) == 64 && dp_update(&g.d, g.sw.t).level_pct == 64 && !vs_needs_save(&g.s));
+    bglue_events(&g, vk_release(&g.sw.k, g.sw.t));
+    assert((g.sw.ev & VK_EV_BRT_COMMIT) && g.s.user == 64 && vs_needs_save(&g.s) && vs_save_due(&g.s, g.sw.t, g.sw.t - VOL_SAVE_MIN_MS, true));
+}
+
 int main(void)
 {
     test_g2_tap_and_long_rotated();
@@ -460,6 +529,7 @@ int main(void)
     test_g13_one_stop_per_arrival();
     test_g14_jump();
     test_g15_lost();
+    test_g16_glue();
     puts("ok");
     return 0;
 }

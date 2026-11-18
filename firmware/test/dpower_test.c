@@ -452,6 +452,209 @@ static void test_touch_gate(void)
     assert(wrong_gate_at_release(DP_ACTIVE) && !touch_sends(DP_DIM));
 }
 
+/* Red proof for D2 and D3: a setter that changes only the target, so dp_update restarts the 300 ms ramp. */
+static void wrong_set_active_by_clock(dpower_t *d, int pct)
+{
+    d->active = pct;
+}
+
+/* Red proof for D4: a setter that restarts the ramp from the current level. */
+static void wrong_set_active_restart(dpower_t *d, uint32_t now, int pct)
+{
+    d->ramp_from = d->level;
+    d->ramp_to = pct;
+    d->ramp_t0 = now;
+    d->active = pct;
+}
+
+/* Red proof for D6: a setter that always jumps the panel to the new level. */
+static void wrong_set_active_jump(dpower_t *d, int pct)
+{
+    d->active = d->level = d->ramp_from = d->ramp_to = pct;
+}
+
+static void test_d2_boot_level(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    dp_set_active(&d, 20);
+    assert(dp_update(&d, 0).level_pct == 20);
+    dp_init(&d, 0);
+    wrong_set_active_by_clock(&d, 20);
+    assert(dp_update(&d, 0).level_pct == 100 && dp_update(&d, 16).level_pct == 92);
+}
+
+static void test_d3_follows_at_once(void)
+{
+    dpower_t d, w;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, 1000);
+    w = d;
+    dp_set_active(&d, 64);
+    assert(dp_update(&d, t).level_pct == 64);
+    wrong_set_active_by_clock(&w, 64);
+    assert(dp_update(&w, t).level_pct == 100);
+}
+
+/* Changes the ACTIVE level from 100 to 95 at elapsed e of a ramp toward ACTIVE that ends at t_end. */
+static void retarget_mid_ramp(const dpower_t *start, uint32_t t, uint32_t t_end, bool restart)
+{
+    dpower_t d = *start;
+    int before = dp_update(&d, t).level_pct;
+    if (restart) {
+        wrong_set_active_restart(&d, t, 95);
+    } else {
+        dp_set_active(&d, 95);
+    }
+    int after = dp_update(&d, t).level_pct;
+    uint32_t u = t;
+    dp_out_t o = run_to(&d, &u, t_end);
+    if (restart) {
+        assert(before >= 90 || t == t_end - DISP_RAMP_MS || o.level_pct != 95);
+        return;
+    }
+    assert(after <= before && after * 100 >= before * 95 - 100);
+    assert(o.level_pct == 95);
+}
+
+static void test_d4_no_jump_mid_ramp(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, DISP_HOLD_MS + DISP_RAMP_MS);
+    dp_activity(&d, t, DP_CAUSE_TOUCH);
+    dp_update(&d, t);
+    const uint32_t wake = t;
+    for (uint32_t e = 0; e <= DISP_RAMP_MS; e++) {
+        dpower_t at = d;
+        uint32_t u = wake;
+        if (e > 0) {
+            run_to(&at, &u, wake + e);
+        }
+        retarget_mid_ramp(&at, wake + e, wake + DISP_RAMP_MS, false);
+        retarget_mid_ramp(&at, wake + e, wake + DISP_RAMP_MS, true);
+    }
+    dp_init(&d, 0);
+    t = 1000;
+    dp_update(&d, t);
+    dp_bump(&d, t, 90);
+    assert(dp_update(&d, t).level_pct == 90);
+    for (uint32_t e = 0; e <= DISP_RAMP_MS; e++) {
+        dpower_t at = d;
+        uint32_t u = t;
+        if (e > 0) {
+            run_to(&at, &u, t + e);
+        }
+        retarget_mid_ramp(&at, t + e, t + DISP_RAMP_MS, false);
+    }
+}
+
+static void test_d5_clamp_and_dim_below_active(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    dp_set_active(&d, 5);
+    assert(d.active == BRT_MIN_PERCENT && dp_update(&d, 0).level_pct == BRT_MIN_PERCENT);
+    dp_set_active(&d, 200);
+    assert(d.active == 100 && dp_update(&d, 0).level_pct == 100);
+    const int ladder[] = {20, 21, 22, 23, 24, 26, 27, 28, 30, 31, 33, 35, 37, 38, 40, 43, 45,
+                          47, 49, 52, 55, 58, 60, 64, 67, 70, 74, 78, 82, 86, 90, 95, 100};
+    for (int i = 0; i < (int)(sizeof(ladder) / sizeof(ladder[0])); i++) {
+        dp_init(&d, 0);
+        dp_set_active(&d, ladder[i]);
+        uint32_t t = 0;
+        dp_out_t act = run_to(&d, &t, DISP_HOLD_MS - 1);
+        int prev = act.level_pct;
+        while (t < DISP_HOLD_MS + DISP_RAMP_MS) {
+            dp_out_t o = run_to(&d, &t, t + 7);
+            assert(o.level_pct <= prev);
+            prev = o.level_pct;
+        }
+        assert(prev == DISP_DIM_PERCENT && DISP_DIM_PERCENT < act.level_pct && act.level_pct == ladder[i]);
+        dp_activity(&d, t, DP_CAUSE_TOUCH);
+        const uint32_t wake = t;
+        while (t < wake + DISP_RAMP_MS) {
+            dp_out_t o = run_to(&d, &t, t + 7);
+            assert(o.level_pct >= prev);
+            prev = o.level_pct;
+        }
+        assert(prev == ladder[i]);
+    }
+    dp_init(&d, 0);
+    d.active = d.ramp_to = d.ramp_from = d.level = 5;
+    uint32_t t = 0;
+    int active_level = run_to(&d, &t, 1000).level_pct, dim_level = run_to(&d, &t, DISP_HOLD_MS + DISP_RAMP_MS).level_pct;
+    /* Without the clamp, 5 puts DIM above ACTIVE: the red proof. */
+    assert(dim_level > active_level);
+}
+
+static void test_d6_set_while_dark(void)
+{
+    for (int dark = 0; dark < 2; dark++) {
+        dpower_t d, w;
+        dp_init(&d, 0);
+        uint32_t t = 0;
+        uint32_t settle = dark ? DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + DISP_RAMP_MS : DISP_HOLD_MS + DISP_RAMP_MS;
+        dp_out_t o = run_to(&d, &t, settle);
+        int dark_level = dark ? DISP_FLOOR_PERCENT : DISP_DIM_PERCENT;
+        assert(o.level_pct == dark_level && o.stage == (dark ? DP_OFF : DP_DIM));
+        w = d;
+        dp_set_active(&d, 64);
+        o = run_to(&d, &t, t + 1000);
+        assert(o.level_pct == dark_level);
+        dp_activity(&d, t, DP_CAUSE_TOUCH);
+        const uint32_t wake = t;
+        o = dp_update(&d, t);
+        assert(o.level_pct == dark_level);
+        o = run_to(&d, &t, wake + DISP_RAMP_MS / 2);
+        assert(o.level_pct > dark_level && o.level_pct < 64);
+        o = run_to(&d, &t, wake + DISP_RAMP_MS);
+        assert(o.level_pct == 64);
+        wrong_set_active_jump(&w, 64);
+        assert(dp_update(&w, settle).level_pct == 64);
+    }
+}
+
+static void test_d7_bump(void)
+{
+    dpower_t d, twin;
+    dp_init(&d, 0);
+    dp_set_active(&d, 64);
+    uint32_t t = 1000;
+    dp_update(&d, t);
+    dp_bump(&d, t, 55);
+    assert(dp_update(&d, t).level_pct == 55);
+    const uint32_t bumped = t;
+    int prev = 55;
+    while (t < bumped + DISP_RAMP_MS) {
+        dp_out_t o = run_to(&d, &t, t + 5);
+        assert(o.level_pct >= prev && o.level_pct <= 64);
+        prev = o.level_pct;
+    }
+    assert(prev == 64);
+
+    dp_init(&d, 0);
+    t = 0;
+    run_to(&d, &t, DISP_HOLD_MS + DISP_RAMP_MS);
+    dp_activity(&d, t, DP_CAUSE_TOUCH);
+    dp_update(&d, t);
+    run_to(&d, &t, t + 100);
+    twin = d;
+    dp_bump(&d, t, 55);
+    for (uint32_t end = t + DISP_RAMP_MS; t < end;) {
+        uint32_t u = t;
+        assert(run_to(&d, &t, t + 16).level_pct == run_to(&twin, &u, u + 16).level_pct);
+    }
+
+    dp_init(&d, 0);
+    t = 0;
+    run_to(&d, &t, DISP_HOLD_MS + DISP_RAMP_MS);
+    dp_bump(&d, t, 55);
+    assert(dp_update(&d, t).level_pct == DISP_DIM_PERCENT);
+}
+
 int main(void)
 {
     test_timeline_from(0);
@@ -476,6 +679,12 @@ int main(void)
     test_setdown_then_new_pickup();
     test_orbit_keeps_drawing_in_scene();
     test_stale_timestamps_stay_off();
+    test_d2_boot_level();
+    test_d3_follows_at_once();
+    test_d4_no_jump_mid_ramp();
+    test_d5_clamp_and_dim_below_active();
+    test_d6_set_while_dark();
+    test_d7_bump();
     puts("ok");
     return 0;
 }

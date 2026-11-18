@@ -7,8 +7,13 @@ int vs_effective(const volst_t *s)
 
 bool vs_load(volst_t *s, int result, uint32_t raw)
 {
-    bool ok = result == VS_LOAD_FOUND && raw <= 100;
-    *s = (volst_t){.user = ok ? (int)raw : DEFAULT_VOLUME,
+    return vs_load_range(s, result, raw, 0, 100, DEFAULT_VOLUME);
+}
+
+bool vs_load_range(volst_t *s, int result, uint32_t raw, int lo, int hi, int dflt)
+{
+    bool ok = result == VS_LOAD_FOUND && raw >= (uint32_t)lo && raw <= (uint32_t)hi;
+    *s = (volst_t){.user = ok ? (int)raw : dflt,
                    .stored = ok ? (int)raw : -1,
                    .ovr = -1,
                    .set = ok,

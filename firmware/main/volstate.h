@@ -24,6 +24,8 @@ typedef struct {
 int vs_effective(const volst_t *s);
 /* Applies the load outcome; returns true when a valid stored value was found. */
 bool vs_load(volst_t *s, int result, uint32_t raw);
+/* As vs_load for a value valid in lo..hi with dflt when none is. */
+bool vs_load_range(volst_t *s, int result, uint32_t raw, int lo, int hi, int dflt);
 /* Applies a SET_VOLUME payload; returns true when the user volume was set. */
 bool vs_host_set(volst_t *s, const uint8_t *payload, int len);
 /* A valid HOST_HELLO or entry to OFFLINE ends a transient override. */

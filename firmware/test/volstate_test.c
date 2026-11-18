@@ -181,6 +181,88 @@ static void test_s8_write_failures_logged_once_per_streak(void)
     }
 }
 
+/* Loads a brightness value the way bright.c does. */
+static bool brt_loaded(volst_t *s, int result, uint32_t raw)
+{
+    return vs_load_range(s, result, raw, BRT_MIN_PERCENT, 100, DISP_ACTIVE_PERCENT);
+}
+
+static void test_s9_range_load(void)
+{
+    volst_t s;
+    assert(brt_loaded(&s, VS_LOAD_FOUND, 49) && s.set && s.user == 49 && s.stored == 49 && !vs_needs_save(&s));
+    const uint32_t bad[] = {5, 200, BRT_MIN_PERCENT - 1, 101};
+    for (int i = 0; i < 4; i++) {
+        assert(!brt_loaded(&s, VS_LOAD_FOUND, bad[i]) && !s.set && s.user == DISP_ACTIVE_PERCENT && never_due(&s, 100000));
+    }
+    assert(!brt_loaded(&s, VS_LOAD_ABSENT, 0) && !s.set && s.user == DISP_ACTIVE_PERCENT && never_due(&s, 100000));
+    assert(!brt_loaded(&s, VS_LOAD_ERROR, 49) && s.ram && s.user == DISP_ACTIVE_PERCENT);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 64);
+    assert(vs_knob_end(&s, false) && s.user == 64 && never_due(&s, 200000));
+    /* The volume range accepts 5: the red proof for the brightness range. */
+    assert(vs_load(&s, VS_LOAD_FOUND, 5) && s.user == 5);
+}
+
+static void test_s10_swipe_save_rules(void)
+{
+    volst_t s;
+    brt_loaded(&s, VS_LOAD_FOUND, 49);
+    uint32_t last = 0, t = 100000, writes = 0;
+    for (int i = 0; i < 10; i++) {
+        vs_knob_arm(&s);
+        vs_knob_set(&s, 52 + i);
+        assert(!vs_save_due(&s, t, last, true));
+        vs_knob_end(&s, false);
+        t += 400;
+        assert(!vs_save_due(&s, t, last, false));
+        if (vs_save_due(&s, t, last, true)) {
+            vs_saved(&s, s.user);
+            last = t;
+            writes++;
+        }
+    }
+    assert(writes == 1 && vs_needs_save(&s));
+    vs_saved(&s, s.user);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 90);
+    assert(!vs_knob_end(&s, true) && !vs_needs_save(&s));
+    const uint8_t pin[] = {20}, persist[] = {20, VOL_MODE_PERSIST};
+    vs_host_set(&s, pin, 1);
+    assert(vs_effective(&s) == 20 && !vs_needs_save(&s));
+    /* Treating the pin as a persist marks a write: the red proof. */
+    assert(vs_host_set(&s, persist, 2) && vs_needs_save(&s));
+}
+
+static void test_s11_one_clock_for_both_keys(void)
+{
+    volst_t vol, brt;
+    loaded(&vol, 45);
+    brt_loaded(&brt, VS_LOAD_FOUND, 49);
+    vs_host_set(&vol, (const uint8_t[]){50, VOL_MODE_PERSIST}, 2);
+    vs_host_set(&brt, (const uint8_t[]){64, VOL_MODE_PERSIST}, 2);
+    uint32_t shared = 0, own_vol = 0, own_brt = 0, t = 100000;
+    int writes = 0, wrong_writes = 0;
+    for (uint32_t u = t; u < t + VOL_SAVE_MIN_MS; u += LIFE_PERIOD_MS) {
+        volst_t *keys[2] = {&vol, &brt};
+        for (int i = 0; i < 2; i++) {
+            if (vs_save_due(keys[i], u, shared, true)) {
+                writes++;
+                shared = u;
+            }
+        }
+        wrong_writes += vs_save_due(&vol, u, own_vol, true) && (own_vol = u, true);
+        wrong_writes += vs_save_due(&brt, u, own_brt, true) && (own_brt = u, true);
+        if (u == t) {
+            vs_saved(&vol, vol.user);
+        }
+    }
+    assert(writes == 1 && vs_needs_save(&brt) && !vs_save_due(&brt, t + VOL_SAVE_MIN_MS - 1, shared, true));
+    assert(vs_save_due(&brt, t + VOL_SAVE_MIN_MS, shared, true));
+    /* A clock per key writes both within one gap: the red proof. */
+    assert(wrong_writes == 2);
+}
+
 int main(void)
 {
     test_s1_transient_never_stored();
@@ -192,6 +274,9 @@ int main(void)
     test_s6_save_in_flight_then_cancel();
     test_s7_failed_write_stays_due();
     test_s8_write_failures_logged_once_per_streak();
+    test_s9_range_load();
+    test_s10_swipe_save_rules();
+    test_s11_one_clock_for_both_keys();
     puts("ok");
     return 0;
 }
