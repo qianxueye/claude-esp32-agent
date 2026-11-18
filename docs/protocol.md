@@ -131,7 +131,7 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 - A persist set becomes the user volume, is stored and reported by VOLUME. A seed does the same only when `vol_set` is false and is otherwise ignored, so repeated HELLOs do not repeat it.
 - Writes: only a knob release or a persist or applied seed set marks the volume for writing; the write waits until the amplifier is off and the state is not LISTENING, and at least 5 s after the previous write. A reset before the write loses that change.
 - Wear: a save is one 32-byte entry, 126 entries fill a 4096-byte page and the six pages rotate, so each sector is erased once per 756 saves. At one save per 5 s without pause that is 17 280 saves a day, about 12 years at 100 000 erase cycles per sector.
-- Storage: if the partition is full or from a newer version, it is erased once and reinitialised, which also removes anything else kept there; any other storage error leaves the volume in RAM for that boot, with `vol_set` true after a knob or persist set.
+- Storage: if the partition is full or from a newer version, it is erased once and reinitialised, which also removes anything else kept there; any other storage error, including a failed read of the stored volume, leaves the volume in RAM for that boot: nothing is written, so a stored value that could not be read is kept, and `vol_set` becomes true after a knob release or a persist or applied seed set.
 - The relay keeps the last `vol` or VOLUME value in memory only.
 
 ## Playback and flow control

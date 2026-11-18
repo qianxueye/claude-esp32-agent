@@ -14,7 +14,6 @@ static const char *TAG = "volume";
 
 static SemaphoreHandle_t s_mtx;
 static volst_t s_st;
-static bool s_nvs_ok;
 static uint32_t s_last_write, s_arms, s_cancels, s_edge, s_saves;
 
 static void apply_locked(void)
@@ -48,24 +47,23 @@ static bool nvs_start(void)
 void volume_init(void)
 {
     s_mtx = xSemaphoreCreateMutex();
-    s_nvs_ok = nvs_start();
-    bool found = false;
+    int result = VS_LOAD_ERROR;
     uint8_t raw = 0;
-    if (s_nvs_ok) {
+    if (nvs_start()) {
         nvs_handle_t h;
         esp_err_t e = nvs_open(VOL_NVS_NAMESPACE, NVS_READONLY, &h);
         if (e == ESP_OK) {
             e = nvs_get_u8(h, VOL_NVS_KEY, &raw);
             nvs_close(h);
         }
-        found = e == ESP_OK;
-        if (!found && e != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "nvs read failed: %s", esp_err_to_name(e));
+        result = e == ESP_OK ? VS_LOAD_FOUND : e == ESP_ERR_NVS_NOT_FOUND ? VS_LOAD_ABSENT : VS_LOAD_ERROR;
+        if (result == VS_LOAD_ERROR) {
+            ESP_LOGW(TAG, "nvs read failed (%s): volume kept in RAM", esp_err_to_name(e));
         }
     }
-    bool ok = vs_load(&s_st, found, raw);
+    bool ok = vs_load(&s_st, result, raw);
     s_last_write = now_ms() - VOL_SAVE_MIN_MS;
-    ESP_LOGI(TAG, "volume %d %s", s_st.user, ok ? "loaded" : "default, none stored");
+    ESP_LOGI(TAG, "volume %d %s", s_st.user, ok ? "loaded" : s_st.ram ? "default, storage off" : "default, none stored");
     apply_locked();
 }
 
@@ -141,27 +139,23 @@ bool volume_poll(uint32_t now_ms, bool quiet)
     if (!due) {
         return false;
     }
-    bool wrote = false;
-    if (s_nvs_ok) {
-        nvs_handle_t h;
-        esp_err_t e = nvs_open(VOL_NVS_NAMESPACE, NVS_READWRITE, &h);
+    nvs_handle_t h;
+    esp_err_t e = nvs_open(VOL_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (e == ESP_OK) {
+        e = nvs_set_u8(h, VOL_NVS_KEY, (uint8_t)v);
         if (e == ESP_OK) {
-            e = nvs_set_u8(h, VOL_NVS_KEY, (uint8_t)v);
-            if (e == ESP_OK) {
-                e = nvs_commit(h);
-            }
-            nvs_close(h);
+            e = nvs_commit(h);
         }
-        wrote = e == ESP_OK;
-        if (!wrote) {
-            ESP_LOGW(TAG, "nvs write failed: %s", esp_err_to_name(e));
-        }
+        nvs_close(h);
     }
-    xSemaphoreTake(s_mtx, portMAX_DELAY);
-    if (wrote || !s_nvs_ok) {
+    bool wrote = e == ESP_OK;
+    if (wrote) {
+        xSemaphoreTake(s_mtx, portMAX_DELAY);
         vs_saved(&s_st, v);
+        xSemaphoreGive(s_mtx);
+    } else {
+        ESP_LOGW(TAG, "nvs write failed: %s", esp_err_to_name(e));
     }
-    xSemaphoreGive(s_mtx);
     s_last_write = now_ms;
     s_saves += wrote;
     return wrote;

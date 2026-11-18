@@ -10,7 +10,7 @@ typedef struct {
     bool set;
 } volume_stats_t;
 
-/* Loads the stored volume and applies it; falls back to RAM-only operation when NVS is unusable. */
+/* Loads the stored volume and applies it; when NVS is unusable or the read fails, the volume stays in RAM this boot. */
 void volume_init(void);
 void volume_hello_fields(int *vol, bool *set);
 /* SET_VOLUME payload of one or two bytes. */
