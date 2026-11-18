@@ -18,6 +18,11 @@ enum { REG_WHO_AM_I = 0x00, REG_CTRL1 = 0x02, REG_CTRL2 = 0x03, REG_CTRL5 = 0x06
 
 static i2c_master_dev_handle_t s_dev;
 static motion_t s_motion;
+static volatile int s_dump_left;
+static volatile uint32_t s_dump_gen;
+
+#define DUMP_BATCH 5
+#define DUMP_MAX_S 600
 
 static esp_err_t reg_write(uint8_t reg, uint8_t val)
 {
@@ -50,13 +55,59 @@ static float pick(const float a[3], int src, int sign)
     return sign * a[src];
 }
 
+void imu_set_dump(int seconds)
+{
+    seconds = seconds > DUMP_MAX_S ? DUMP_MAX_S : seconds;
+    s_dump_gen++;
+    s_dump_left = seconds > 0 ? seconds * 1000 / IMU_PERIOD_MS : 0;
+}
+
+/* Logs raw counts five samples per line; a missing index in the sequence marks a lost line or a failed read. */
+static void dump_step(const uint8_t raw[6], bool ok, uint32_t *gen, int *idx, int *n, int *first, int16_t (*batch)[3])
+{
+    if (*gen != s_dump_gen) {
+        *gen = s_dump_gen;
+        *idx = 0;
+        *n = 0;
+    }
+    if (s_dump_left <= 0) {
+        return;
+    }
+    if (!ok) {
+        *n = 0;
+    } else {
+        if (*n == 0) {
+            *first = *idx;
+        }
+        for (int i = 0; i < 3; i++) {
+            batch[*n][i] = (int16_t)(raw[2 * i] | (raw[2 * i + 1] << 8));
+        }
+        (*n)++;
+    }
+    (*idx)++;
+    s_dump_left--;
+    if (*n == DUMP_BATCH) {
+        ESP_LOGI(TAG, "imu_dump i=%d %d,%d,%d;%d,%d,%d;%d,%d,%d;%d,%d,%d;%d,%d,%d", *first, batch[0][0], batch[0][1], batch[0][2], batch[1][0],
+                 batch[1][1], batch[1][2], batch[2][0], batch[2][1], batch[2][2], batch[3][0], batch[3][1], batch[3][2], batch[4][0], batch[4][1],
+                 batch[4][2]);
+        *n = 0;
+    }
+    if (s_dump_left == 0) {
+        ESP_LOGI(TAG, "imu_dump done n=%d", *idx);
+    }
+}
+
 static void imu_task(void *arg)
 {
-    uint32_t last = now_ms(), last_log = 0;
+    uint32_t last = now_ms(), last_log = 0, dump_gen = 0;
+    int dump_idx = 0, dump_n = 0, dump_first = 0;
+    int16_t dump_batch[DUMP_BATCH][3];
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(IMU_PERIOD_MS));
         uint8_t raw[6];
-        if (reg_read(REG_AX_L, raw, sizeof(raw)) != ESP_OK) {
+        bool ok = reg_read(REG_AX_L, raw, sizeof(raw)) == ESP_OK;
+        dump_step(raw, ok, &dump_gen, &dump_idx, &dump_n, &dump_first, dump_batch);
+        if (!ok) {
             continue;
         }
         float a[3];

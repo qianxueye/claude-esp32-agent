@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import struct
 import sys
 import time
@@ -503,6 +504,68 @@ def cmd_angle(link, args):
     link.send(T_DEBUG, ('{"angle_override":%s}' % val).encode())
 
 
+IMU_DUMP_LINE = re.compile(rb"imu_dump i=(\d+) ([-\d,;]+)")
+IMU_DUMP_DONE = re.compile(rb"imu_dump done n=(\d+)")
+IMU_DUMP_BATCH = 5
+
+
+def parse_imu_dump(payloads):
+    """Return (rows, gaps) from LOG payloads; rows are (index, x, y, z) raw counts, gaps counts index discontinuities and a lost tail."""
+    rows, gaps, expect_next, total = [], 0, None, None
+    for p in payloads:
+        m = IMU_DUMP_LINE.search(p)
+        if m:
+            first = int(m.group(1))
+            if expect_next is not None and first != expect_next:
+                gaps += 1
+            for k, triple in enumerate(m.group(2).decode().split(";")):
+                x, y, z = (int(v) for v in triple.split(","))
+                rows.append((first + k, x, y, z))
+            expect_next = first + IMU_DUMP_BATCH
+            continue
+        m = IMU_DUMP_DONE.search(p)
+        if m:
+            total = int(m.group(1))
+    if total is not None and (expect_next is None or total - expect_next >= IMU_DUMP_BATCH):
+        gaps += 1
+    return rows, gaps
+
+
+def cmd_imu_dump(link, args):
+    """Record raw accelerometer samples to a CSV file; a trace with an index gap is rejected and not written."""
+    link.send(T_DEBUG, b'{"imu_dump":%d}' % args.seconds)
+    payloads, done = [], False
+    end = time.monotonic() + args.seconds + 5.0
+    while time.monotonic() < end and not done:
+        for t, p in link.poll():
+            if t == T_LOG and b"imu_dump" in p:
+                payloads.append(p)
+                done = done or IMU_DUMP_DONE.search(p) is not None
+    rows, gaps = parse_imu_dump(payloads)
+    if not done or gaps or not rows:
+        print("imu_dump rejected: done=%s gaps=%d samples=%d" % (done, gaps, len(rows)))
+        sys.exit(1)
+    with open(args.out, "w") as f:
+        f.write("index,x,y,z\n")
+        for r in rows:
+            f.write("%d,%d,%d,%d\n" % r)
+    print("imu_dump saved %d samples to %s" % (len(rows), args.out))
+
+
+def cmd_disp(link, args):
+    """Display power test aids: speed up the timeline, pin a stage or an orbit index, fill the screen with a grey."""
+    fields = []
+    for key, val in (("disp_scale", args.scale), ("disp_force", args.force), ("orbit", args.orbit), ("fill", args.fill)):
+        if val is not None:
+            fields.append('"%s":%s' % (key, val if val == "null" else int(val)))
+    link.send(T_DEBUG, ("{%s}" % ",".join(fields)).encode())
+    end = time.monotonic() + args.seconds
+    while time.monotonic() < end:
+        for t, p in link.poll():
+            if t == T_LOG and (b"disp:" in p or b"fps=" in p):
+                print(p.decode())
+
+
 def cmd_bench(link, args):
     """Run a UI frame-rate bench mode (1 spin, 2 redraw, 3 canvas, 4 screen) and print the device fps log lines."""
     link.send(T_SET_STATE, bytes([STATES.get(args.state, 0)]))
@@ -622,6 +685,8 @@ def main():
     s = sub.add_parser("snapburst"); s.add_argument("prefix"); s.add_argument("count", type=int); s.add_argument("interval", type=float); s.set_defaults(fn=cmd_snapburst)
     s = sub.add_parser("bench"); s.add_argument("mode", type=int); s.add_argument("state", nargs="?", default="idle"); s.add_argument("seconds", type=float, nargs="?", default=8); s.set_defaults(fn=cmd_bench)
     s = sub.add_parser("perf"); s.add_argument("state"); s.add_argument("mode", type=int); s.add_argument("--angle", type=float); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_perf)
+    s = sub.add_parser("imu-dump"); s.add_argument("seconds", type=int); s.add_argument("out"); s.set_defaults(fn=cmd_imu_dump)
+    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
     s = sub.add_parser("v2check"); s.set_defaults(fn=cmd_v2check)
     args = ap.parse_args()
     link = Link(args.port, args.serial)

@@ -51,7 +51,7 @@ The panel's TE output may stop while it is off. `refr_cb` therefore does not wai
 
 ## Test aids
 
-DEBUG keys in `protocol.md`: `disp_scale` runs the timeline N times faster (and restarts it), `disp_force` pins a stage, `orbit` pins a lattice index, `fill` shows a flat grey for ghost inspection. Host tests: `firmware/test/run.sh`.
+DEBUG keys in `protocol.md`: `disp_scale` runs the timeline N times faster (and restarts it), `disp_force` pins a stage, `orbit` pins a lattice index, `fill` shows a flat grey for ghost inspection. `devctl disp` sends them. `devctl imu-dump SECONDS FILE` records raw samples for threshold calibration and rejects a trace with lost lines. Host tests: `firmware/test/run.sh`.
 
 ## Motion
 

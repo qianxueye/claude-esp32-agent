@@ -96,6 +96,10 @@ static void handle_debug(const proto_frame_t *f)
     if (v) {
         ui_set_bench(atoi(v));
     }
+    v = json_value(json, "imu_dump");
+    if (v) {
+        imu_set_dump(atoi(v));
+    }
     v = json_value(json, "disp_scale");
     if (v) {
         ui_set_disp_scale(atoi(v));
