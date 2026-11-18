@@ -189,7 +189,7 @@ static void test_storm_budget_from(uint32_t t0)
     uint32_t first_dim = 0;
     for (uint32_t i = 0; i < n; i++) {
         t += TICK;
-        dp_activity(&d, t, DP_CAUSE_MOTION);
+        dp_activity(&d, t, DP_CAUSE_SMALL);
         o = dp_update(&d, t);
         active[i] = o.stage == DP_ACTIVE;
         assert(o.stage != DP_OFF);
@@ -228,17 +228,17 @@ static void test_storm_dim_from_off(void)
     uint32_t t = 0;
     run_to(&d, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 1000);
     assert(dp_update(&d, t).stage == DP_OFF);
-    dp_activity(&d, t, DP_CAUSE_MOTION);
+    dp_activity(&d, t, DP_CAUSE_SMALL);
     dp_out_t o = dp_update(&d, t);
-    assert(o.stage == DP_ACTIVE && o.panel_on && o.cause == DP_CAUSE_MOTION);
+    assert(o.stage == DP_ACTIVE && o.panel_on && o.cause == DP_CAUSE_SMALL);
     for (uint32_t i = 0; i < DISP_STORM_BUDGET_MS / TICK + 100; i++) {
         t += TICK;
-        dp_activity(&d, t, DP_CAUSE_MOTION);
+        dp_activity(&d, t, DP_CAUSE_SMALL);
         dp_update(&d, t);
     }
     run_to(&d, &t, t + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 5000);
     assert(dp_update(&d, t).stage == DP_OFF);
-    dp_activity(&d, t, DP_CAUSE_MOTION);
+    dp_activity(&d, t, DP_CAUSE_SMALL);
     o = dp_update(&d, t);
     assert(o.stage == DP_DIM && o.panel_on && o.level_pct == DISP_DIM_PERCENT);
 }
@@ -253,7 +253,7 @@ static void test_touch_does_not_spend_budget(void)
         dp_activity(&d, t, DP_CAUSE_TOUCH);
         assert(dp_update(&d, t).stage == DP_ACTIVE);
     }
-    dp_activity(&d, t, DP_CAUSE_MOTION);
+    dp_activity(&d, t, DP_CAUSE_SMALL);
     run_to(&d, &t, t + DISP_HOLD_MS - 1);
     assert(dp_update(&d, t).stage == DP_ACTIVE);
 }
@@ -292,6 +292,87 @@ static void test_stale_timestamps_stay_off(void)
     assert(dp_update(&d, t).stage == DP_ACTIVE);
 }
 
+/* Lifted at t, a desk rest at t + 1 s: the stage dims DISP_SETDOWN_HOLD_MS later, or DISP_HOLD_MS later without the desk call. */
+static dp_stage_t after_setdown(bool desk, int state, bool touch, uint32_t probe)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, 30000);
+    dp_state(&d, t, state);
+    for (uint32_t i = 0; i < 1000 / TICK; i++) {
+        t += TICK;
+        dp_activity(&d, t, DP_CAUSE_MOTION);
+        dp_update(&d, t);
+    }
+    uint32_t rest = t;
+    if (desk) {
+        dp_setdown(&d, t);
+    }
+    if (touch) {
+        run_to(&d, &t, rest + 1000);
+        dp_activity(&d, t, DP_CAUSE_TOUCH);
+        rest = t;
+    }
+    return run_to(&d, &t, rest + probe).stage;
+}
+
+static void test_setdown(void)
+{
+    const uint32_t hold = DISP_SETDOWN_HOLD_MS;
+    assert(after_setdown(true, DP_STATE_IDLE, false, hold - 20) == DP_ACTIVE);
+    assert(after_setdown(true, DP_STATE_IDLE, false, hold) == DP_DIM);
+    assert(after_setdown(false, DP_STATE_IDLE, false, hold + 1000) == DP_ACTIVE);
+    assert(after_setdown(false, DP_STATE_IDLE, false, DISP_HOLD_MS - 20) == DP_ACTIVE);
+    assert(after_setdown(false, DP_STATE_IDLE, false, DISP_HOLD_MS) == DP_DIM);
+    assert(after_setdown(true, DP_STATE_IDLE, true, DISP_HOLD_MS - 20) == DP_ACTIVE);
+    assert(after_setdown(true, DP_STATE_IDLE, true, DISP_HOLD_MS) == DP_DIM);
+    assert(after_setdown(true, DP_STATE_THINKING, false, hold + 1000) == DP_ACTIVE);
+}
+
+static void test_setdown_then_new_pickup(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, 30000);
+    dp_activity(&d, t, DP_CAUSE_MOTION);
+    dp_setdown(&d, t);
+    run_to(&d, &t, t + 2000);
+    dp_activity(&d, t, DP_CAUSE_MOTION);
+    assert(run_to(&d, &t, t + DISP_HOLD_MS - 20).stage == DP_ACTIVE);
+}
+
+/* Pickups do not draw on the storm budget; small-motion wakes do and report the limit as the cause. */
+static void test_pickup_is_not_budgeted(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    for (uint32_t i = 0; i < 2u * DISP_STORM_PERIOD_MS / TICK; i++) {
+        t += TICK;
+        dp_activity(&d, t, DP_CAUSE_MOTION);
+        assert(dp_update(&d, t).stage == DP_ACTIVE);
+    }
+    dpower_t e;
+    dp_init(&e, 0);
+    t = 0;
+    run_to(&e, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 1000);
+    for (uint32_t i = 0; i < DISP_STORM_BUDGET_MS / TICK + 200; i++) {
+        t += TICK;
+        dp_activity(&e, t, DP_CAUSE_SMALL);
+        dp_update(&e, t);
+    }
+    run_to(&e, &t, t + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 5000);
+    assert(dp_update(&e, t).stage == DP_OFF);
+    dp_activity(&e, t, DP_CAUSE_SMALL);
+    dp_out_t o = dp_update(&e, t);
+    assert(o.stage == DP_DIM && o.cause == DP_CAUSE_BUDGET);
+    dp_activity(&e, t, DP_CAUSE_MOTION);
+    o = dp_update(&e, t);
+    assert(o.stage == DP_ACTIVE && o.cause == DP_CAUSE_MOTION);
+}
+
 int main(void)
 {
     test_timeline_from(0);
@@ -308,6 +389,9 @@ int main(void)
     test_storm_dim_from_off();
     test_touch_does_not_spend_budget();
     test_orbit();
+    test_setdown();
+    test_setdown_then_new_pickup();
+    test_pickup_is_not_budgeted();
     test_orbit_keeps_drawing_in_scene();
     test_stale_timestamps_stay_off();
     puts("ok");

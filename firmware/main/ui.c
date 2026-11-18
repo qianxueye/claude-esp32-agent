@@ -102,7 +102,7 @@ static int s_applied_level = DISP_ACTIVE_PERCENT, s_time_scale = 1, s_orbit_forc
 static dp_stage_t s_logged_stage = DP_ACTIVE;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
-static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force"};
+static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "small", "setdown", "motion_budget"};
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -646,9 +646,12 @@ static void power_tick(void)
     uint32_t t = dp_clock();
     uint32_t bits = __atomic_exchange_n(&s_wake_bits, 0, __ATOMIC_RELAXED);
     for (int c = 1; c < DP_CAUSE_N; c++) {
-        if (bits & (1u << c)) {
+        if (c != DP_CAUSE_SETDOWN && (bits & (1u << c))) {
             dp_activity(&s_dp, t, (dp_cause_t)c);
         }
+    }
+    if (bits & (1u << DP_CAUSE_SETDOWN)) {
+        dp_setdown(&s_dp, t);
     }
     dp_out_t o = dp_update(&s_dp, t);
     if (o.panel_on && !s_panel_on) {

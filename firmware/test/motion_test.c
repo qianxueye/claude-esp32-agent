@@ -40,7 +40,7 @@ typedef struct {
     motion_t m;
     uint32_t now;
     long n;
-    int moving, pickup, rest;
+    int moving, pickup, rest, desk;
     long first_moving, first_pickup, first_rest;
 } rig_t;
 
@@ -49,7 +49,7 @@ static void rig_init(rig_t *r, const motion_cfg_t *cfg, uint32_t now0)
     motion_init(&r->m, cfg);
     r->now = now0;
     r->n = 0;
-    r->moving = r->pickup = r->rest = 0;
+    r->moving = r->pickup = r->rest = r->desk = 0;
     r->first_moving = r->first_pickup = r->first_rest = -1;
 }
 
@@ -67,6 +67,9 @@ static int rig_feed(rig_t *r, const float a[3], bool amp)
         if (r->first_pickup < 0) {
             r->first_pickup = r->n;
         }
+    }
+    if (ev & MOTION_EV_REST_DESK) {
+        r->desk++;
     }
     if (ev & MOTION_EV_REST) {
         r->rest++;
@@ -436,6 +439,45 @@ static void test_noise_estimate_ignores_flagged_vibration(void)
     assert(after[0] > 10.0f * before[0]);
 }
 
+/* Lifts with a 30 mg 9 Hz tremor for 10 s after a 70 s desk rest, then either sets down or holds the board nearly still. */
+static void lift_then(bool desk, rig_t *r)
+{
+    rig_init(r, NULL, 0);
+    settle_rest(r, 70 * 50);
+    assert(motion_noise_sigma_w(&r->m.noise) > 0.0f);
+    const int ramp = 300 / DT_MS;
+    for (int i = 0; i < 10 * 1000 / DT_MS; i++) {
+        float a[3];
+        tilt(a, 15.0 * (i < ramp ? (double)i / ramp : 1.0));
+        double t = i * DT_MS / 1000.0;
+        a[0] += (float)(0.03 * sin(2.0 * PI_F * 9.0 * t) + 0.01 * sin(2.0 * PI_F * 0.3 * t) + SIGMA_S * rng_gauss());
+        rig_feed(r, a, false);
+    }
+    assert(r->pickup == 1 && r->m.state == MOTION_LIFTED);
+    for (int i = 0; i < 8 * 1000 / DT_MS; i++) {
+        float a[3];
+        double t = i * DT_MS / 1000.0;
+        if (desk) {
+            tilt(a, i < ramp ? 15.0 * (1.0 - (double)i / ramp) : 0.0);
+            a[0] += (float)(SIGMA_S * rng_gauss());
+        } else {
+            tilt(a, 15.0);
+            a[0] += (float)(0.010 * sin(2.0 * PI_F * 9.0 * t) + 0.002 * sin(2.0 * PI_F * 0.3 * t) + SIGMA_S * rng_gauss());
+        }
+        rig_feed(r, a, false);
+    }
+}
+
+/* Desk noise spread stays under theta_noise (about 1.4 mg); a hand held still spreads about 3 mg and fails. */
+static void test_desk_versus_hand_rest(void)
+{
+    rig_t r;
+    lift_then(true, &r);
+    assert(r.rest == 1 && r.desk == 1);
+    lift_then(false, &r);
+    assert(r.rest == 1 && r.desk == 0);
+}
+
 int main(void)
 {
     test_rest_noise();
@@ -445,6 +487,7 @@ int main(void)
     test_tail_and_wrap();
     test_pickup_tremor_setdown();
     test_pickup_under_speaker();
+    test_desk_versus_hand_rest();
     test_drift();
     test_noise_estimator();
     test_noise_floor_raises_threshold();

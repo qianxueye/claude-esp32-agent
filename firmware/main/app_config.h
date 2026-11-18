@@ -117,6 +117,7 @@
 #define DISP_DIM_PERCENT 10 /* plain configuration */
 #define DISP_HOLD_MS 20000 /* plain configuration: ACTIVE time after the last activity */
 #define DISP_DIM_TO_OFF_MS 300000 /* plain configuration: DIM time before the panel turns off */
+#define DISP_SETDOWN_HOLD_MS 3000 /* plain configuration: ACTIVE time left after a desk rest ends a pickup */
 #define DISP_ATTN_CAP_MS 120000 /* plain configuration: ACTIVE limit in one unchanged non-IDLE state */
 #define DISP_RAMP_STEPS 4 /* plain configuration: equal-ratio brightness steps from ACTIVE down to DIM */
 #define DISP_RAMP_STEP_MS 80 /* plain configuration */
