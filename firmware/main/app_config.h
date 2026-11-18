@@ -155,6 +155,7 @@
 #define ORIENT_FREE_ANGLE 0 /* 1 = free angle with dead zone and snap; 0 = 90 degree steps */
 #define ORIENT_STEP_HYST_DEG 15.0f
 #define ORIENT_STEP_HOLD_MS 500
+#define ROTATE_EASE_MS 300 /* plain configuration: ease-out time of a quadrant change */
 
 /* Motion detector (docs/display-power.md); a g value is the length of the mean-acceleration deviation */
 #define MOTION_WINDOW_SAMPLES 5 /* mathematical model, placeholder until traces: mean window, 100 ms */

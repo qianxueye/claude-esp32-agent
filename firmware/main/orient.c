@@ -4,7 +4,8 @@
 #include "freertos/FreeRTOS.h"
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-static float s_fx, s_fy, s_held, s_target, s_shown;
+static float s_fx, s_fy, s_held, s_target, s_shown, s_from, s_ease_to, s_ease_ms;
+static bool s_easing;
 static bool s_seeded, s_override, s_ever;
 static uint32_t s_pending_ms;
 
@@ -79,21 +80,39 @@ void orient_override(bool on, float deg)
     s_override = on;
     s_seeded = false;
     if (on) {
-        s_target = s_shown = wrap360(deg);
+        s_target = wrap360(deg);
+#if ORIENT_FREE_ANGLE
+        s_shown = s_target;
+#endif
     }
     portEXIT_CRITICAL(&s_mux);
 }
 
-float orient_step(uint32_t dt_ms)
+float orient_step(uint32_t dt_ms, bool animate)
 {
     portENTER_CRITICAL(&s_mux);
-#if !ORIENT_FREE_ANGLE
-    if (!s_override) {
-        s_shown = s_target;
-    }
-#endif
+#if ORIENT_FREE_ANGLE
     float d = wrap180(s_target - s_shown);
     s_shown = fabsf(d) < 0.05f ? s_target : wrap360(s_shown + d * (1.0f - expf(-(float)dt_ms / ORIENT_EASE_TAU_MS)));
+    (void)animate;
+#else
+    if (s_target != s_ease_to) {
+        s_from = s_shown;
+        s_ease_to = s_target;
+        s_ease_ms = 0;
+        s_easing = true;
+    }
+    if (s_easing) {
+        s_ease_ms += (float)dt_ms;
+        if (!animate || s_ease_ms >= ROTATE_EASE_MS) {
+            s_shown = s_target;
+            s_easing = false;
+        } else {
+            float u = 1.0f - s_ease_ms / ROTATE_EASE_MS, ease = 1.0f - u * u * u;
+            s_shown = wrap360(s_from + wrap180(s_ease_to - s_from) * ease);
+        }
+    }
+#endif
     float out = s_shown;
     portEXIT_CRITICAL(&s_mux);
     return out;

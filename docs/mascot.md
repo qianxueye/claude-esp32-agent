@@ -64,6 +64,7 @@ The QMI8658 IMU keeps the mascot and bubble upright relative to gravity at any a
 - Ignore changes smaller than 3°, and ease towards the new angle with a 150 ms time constant, so a hand-held board does not jitter.
 - Within 5° of 0°, 90°, 180° or 270°, snap to that angle: there the block edges line up with the panel's square pixel grid and stay perfectly sharp. At other angles each block edge gets a one-pixel anti-aliased border.
 - Flat on a desk (in-plane gravity below 0.5 g): keep the last angle.
+- Quadrant mode (`ORIENT_FREE_ANGLE` 0, the default): the angle changes in 90° steps (switch 15° past a quadrant boundary after 500 ms). A step turns the whole group to the new right angle by the shorter way with a cubic ease-out over `ROTATE_EASE_MS` (plain configuration) and ends exactly on 0°, 90°, 180° or 270°. A new target during a turn restarts from the angle shown. While the panel is off the angle is taken at once.
 - Performance gate: at least 25 fps while rotated and no audio underruns. If LVGL's layer transform is too slow, draw the blocks as rotated polygons; if that is still too slow, fall back to 90° steps (switch 15° past a quadrant boundary after 500 ms).
 - The IMU-to-screen axis mapping is a board fact: take it from the BSP or Waveshare's examples, log the raw axes and the chosen angle as LOG frames, and have a person confirm by turning the board.
 - Mechanism class: mathematical model (gravity angle with low-pass filter, dead zone and right-angle snap). The numbers above are plain configuration constants.
