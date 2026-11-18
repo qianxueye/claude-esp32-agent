@@ -140,6 +140,8 @@
 #define IMU_RANGE_G 8.0f
 #define IMU_CTRL1_VALUE 0x40 /* register address auto-increment */
 #define IMU_CTRL2_VALUE 0x26 /* +-8 g, 125 Hz */
+#define IMU_DISABLE_SETTLE_MS 20 /* plain configuration: wait after disabling the sensor before writing its configuration */
+#define IMU_STARTUP_SKIP_SAMPLES 10 /* plain configuration: samples dropped after enabling the sensor, while its filter settles */
 #define IMU_CTRL5_VALUE 0x07 /* mathematical model: accelerometer low-pass on, mode 11 (16.7 Hz), below half the poll rate */
 #define IMU_CTRL7_ACCEL_ON 0x01
 #define IMU_UP_X_SRC 1 /* screen up-vector x = +accel Y, y = -accel X (Waveshare 04_Immersive_block) */

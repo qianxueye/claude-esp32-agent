@@ -1,5 +1,6 @@
 #include "imu.h"
 #include <math.h>
+#include <string.h>
 #include "app_config.h"
 #include "audio.h"
 #include "bsp/esp-bsp.h"
@@ -14,7 +15,9 @@
 
 static const char *TAG = "imu";
 
-enum { REG_WHO_AM_I = 0x00, REG_CTRL1 = 0x02, REG_CTRL2 = 0x03, REG_CTRL5 = 0x06, REG_CTRL7 = 0x08, REG_STATUS0 = 0x2E, REG_AX_L = 0x35 };
+enum { REG_WHO_AM_I = 0x00, REG_CTRL1 = 0x02, REG_CTRL2 = 0x03, REG_CTRL5 = 0x06, REG_CTRL7 = 0x08, REG_STATUS0 = 0x2E, REG_TIMESTAMP_L = 0x30, REG_AX_L = 0x35 };
+#define SAMPLE_BLOCK_BYTES 11 /* timestamp(3), temperature(2), accelerometer(6) */
+#define FROZEN_SAMPLES (2000 / IMU_PERIOD_MS)
 
 static i2c_master_dev_handle_t s_dev;
 static motion_t s_motion;
@@ -97,17 +100,48 @@ static void dump_step(const uint8_t raw[6], bool ok, uint32_t *gen, int *idx, in
     }
 }
 
+/* Configuration is changed only while the sensor is disabled; the chip keeps running across a reset of this board. */
+static bool configure(uint8_t *w)
+{
+    bool ok = reg_write(REG_CTRL7, 0) == ESP_OK;
+    vTaskDelay(pdMS_TO_TICKS(IMU_DISABLE_SETTLE_MS));
+    w[0] = reg_write(REG_CTRL1, IMU_CTRL1_VALUE) == ESP_OK;
+    w[1] = reg_write(REG_CTRL2, IMU_CTRL2_VALUE) == ESP_OK;
+    w[2] = reg_write(REG_CTRL5, IMU_CTRL5_VALUE) == ESP_OK;
+    w[3] = reg_write(REG_CTRL7, IMU_CTRL7_ACCEL_ON) == ESP_OK;
+    return ok && w[0] && w[1] && w[2] && w[3];
+}
+
 static void imu_task(void *arg)
 {
     uint32_t last = now_ms(), last_log = 0, dump_gen = 0;
     int dump_idx = 0, dump_n = 0, dump_first = 0;
     int16_t dump_batch[DUMP_BATCH][3];
+    uint8_t prev[6] = {0};
+    uint32_t ts_last_log = 0, same = 0;
+    int warm = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(IMU_PERIOD_MS));
-        uint8_t raw[6];
-        bool ok = reg_read(REG_AX_L, raw, sizeof(raw)) == ESP_OK;
+        uint8_t blk[SAMPLE_BLOCK_BYTES], *raw = blk + 5;
+        bool ok = reg_read(REG_TIMESTAMP_L, blk, sizeof(blk)) == ESP_OK;
         dump_step(raw, ok, &dump_gen, &dump_idx, &dump_n, &dump_first, dump_batch);
         if (!ok) {
+            continue;
+        }
+        if (warm < IMU_STARTUP_SKIP_SAMPLES) {
+            warm++;
+            continue;
+        }
+        uint32_t ts = blk[0] | (blk[1] << 8) | ((uint32_t)blk[2] << 16);
+        same = memcmp(prev, raw, 6) == 0 ? same + 1 : 0;
+        memcpy(prev, raw, 6);
+        if (same == FROZEN_SAMPLES) {
+            uint8_t w[4];
+            bool cfg = configure(w);
+            ESP_LOGW(TAG, "imu frozen: data identical for %u samples, ts=%06x, reconfigured=%d", (unsigned)same, (unsigned)ts, (int)cfg);
+            same = 0;
+            warm = 0;
+            motion_init(&s_motion, NULL);
             continue;
         }
         float a[3];
@@ -128,8 +162,10 @@ static void imu_task(void *arg)
         }
         if (t - last_log >= IMU_LOG_PERIOD_MS) {
             last_log = t;
-            ESP_LOGI(TAG, "raw g x=%.2f y=%.2f z=%.2f up=(%.2f,%.2f) target=%.1f D=%.2fmg st=%d sigW=%.2fmg", a[0], a[1], a[2], ux, uy,
-                     orient_target(), s_motion.d * 1000.0f, (int)s_motion.state, motion_noise_sigma_w(&s_motion.noise) * 1000.0f);
+            ESP_LOGI(TAG, "raw g x=%.2f y=%.2f z=%.2f up=(%.2f,%.2f) target=%.1f D=%.2fmg st=%d sigW=%.2fmg ts_d=%u same=%u", a[0], a[1], a[2], ux, uy,
+                     orient_target(), s_motion.d * 1000.0f, (int)s_motion.state, motion_noise_sigma_w(&s_motion.noise) * 1000.0f,
+                     (unsigned)((ts - ts_last_log) & 0xFFFFFF), (unsigned)same);
+            ts_last_log = ts;
         }
     }
 }
@@ -141,11 +177,12 @@ void imu_start(void)
         ESP_LOGW(TAG, "QMI8658 not found");
         return;
     }
-    esp_err_t w1 = reg_write(REG_CTRL1, IMU_CTRL1_VALUE), w2 = reg_write(REG_CTRL2, IMU_CTRL2_VALUE),
-              w5 = reg_write(REG_CTRL5, IMU_CTRL5_VALUE), w7 = reg_write(REG_CTRL7, IMU_CTRL7_ACCEL_ON);
+    uint8_t w[4];
+    configure(w);
+    int w1 = !w[0], w2 = !w[1], w5 = !w[2], w7 = !w[3];
     uint8_t rb[8] = {0};
     reg_read(REG_CTRL1, rb, 8);
-    ESP_LOGI(TAG, "ctrl write %d/%d/%d/%d readback ctrl1=%02x ctrl2=%02x ctrl5=%02x ctrl7=%02x", (int)w1, (int)w2, (int)w5, (int)w7, rb[0], rb[1],
+    ESP_LOGI(TAG, "ctrl write %d/%d/%d/%d readback ctrl1=%02x ctrl2=%02x ctrl5=%02x ctrl7=%02x", w1, w2, w5, w7, rb[0], rb[1],
              rb[4], rb[6]);
     motion_init(&s_motion, NULL);
     xTaskCreate(imu_task, "imu", STACK_IMU, NULL, PRIO_IMU, NULL);
