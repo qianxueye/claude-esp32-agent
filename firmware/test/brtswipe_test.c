@@ -465,7 +465,7 @@ static void bglue_events(bglue_t *g, int ev)
         dp_set_active(&g->d, vs_effective(&g->s));
     }
     if (ev & (VK_EV_BRT_COMMIT | VK_EV_BRT_CANCEL)) {
-        vs_knob_end(&g->s, (ev & VK_EV_BRT_CANCEL) != 0);
+        vs_swipe_end(&g->s, (ev & VK_EV_BRT_CANCEL) != 0);
         dp_set_active(&g->d, vs_effective(&g->s));
     }
     g->sw.ev |= ev;

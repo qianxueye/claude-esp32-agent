@@ -37,12 +37,52 @@ def test_brightness_sends_brt_set_and_prints_the_bright_line(capsys):
     assert "bright lvl=49" in capsys.readouterr().out
 
 
+def bright_line(lvl, arms=3):
+    return b"I (5000) app: bright lvl=%d eff=%d panel=%d set=1 arms=%d cancels=0 slides=4 stops=1 saves=1 in=2" % (lvl, lvl, lvl, arms)
+
+
+def test_ladder_constants_match_the_firmware():
+    text = (Path(__file__).parents[2] / "firmware" / "main" / "app_config.h").read_text()
+    assert "#define BRT_MIN_PERCENT %d " % devctl.BRT_MIN_PERCENT in text and "#define BRT_STEPS %d " % devctl.BRT_STEPS in text
+    assert [devctl.brt_snap(p) for p in (0, 20, 25, 50, 51, 99, 200)] == [20, 20, 24, 49, 52, 100, 100]
+
+
+def test_brightness_skips_a_stale_line_and_prints_the_applied_one(capsys):
+    link = StubLink([(devctl.T_LOG, bright_line(100)), (devctl.T_LOG, bright_line(49))])
+    devctl.cmd_brightness(link, SimpleNamespace(value=50))
+    out = capsys.readouterr().out
+    assert link.sent == [(devctl.T_DEBUG, b'{"brt_set":50}')]
+    assert "bright lvl=49" in out and "bright lvl=100" not in out
+
+
+def test_brightness_fails_when_the_level_never_arrives(monkeypatch, capsys):
+    monkeypatch.setattr(devctl, "BRIGHT_WAIT_S", 0.05)
+    link = StubLink([(devctl.T_LOG, bright_line(100))])
+    with pytest.raises(SystemExit) as e:
+        devctl.cmd_brightness(link, SimpleNamespace(value=49))
+    assert e.value.code == 1 and "no 'bright lvl=49' line" in capsys.readouterr().out
+
+
+def test_swipecheck_exits_nonzero_on_fail_and_releases_the_pin(capsys):
+    link = StubLink([(devctl.T_LOG, bright_line(49, arms=3)), (devctl.T_LOG, bright_line(49, arms=4))])
+    with pytest.raises(SystemExit) as e:
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="grip"))
+    assert e.value.code == 1 and "swipecheck grip FAIL" in capsys.readouterr().out
+    assert link.sent[0] == (devctl.T_DEBUG, b'{"disp_force":0}') and link.sent[-1] == (devctl.T_DEBUG, b'{"disp_force":null}')
+
+
+def test_swipecheck_pass_returns_normally(capsys):
+    link = StubLink([(devctl.T_LOG, bright_line(49)), (devctl.T_LOG, bright_line(49))])
+    devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="wipe"))
+    assert "swipecheck wipe PASS" in capsys.readouterr().out
+
+
 def test_brightness_fails_loudly_without_a_bright_line(monkeypatch, capsys):
     monkeypatch.setattr(devctl, "BRIGHT_WAIT_S", 0.05)
     link = StubLink([(devctl.T_LOG, b"I (4000) app: knob vol=70")])
     with pytest.raises(SystemExit) as e:
         devctl.cmd_brightness(link, SimpleNamespace(value=49))
-    assert e.value.code == 1 and "no 'bright lvl=' line" in capsys.readouterr().out
+    assert e.value.code == 1 and "no 'bright lvl=49' line" in capsys.readouterr().out
 
 
 def test_disp_brt_pins_and_releases():

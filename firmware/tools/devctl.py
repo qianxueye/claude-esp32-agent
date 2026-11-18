@@ -29,6 +29,7 @@ STATES = {"idle": 0, "listening": 1, "thinking": 2, "speaking": 3, "error": 4, "
 OUTSTANDING_LIMIT = 64000
 CHUNK = 4096
 BRIGHT_WAIT_S = 5.0
+BRT_MIN_PERCENT, BRT_STEPS = 20, 32  # firmware/main/app_config.h; a host test compares them
 BRIGHT_KEYS = ("lvl", "eff", "panel", "set", "arms", "cancels", "slides", "stops", "saves", "in")
 BRIGHT_LINE = re.compile(rb"bright " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in BRIGHT_KEYS))
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
@@ -598,23 +599,34 @@ def parse_swipe(p):
     return out
 
 
-def wait_bright(link, timeout):
-    """Return the next 'bright lvl=' LOG payload, or None after timeout seconds."""
+def brt_snap(pct):
+    """The ladder level the board stores for pct, as brt_snap in firmware/main/brtmap.c (ties go to the lower level)."""
+    ladder = [round(BRT_MIN_PERCENT * (100 / BRT_MIN_PERCENT) ** (i / BRT_STEPS)) for i in range(BRT_STEPS + 1)]
+    pct = min(max(pct, BRT_MIN_PERCENT), 100)
+    return min(ladder, key=lambda level: (abs(level - pct), level))
+
+
+def wait_bright(link, timeout, pred=None):
+    """Return the next 'bright lvl=' LOG payload whose counters satisfy pred, or None after timeout seconds."""
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         for t, p in link.poll():
-            if t == T_LOG and parse_bright(p):
+            b = parse_bright(p) if t == T_LOG else None
+            if b and (pred is None or pred(b)):
                 return p
     return None
 
 
 def cmd_brightness(link, args):
-    """Set and store the ACTIVE brightness (snapped to the ladder) as a swipe would, then print the board's next brightness line."""
+    """Set and store the ACTIVE brightness (snapped to the ladder) as a swipe would, then print the board's first brightness line showing it."""
+    want = None
     if args.value is not None:
+        want = brt_snap(args.value)
         link.send(T_DEBUG, b'{"brt_set":%d}' % args.value)
-    p = wait_bright(link, BRIGHT_WAIT_S)
+    p = wait_bright(link, BRIGHT_WAIT_S, None if want is None else (lambda b: b["lvl"] == want))
     if p is None:
-        print("brightness: no 'bright lvl=' line within %.0f s; the firmware may not have the brightness swipe" % BRIGHT_WAIT_S)
+        print("brightness: no 'bright lvl=%s' line within %.0f s; the firmware may not have the brightness swipe, or a swipe was armed"
+              % ("" if want is None else want, BRIGHT_WAIT_S))
         sys.exit(1)
     print(p.decode("utf-8", "replace"))
 
@@ -669,8 +681,10 @@ def cmd_swipecheck(link, args):
                     print(p.decode("utf-8", "replace"))
     finally:
         link.send(T_DEBUG, b'{"disp_force":null}')
-    lines, _ = swipe_report(args.label, first, last, swipes)
+    lines, passed = swipe_report(args.label, first, last, swipes)
     print("\n".join(lines))
+    if not passed:
+        sys.exit(1)
 
 
 def cmd_bench(link, args):
