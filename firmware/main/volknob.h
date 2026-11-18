@@ -14,13 +14,15 @@ typedef struct {
     int x0, y0, lx, ly;
     uint32_t t0, last_t;
     double theta_last, travel, acc, r0, max_disp, rmin, rmax;
-    bool moved, long_sent, reseed, armed_ever;
+    bool moved, long_sent, reseed, armed_ever, noarm;
     int v, v0;
 } volknob_t;
 
 void vk_init(volknob_t *k);
 int vk_press(volknob_t *k, int x, int y, uint32_t t_ms, bool dark, uint8_t user_vol);
 int vk_move(volknob_t *k, int x, int y, uint32_t t_ms);
+/* Sets the volume baseline (v, v0) to the user volume the knob armed with. */
+void vk_rebase(volknob_t *k, int v);
 int vk_tick(volknob_t *k, uint32_t t_ms);
 int vk_release(volknob_t *k, uint32_t t_ms);
 /* The touch ended without a release: as release, but never a tap. */

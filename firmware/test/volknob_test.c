@@ -1,7 +1,9 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include "arcvis.h"
 #include "volknob.h"
+#include "volstate.h"
 
 #define PI_D 3.14159265358979323846
 #define CTR 232.5
@@ -172,14 +174,14 @@ static void test_k10_repeats_do_not_cancel(void)
     assert(!(d.ev & VK_EV_CANCEL) && d.k.v > 10);
 }
 
-static void test_k11_leaving_zone_kills(void)
+static void test_k11_leaving_zone_never_arms(void)
 {
     volknob_t k;
     int ev = 0;
     vk_press(&k, 413, 232, 0, false, 50);
     for (int x = 413, t = 16; x >= 53; x -= 10, t += 16) { ev |= vk_move(&k, x, 232, (uint32_t)t); }
     for (int i = 0; i < 40; i++) { ev |= vk_move(&k, 53 + i, 232 - i, 700 + (uint32_t)i * 16); }
-    assert(!(ev & VK_EV_ARM) && vk_release(&k, 2000) == 0);
+    assert(!(ev & VK_EV_ARM) && k.state == VK_EDGE && k.noarm && k.why == VK_WHY_ZONE && vk_release(&k, 2000) == 0);
 }
 
 static void test_commit_and_lost(void)
@@ -195,6 +197,104 @@ static void test_commit_and_lost(void)
     assert(vk_lost(&d.k) == 0);
 }
 
+static void test_k12_edge_tap_survives_inward_jitter(void)
+{
+    volknob_t k;
+    assert(hypot(384 - CTR, 232 - CTR) >= VOL_R_MIN_PX && hypot(381 - CTR, 232 - CTR) < VOL_R_MIN_PX);
+    vk_press(&k, 384, 232, 0, false, 50);
+    assert(k.cls == VK_EDGE && vk_move(&k, 381, 232, 50) == 0);
+    assert(vk_release(&k, 100) == VK_EV_TAP);
+}
+
+static void test_k13_inside_zone_never_arms(void)
+{
+    volknob_t k;
+    int ev = 0;
+    uint32_t t = 0;
+    vk_press(&k, px(152, 0), py(152, 0), t, false, 50);
+    ev |= vk_move(&k, px(147, 0), py(147, 0), t += 16);
+    ev |= vk_move(&k, px(152, 0), py(152, 0), t += 16);
+    for (int a = 1; a <= 30; a++) { ev |= vk_move(&k, px(152, a), py(152, a), t += 16); }
+    assert(!(ev & VK_EV_ARM) && k.state == VK_EDGE && vk_release(&k, t) == 0);
+}
+
+static void test_k14_edge_hold_with_jitter_never_long(void)
+{
+    volknob_t k;
+    int ev = 0;
+    vk_press(&k, 384, 232, 0, false, 50);
+    ev |= vk_move(&k, 381, 232, 50);
+    for (uint32_t t = 66; t <= 2000; t += 16) { ev |= vk_tick(&k, t); }
+    assert(!(ev & VK_EV_LONG) && vk_release(&k, 2000) == 0);
+}
+
+typedef struct { volknob_t k; volst_t s; arcvis_t av; uint32_t t; int ev; double deg; } glue_t;
+
+/* Mirrors ui.c knob_events: the classifier, the volume state and the arc. */
+static void glue_events(glue_t *g, int ev)
+{
+    g->ev |= ev;
+    if (ev & VK_EV_ARM) {
+        vk_rebase(&g->k, vs_knob_arm(&g->s));
+        av_arm(&g->av, g->k.v);
+    }
+    if (ev & VK_EV_VOL) {
+        vs_knob_set(&g->s, g->k.v);
+        av_set(&g->av, g->k.v);
+    }
+    if (ev & (VK_EV_COMMIT | VK_EV_CANCEL)) {
+        vs_knob_end(&g->s, (ev & VK_EV_CANCEL) != 0);
+        av_end(&g->av, g->k.v, g->t);
+    }
+}
+
+static void glue_turn(glue_t *g, int steps, double step_deg, uint32_t dt)
+{
+    for (int i = 0; i < steps; i++) {
+        g->deg += step_deg;
+        g->t += dt;
+        glue_events(g, vk_move(&g->k, px(190, g->deg), py(190, g->deg), g->t));
+    }
+}
+
+/* A host set of 20 lands between press (at 70) and arming; the knob must start from 20. */
+static void arm_after_set(int stored, const uint8_t set[2])
+{
+    glue_t g = {.t = 1000};
+    vs_load(&g.s, stored >= 0 ? VS_LOAD_FOUND : VS_LOAD_ABSENT, (uint32_t)stored);
+    av_init(&g.av);
+    vk_press(&g.k, px(190, 0), py(190, 0), g.t, false, (uint8_t)g.s.user);
+    assert(g.k.v0 == 70);
+    assert(vs_host_set(&g.s, set, 2) && g.s.user == 20);
+    glue_turn(&g, 16, 1, 16);
+    assert((g.ev & VK_EV_ARM) && g.k.v == 20 && g.k.v0 == 20 && g.av.val == 20 && g.s.base == 20);
+    glue_turn(&g, 3, 1, 16);
+    assert(g.k.v == 21 && g.s.user == 21 && g.av.val == 21);
+    g.t += 200;
+    g.deg += 90;
+    glue_events(&g, vk_move(&g.k, px(190, g.deg), py(190, g.deg), g.t));
+    assert((g.ev & VK_EV_CANCEL) && g.k.v == 20 && g.s.user == 20 && g.av.val == 20 && av_visible(&g.av, g.t));
+    avact_t a = av_frame(&g.av, g.t, 0);
+    assert((a.flags & AV_DRAW_NEW) && a.val == 20);
+}
+
+static void test_k16_arm_rebases_to_user_volume(void)
+{
+    arm_after_set(-1, (const uint8_t[]){20, VOL_MODE_SEED});
+    arm_after_set(70, (const uint8_t[]){20, VOL_MODE_PERSIST});
+}
+
+static void test_k15_centre_jitter_outward(void)
+{
+    volknob_t k;
+    assert(hypot(380 - CTR, 232 - CTR) < VOL_R_MIN_PX && hypot(383 - CTR, 232 - CTR) >= VOL_R_MIN_PX);
+    vk_press(&k, 380, 232, 0, false, 50);
+    assert(k.cls == VK_CENTRE && vk_move(&k, 383, 232, 50) == 0);
+    assert(vk_release(&k, 100) == VK_EV_TAP);
+    vk_press(&k, 380, 232, 0, false, 50);
+    assert(vk_move(&k, 383, 232, 50) == 0 && vk_tick(&k, LONG_PRESS_MS - 1) == 0 && vk_tick(&k, LONG_PRESS_MS) == VK_EV_LONG);
+}
+
 int main(void)
 {
     test_k1_edge_never_long();
@@ -207,8 +307,13 @@ int main(void)
     test_k8_no_flicker();
     test_k9_jump_cancels();
     test_k10_repeats_do_not_cancel();
-    test_k11_leaving_zone_kills();
+    test_k11_leaving_zone_never_arms();
     test_commit_and_lost();
+    test_k12_edge_tap_survives_inward_jitter();
+    test_k13_inside_zone_never_arms();
+    test_k14_edge_hold_with_jitter_never_long();
+    test_k15_centre_jitter_outward();
+    test_k16_arm_rebases_to_user_volume();
     puts("ok");
     return 0;
 }

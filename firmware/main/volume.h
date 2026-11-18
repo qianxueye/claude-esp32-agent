@@ -17,7 +17,8 @@ void volume_hello_fields(int *vol, bool *set);
 void volume_host_set(const uint8_t *payload, int len);
 /* A valid HOST_HELLO or entry to OFFLINE ends a transient override. */
 void volume_session_reset(void);
-void volume_knob_arm(void);
+/* Arms the knob; returns the user volume it armed with, read under the same lock. */
+int volume_knob_arm(void);
 void volume_knob_set(int v);
 void volume_knob_end(bool cancel);
 void volume_count_edge(void);

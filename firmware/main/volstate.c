@@ -45,11 +45,12 @@ void vs_session_reset(volst_t *s)
     s->ovr = -1;
 }
 
-void vs_knob_arm(volst_t *s)
+int vs_knob_arm(volst_t *s)
 {
     s->knob = true;
     s->ovr = -1;
     s->base = s->user;
+    return s->base;
 }
 
 void vs_knob_set(volst_t *s, int v)
