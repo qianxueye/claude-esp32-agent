@@ -37,9 +37,11 @@ static void test_timeline_from(uint32_t t0)
     o = run_to(&d, &t, t0 + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS - 1);
     assert(o.stage == DP_DIM && o.level_pct == DISP_DIM_PERCENT);
     o = run_to(&d, &t, t0 + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS);
-    assert(o.stage == DP_OFF && !o.panel_on);
+    assert(o.stage == DP_OFF && o.panel_on && o.level_pct == DISP_DIM_PERCENT);
+    o = run_to(&d, &t, t0 + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + DISP_RAMP_MS);
+    assert(o.stage == DP_OFF && !o.panel_on && o.level_pct == DISP_FLOOR_PERCENT);
     o = run_to(&d, &t, t0 + 10u * 3600u * 1000u);
-    assert(o.stage == DP_OFF);
+    assert(o.stage == DP_OFF && !o.panel_on);
 }
 
 static void test_activity_returns_active_from_every_point(void)
@@ -143,12 +145,14 @@ static void test_force(void)
     dp_init(&d, 0);
     dp_force(&d, DP_OFF);
     dp_out_t o = dp_update(&d, 16);
+    assert(o.stage == DP_OFF && o.panel_on && o.cause == DP_CAUSE_FORCE);
+    o = dp_update(&d, 16 + DISP_RAMP_MS);
     assert(o.stage == DP_OFF && !o.panel_on && o.cause == DP_CAUSE_FORCE);
     dp_force(&d, DP_DIM);
-    o = dp_update(&d, 32);
+    o = dp_update(&d, 32 + DISP_RAMP_MS);
     assert(o.stage == DP_DIM && o.panel_on);
     dp_force(&d, -1);
-    o = dp_update(&d, 48);
+    o = dp_update(&d, 48 + DISP_RAMP_MS);
     assert(o.stage == DP_ACTIVE);
 }
 
@@ -296,7 +300,7 @@ static void test_attention_brightening_cause(void)
     assert(o.stage == DP_DIM && o.cause == DP_CAUSE_STATE);
 }
 
-/* Ramp: equal-ratio, 0.3 s, both directions; a reversal continues from the current level; waking from OFF starts at the dim level. */
+/* Ramp: equal-ratio, 0.3 s, both directions; a reversal continues from the current level; waking from OFF starts at the panel minimum. */
 static void test_ramp(void)
 {
     dpower_t d;
@@ -322,10 +326,78 @@ static void test_ramp(void)
     assert(dp_update(&d, t).stage == DP_OFF);
     dp_activity(&d, t, DP_CAUSE_BUTTON);
     o = dp_update(&d, t);
-    assert(o.stage == DP_ACTIVE && o.panel_on && o.level_pct == DISP_DIM_PERCENT);
+    assert(o.stage == DP_ACTIVE && o.panel_on && o.level_pct == DISP_FLOOR_PERCENT);
     o = run_to(&d, &t, t + DISP_RAMP_MS);
     assert(o.level_pct == DISP_ACTIVE_PERCENT);
 }
+
+/* DIM to OFF fades to the panel minimum first and switches the panel off only when the fade has ended. */
+static void test_fade_out_then_off(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    const uint32_t off_at = DISP_HOLD_MS + DISP_DIM_TO_OFF_MS;
+    run_to(&d, &t, off_at - 1);
+    dp_out_t o = run_to(&d, &t, off_at);
+    assert(o.stage == DP_OFF && o.panel_on && o.level_pct == DISP_DIM_PERCENT);
+    int prev = o.level_pct;
+    while (t < off_at + DISP_RAMP_MS - 1) {
+        o = run_to(&d, &t, t + 7 < off_at + DISP_RAMP_MS - 1 ? t + 7 : off_at + DISP_RAMP_MS - 1);
+        assert(o.panel_on && o.level_pct <= prev && o.level_pct >= DISP_FLOOR_PERCENT);
+        prev = o.level_pct;
+    }
+    o = run_to(&d, &t, off_at + DISP_RAMP_MS);
+    assert(!o.panel_on && o.level_pct == DISP_FLOOR_PERCENT && o.stage == DP_OFF);
+}
+
+/* A wake during the fade-out reverses from the current level and never switches the panel off. */
+static void test_wake_during_fade_out(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    const uint32_t off_at = DISP_HOLD_MS + DISP_DIM_TO_OFF_MS;
+    run_to(&d, &t, off_at + DISP_RAMP_MS / 2);
+    dp_out_t o = dp_update(&d, t);
+    int mid = o.level_pct;
+    assert(o.panel_on && mid > DISP_FLOOR_PERCENT && mid < DISP_DIM_PERCENT);
+    dp_activity(&d, t, DP_CAUSE_TOUCH);
+    o = dp_update(&d, t);
+    assert(o.stage == DP_ACTIVE && o.panel_on && o.level_pct == mid);
+    uint32_t woke = t;
+    int prev = mid;
+    while (t < woke + DISP_RAMP_MS + 100) {
+        o = run_to(&d, &t, t + 5);
+        assert(o.panel_on && o.level_pct >= prev);
+        prev = o.level_pct;
+    }
+    assert(o.level_pct == DISP_ACTIVE_PERCENT);
+}
+
+/* A wake from OFF switches the panel on at the minimum and ramps up from there, to the dim level in an attention state. */
+static void test_wake_from_off_starts_at_floor(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + DISP_RAMP_MS + 5000);
+    assert(!dp_update(&d, t).panel_on);
+    dp_state(&d, t, DP_STATE_OFFLINE);
+    dp_state(&d, t, DP_STATE_IDLE);
+    dp_force(&d, -1);
+    dp_activity(&d, t, DP_CAUSE_MOTION);
+    dp_out_t o = dp_update(&d, t);
+    assert(o.panel_on && o.level_pct == DISP_FLOOR_PERCENT && o.stage == DP_ACTIVE);
+    int prev = o.level_pct;
+    while (t < DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + DISP_RAMP_MS + 5000 + DISP_RAMP_MS) {
+        o = run_to(&d, &t, t + 5);
+        assert(o.level_pct >= prev);
+        prev = o.level_pct;
+    }
+    assert(o.level_pct == DISP_ACTIVE_PERCENT);
+}
+
 
 /* DIM lasts 30 minutes: DIM at hold + 1799 s, OFF at hold + 1800 s, also after the quick set-down. */
 static void test_dim_to_off(void)
@@ -393,6 +465,9 @@ int main(void)
     test_force();
     test_orbit();
     test_ramp();
+    test_fade_out_then_off();
+    test_wake_during_fade_out();
+    test_wake_from_off_starts_at_floor();
     test_dim_to_off();
     test_touch_gate();
     test_setdown();

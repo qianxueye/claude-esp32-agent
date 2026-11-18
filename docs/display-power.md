@@ -10,11 +10,12 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 |---|---|---|
 | ACTIVE | `DISP_ACTIVE_PERCENT` (100 %) | any activity |
 | DIM | `DISP_DIM_PERCENT` (10 %) | `DISP_HOLD_MS` after the last activity |
-| OFF | display-off command | `DISP_DIM_TO_OFF_MS` (30 min) after DIM begins |
+| OFF | fade to `DISP_FLOOR_PERCENT` (1 %), then display-off | `DISP_DIM_TO_OFF_MS` (30 min) after DIM begins |
 
-- Levels are percent of register 0x51. The level moves between the two values in equal-ratio steps of integer percent over `DISP_RAMP_MS`, in both directions, updated every UI tick: `from·(to/from)^(elapsed/DISP_RAMP_MS)`. A reversal continues from the current level. Panel brightness is one scalar for every pixel, so the pixel-true rule in `mascot.md` is unaffected.
+- Levels are percent of register 0x51. The level moves between its values in equal-ratio steps of integer percent over `DISP_RAMP_MS`, in both directions, updated every UI tick: `from·(to/from)^(elapsed/DISP_RAMP_MS)`. A reversal continues from the current level. Panel brightness is one scalar for every pixel, so the pixel-true rule in `mascot.md` is unaffected.
 - OFF uses `esp_lcd_panel_disp_on_off`. It keeps frame memory, wakes with one command, and rendering continues so the first frame after waking is current. `disp_sleep` is not used: it resets the panel and costs about 1.4 s and a flash.
-- Waking from OFF sets the dim level first, switches the panel on, then ramps up.
+- DIM to OFF: the level ramps from the dim level to `DISP_FLOOR_PERCENT` over `DISP_RAMP_MS` with the same ramp, and only then is display-off sent. The stage reads OFF from the start of the fade; the panel stays on until it ends. A wake during the fade reverses from the current level and never sends display-off.
+- Waking from OFF sets the floor level, switches the panel on, then ramps up to the target; it does not start at the dim level.
 
 | Constant | Class | Meaning |
 |---|---|---|
@@ -23,6 +24,7 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 | `DISP_DIM_TO_OFF_MS` | C | DIM time before OFF |
 | `DISP_ATTN_CAP_MS` | C | ACTIVE limit in one unchanged non-IDLE state |
 | `DISP_SETDOWN_HOLD_MS` | C | ACTIVE time left after a set-down REST |
+| `DISP_FLOOR_PERCENT` | C | panel minimum: end of the fade before OFF and start of a wake from OFF |
 | `DISP_RAMP_MS` | C | brightness ramp time |
 | `ORBIT_*` | C | lattice size, pitch, origin and dwell |
 
@@ -94,6 +96,7 @@ Every REST that ends a LIFTED spell (event `MOTION_EV_SETDOWN`) while the device
 Logged inputs, so that ordinary use produces data:
 
 - `motion: ev=rest ... spread=<mg> from=<LIFTED|MOVING>`: the largest deviation of the 100 ms means from their running mean in the second half of the settle window, and the state the REST left;
-- `disp: stage=DIM ... hold=<ms>`: the hold that applied (`DISP_SETDOWN_HOLD_MS` or `DISP_HOLD_MS`).
+- `disp: stage=DIM ... hold=<ms>`: the hold that applied (`DISP_SETDOWN_HOLD_MS` or `DISP_HOLD_MS`);
+- `disp: panel=off|on level=<pct>`: the panel switch, with the level at that moment (1 at both ends).
 
 A future in-hand classifier must be designed from logged set-down and in-hand spreads, not from assumed noise figures.

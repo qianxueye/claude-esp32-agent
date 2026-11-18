@@ -116,16 +116,18 @@ dp_out_t dp_update(dpower_t *d, uint32_t now)
     saturate_age(&d->last_act, now);
     saturate_age(&d->last_lift, now);
     saturate_age(&d->state_since, now);
+    saturate_age(&d->ramp_t0, now);
     dp_stage_t st = d->force >= 0 ? (dp_stage_t)d->force : pick_stage(d, now);
-    int want = st == DP_ACTIVE ? DISP_ACTIVE_PERCENT : DISP_DIM_PERCENT;
+    int want = st == DP_ACTIVE ? DISP_ACTIVE_PERCENT : (st == DP_DIM ? DISP_DIM_PERCENT : DISP_FLOOR_PERCENT);
     if (want != d->ramp_to) {
         d->ramp_from = d->level;
         d->ramp_to = want;
         d->ramp_t0 = now;
     }
     d->level = ramp_level(d->ramp_from, d->ramp_to, since(now, d->ramp_t0));
+    bool faded = st == DP_OFF && since(now, d->ramp_t0) >= DISP_RAMP_MS;
     dp_cause_t cause = d->force >= 0 ? DP_CAUSE_FORCE : (st == DP_ACTIVE ? d->cause : (is_attention(d->state) ? DP_CAUSE_STATE : DP_CAUSE_TIMER));
-    return (dp_out_t){.stage = st, .level_pct = d->level, .panel_on = st != DP_OFF, .cause = cause, .hold_ms = d->quick ? DISP_SETDOWN_HOLD_MS : DISP_HOLD_MS};
+    return (dp_out_t){.stage = st, .level_pct = d->level, .panel_on = !faded, .cause = cause, .hold_ms = d->quick ? DISP_SETDOWN_HOLD_MS : DISP_HOLD_MS};
 }
 
 void dp_orbit(int index, int *x_px, int *y_px)

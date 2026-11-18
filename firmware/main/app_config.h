@@ -119,6 +119,7 @@
 #define DISP_DIM_TO_OFF_MS 1800000 /* plain configuration: DIM time before the panel turns off */
 #define DISP_SETDOWN_HOLD_MS 1000 /* plain configuration: ACTIVE time left after a rest ends a pickup; the rest itself needs 2 s of stillness */
 #define DISP_ATTN_CAP_MS 120000 /* plain configuration: ACTIVE limit in one unchanged non-IDLE state */
+#define DISP_FLOOR_PERCENT 1 /* plain configuration: panel minimum; the fade before display-off ends here and a wake starts here */
 #define DISP_RAMP_MS 300 /* plain configuration: equal-ratio brightness ramp between the two levels, both directions */
 #define ORBIT_DWELL_MS 60000 /* plain configuration */
 #define ORBIT_PITCH_PX 4 /* plain configuration: lattice pitch, one font design pixel */
