@@ -574,10 +574,13 @@ static void knob_events(int ev, uint32_t now)
     }
 }
 
+static const char *const CLS[] = {"idle", "dead", "centre", "edge", "armed", "swipe", "bright"};
+static const char *const WHY[] = {"none", "dark", "moved", "zone", "jump", "lateral", "slow"};
+_Static_assert(sizeof(CLS) / sizeof(CLS[0]) == VK_STATE_N, "CLS is indexed by the classifier states");
+_Static_assert(sizeof(WHY) / sizeof(WHY[0]) == VK_WHY_N, "WHY is indexed by the classifier drop reasons");
+
 static void log_knob_end(uint32_t now)
 {
-    static const char *const CLS[] = {"idle", "dead", "centre", "edge", "armed"};
-    static const char *const WHY[] = {"none", "dark", "moved", "zone", "jump"};
     ESP_LOGI(TAG, "knob: end cls=%s armed=%d why=%s v0=%d v=%d travel=%.0f disp=%.0f x0=%d y0=%d r=%.0f dur=%u", CLS[s_vk.cls], s_vk.armed_ever,
              WHY[s_vk.why], s_vk.v0, s_vk.v, s_vk.travel, s_vk.max_disp, s_vk.x0, s_vk.y0, s_vk.r0, (unsigned)(now - s_vk.t0));
 }

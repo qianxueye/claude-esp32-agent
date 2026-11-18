@@ -27,16 +27,37 @@ void vk_init(volknob_t *k)
 int vk_press(volknob_t *k, int x, int y, uint32_t t_ms, bool dark, uint8_t user_vol)
 {
     vk_init(k);
-    k->x0 = k->lx = x;
-    k->y0 = k->ly = y;
-    k->t0 = k->last_t = t_ms;
-    k->r0 = k->rmin = k->rmax = radius_of(x, y);
+    k->x0 = k->lx = k->qx = x;
+    k->y0 = k->ly = k->qy = y;
+    k->t0 = k->last_t = k->q_t = t_ms;
+    k->r0 = k->rmin = k->rmax = k->r1 = radius_of(x, y);
+    k->ux = 0;
+    k->uy = -1;
+    k->arm_ms = -1;
     k->theta_last = angle_of(x, y);
     k->v = k->v0 = user_vol;
     k->state = dark ? VK_DEAD : k->r0 >= VOL_R_MIN_PX ? VK_EDGE : VK_CENTRE;
     k->cls = k->state;
     k->why = dark ? VK_WHY_DARK : VK_WHY_NONE;
     return 0;
+}
+
+void vk_swipe_frame(volknob_t *k, float ui_deg)
+{
+    static const double UX[4] = {0, 1, 0, -1}, UY[4] = {-1, 0, 1, 0};
+    if (k->latched) {
+        return;
+    }
+    long tenths = lround(ui_deg * 10.0);
+    k->quad = (int)(((lround(ui_deg / 90.0) % 4) + 4) % 4);
+    if (tenths % 900 == 0) {
+        k->ux = UX[k->quad];
+        k->uy = UY[k->quad];
+        return;
+    }
+    double a = ui_deg * PI_D / 180.0;
+    k->ux = sin(a);
+    k->uy = -cos(a);
 }
 
 static int clamp_v(int v)
@@ -50,6 +71,74 @@ static void kill(volknob_t *k, int why)
     k->why = why;
 }
 
+/* One brightness ladder step per sample travel quantum; edges saturate and count the push. */
+static int brt_step(volknob_t *k)
+{
+    const double pitch = (double)BRT_TRAVEL_PX / BRT_STEPS;
+    double d = BRT_UP_SIGN * (k->up - k->up_last);
+    k->up_last = k->up;
+    int dir = d > 0 ? 1 : d < 0 ? -1 : 0;
+    if (dir != 0 && k->dir != 0 && dir != k->dir) {
+        k->rev++;
+    }
+    k->dir = dir != 0 ? dir : k->dir;
+    k->bacc += d;
+    int n = (int)(fabs(k->bacc) / pitch);
+    n = k->bacc < 0 ? -n : n;
+    k->bacc -= n * pitch;
+    int nb = k->bi + n;
+    if (nb > BRT_STEPS || (nb == BRT_STEPS && k->bacc > 0)) {
+        k->push += nb - BRT_STEPS + k->bacc / pitch;
+        nb = BRT_STEPS;
+        k->bacc = 0;
+    } else if (nb < 0 || (nb == 0 && k->bacc < 0)) {
+        k->push += -nb - k->bacc / pitch;
+        nb = 0;
+        k->bacc = 0;
+    } else if (dir != 0) {
+        k->push = 0;
+    }
+    if (nb != 0 && nb != BRT_STEPS) {
+        k->bumped = false;
+    }
+    int ev = nb != k->bi ? VK_EV_BRT : 0;
+    k->bi = nb;
+    if (k->push >= 1.0 && !k->bumped) {
+        k->bumped = true;
+        ev |= VK_EV_BRT_STOP;
+    }
+    return ev;
+}
+
+/* Arming rule of a centre slide, then the ladder while armed; rules in docs/display-power.md "User brightness". */
+static int swipe_move(volknob_t *k, bool jump, double lat, uint32_t t_ms)
+{
+    if (k->state == VK_BRIGHT) {
+        if (jump) {
+            k->bi = k->bi0;
+            kill(k, VK_WHY_JUMP);
+            return VK_EV_BRT_CANCEL;
+        }
+        return brt_step(k);
+    }
+    if (jump) {
+        kill(k, VK_WHY_JUMP);
+    } else if (fabs(lat) > BRT_LAT_PX) {
+        kill(k, VK_WHY_LATERAL);
+    } else if (t_ms - k->t_moved > BRT_ARM_MAX_MS) {
+        kill(k, VK_WHY_SLOW);
+    } else if (fabs(k->up) >= BRT_ARM_PX) {
+        k->state = VK_BRIGHT;
+        k->bright_ever = true;
+        k->bacc = 0;
+        k->up_last = k->up;
+        k->arm_ms = (int)(t_ms - k->t_moved);
+        k->bi = k->bi0;
+        return VK_EV_BRT_ARM;
+    }
+    return 0;
+}
+
 int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
 {
     if (k->state == VK_IDLE || (x == k->lx && y == k->ly)) {
@@ -57,15 +146,36 @@ int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
     }
     k->lx = x;
     k->ly = y;
+    k->latched = true;
     double disp = hypot(x - k->x0, y - k->y0), r = radius_of(x, y);
     k->max_disp = disp > k->max_disp ? disp : k->max_disp;
     k->rmin = r < k->rmin ? r : k->rmin;
     k->rmax = r > k->rmax ? r : k->rmax;
+    k->r1 = r;
+    double lat = (x - k->x0) * -k->uy + (y - k->y0) * k->ux;
+    k->up = (x - k->x0) * k->ux + (y - k->y0) * k->uy;
+    k->up_peak = fabs(k->up) > k->up_peak ? fabs(k->up) : k->up_peak;
+    k->lat_peak = fabs(lat) > k->lat_peak ? fabs(lat) : k->lat_peak;
+    uint32_t qdt = t_ms - k->q_t;
+    qdt = qdt > VOL_JUMP_DT_CAP_MS ? VOL_JUMP_DT_CAP_MS : qdt;
+    bool jump = hypot(x - k->qx, y - k->qy) > BRT_JUMP_MIN_PX + BRT_V_MAX_PX_S * qdt / 1000.0;
+    k->qx = x;
+    k->qy = y;
+    k->q_t = t_ms;
     if (disp > TOUCH_SLOP_PX) {
         k->moved = true;
     }
     if (k->state == VK_CENTRE && k->moved) {
-        kill(k, VK_WHY_MOVED);
+        if (k->long_sent) {
+            kill(k, VK_WHY_MOVED);
+        } else {
+            k->state = VK_SWIPE;
+            k->slid = true;
+            k->t_moved = t_ms;
+        }
+    }
+    if (k->state == VK_SWIPE || k->state == VK_BRIGHT) {
+        return swipe_move(k, jump, lat, t_ms);
     }
     if (k->state != VK_EDGE && k->state != VK_ARMED) {
         return 0;
@@ -131,6 +241,11 @@ void vk_rebase(volknob_t *k, int v)
     k->v = k->v0 = v;
 }
 
+void vk_swipe_rebase(volknob_t *k, int index)
+{
+    k->bi = k->bi0 = index;
+}
+
 int vk_tick(volknob_t *k, uint32_t t_ms)
 {
     if (k->state == VK_CENTRE && !k->moved && !k->long_sent && t_ms - k->t0 >= LONG_PRESS_MS) {
@@ -145,6 +260,8 @@ static int end_touch(volknob_t *k, uint32_t t_ms, bool tap_ok)
     int ev = 0;
     if (k->state == VK_ARMED) {
         ev = VK_EV_COMMIT;
+    } else if (k->state == VK_BRIGHT) {
+        ev = VK_EV_BRT_COMMIT;
     } else if ((k->state == VK_CENTRE || k->state == VK_EDGE) && tap_ok && !k->moved && !k->long_sent &&
                t_ms - k->t0 < TAP_MAX_MS) {
         ev = VK_EV_TAP;

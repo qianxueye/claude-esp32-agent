@@ -72,6 +72,21 @@
 #define VOL_NVS_NAMESPACE "clawd"
 #define VOL_NVS_KEY "vol"
 
+/* Brightness swipe (docs/display-power.md "User brightness"); values marked placeholder are fitted from the logged swipe lines */
+#ifndef BRT_MIN_PERCENT
+#define BRT_MIN_PERCENT 20 /* plain configuration: lowest user level; dpower.c asserts at least twice DISP_DIM_PERCENT */
+#endif
+#define BRT_STEPS 32 /* mathematical model: equal-ratio steps from BRT_MIN_PERCENT to 100, the finest that integer percent keeps distinct */
+#define BRT_TRAVEL_PX 240 /* plain configuration, placeholder: travel along the UI's up direction for the whole range */
+#define BRT_ARM_PX 48 /* mathematical model, placeholder: travel along the UI's up direction before the level responds */
+#define BRT_LAT_PX 24 /* mathematical model, placeholder: sideways travel that drops a swipe before it arms */
+#define BRT_ARM_MAX_MS 500 /* mathematical model, placeholder: time from leaving the slop to arming */
+#define BRT_JUMP_MIN_PX 32 /* mathematical model, placeholder: base of the per-sample distance limit */
+#define BRT_V_MAX_PX_S 2400 /* mathematical model, placeholder: fastest plausible finger */
+#define BRT_UP_SIGN 1 /* plain configuration: +1 when travel toward the top of the drawn UI raises the level */
+#define BRT_BOUNCE_STEPS 2 /* plain configuration: ladder steps the panel dips when a swipe pushes past an end; 0 turns it off */
+#define BRT_NVS_KEY "brt" /* plain configuration: NVS key in VOL_NVS_NAMESPACE */
+
 /* Selftest */
 #define SELFTEST_BEFORE_MS 400
 #define SELFTEST_TONE_HZ 1000
@@ -142,7 +157,7 @@
 #define SPEAK_CLAW_LEVEL_MIN 120
 
 /* Display power (docs/display-power.md) */
-#define DISP_ACTIVE_PERCENT 100 /* plain configuration */
+#define DISP_ACTIVE_PERCENT 100 /* plain configuration: the ACTIVE level until the user sets one; also the maximum */
 #define DISP_DIM_PERCENT 10 /* plain configuration */
 #define DISP_HOLD_MS 20000 /* plain configuration: ACTIVE time after the last activity */
 #define DISP_DIM_TO_OFF_MS 1800000 /* plain configuration: DIM time before the panel turns off */
