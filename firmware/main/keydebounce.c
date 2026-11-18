@@ -27,3 +27,8 @@ bool keydeb_poll(keydeb_t *k, bool pressed, int polls)
     }
     return false;
 }
+
+bool keydeb_poll_read(keydeb_t *k, bool read_ok, bool pressed, int polls)
+{
+    return read_ok && keydeb_poll(k, pressed, polls);
+}
