@@ -55,12 +55,21 @@ A pixel-style bubble above the mascot shows the state. IDLE shows no bubble.
 - Colours: bubble fill `#F4F3EE`, outline and text `#141413`; error text `#D14343`; OFFLINE fill `#8A877F`. Mascot `#D97757` as above.
 - Bubble and mascot together stay inside the 466 circle; the mascot shifts down to make room.
 
+## Volume arc
+
+- Shown while the volume knob is armed and for `VOL_ARC_LINGER_MS` after it ends, then cleared in one frame. After a cancel it shows the restored value. A knob that arms during the linger takes the arc over without a clear frame.
+- Band: pixels whose centre lies between `VOL_ARC_R_IN_PX` (222) and `VOL_ARC_R_OUT_PX` (230) from the centre, written into the rotated output buffer. The inner radius stays above the listening ring's outermost rewritten radius (221) and the outer one below the glass edge (233). If the outer edge is cut off at the glass, setting `VOL_ARC_R_OUT_PX` back to 225 is the only change needed.
+- Shape: 270° sweep with the gap at gravity-bottom, starting at the lower left. A pixel is fill when its threshold (1 to 100, one per 2.7°) is at or below the volume, else track. Fill `#F4F3EE`, track `#8A877F`; at 0 % the first three thresholds show in `#D14343`. Hard edges only, no anti-aliasing.
+- The arc follows the quadrant target, not the ease: when the quadrant changes it is cleared and drawn once at the new position, also during the linger.
+- Invalidation: the arc is invalidated as one area per 10 thresholds (at most 10 for the whole arc, one for a 1 % step). LVGL keeps 32 areas per frame before repainting the screen, so a frame in which the arc invalidates more than one area skips the listening-ring update; the ring catches up in the next frame.
+- `VOL_ARC_*` values are plain configuration; the table is built at start-up into PSRAM.
+
 ## Screen orientation
 
 The QMI8658 IMU keeps the mascot and bubble upright relative to gravity at any angle. The screen is round, so every angle fits.
 
-- Angle: `atan2` of gravity in the screen plane, from the accelerometer at 50 Hz with a low-pass filter. The whole UI (mascot, bubble, ring) rotates as one group around the screen centre. Taps are accepted anywhere, so touch needs no remapping.
-- All content stays within 225 px of the centre, so no angle pushes it off the screen.
+- Angle: `atan2` of gravity in the screen plane, from the accelerometer at 50 Hz with a low-pass filter. The whole UI (mascot, bubble, ring) rotates as one group around the screen centre. Touch points are read in the panel frame and the UI angle is never subtracted, so clockwise on the glass is clockwise at every orientation. A LONG_PRESS must start within 150 px of the centre; a touch starting beyond that is an edge touch (see `protocol.md`, Input).
+- All scene content stays within 225 px of the centre, so no angle pushes it off the screen. The volume arc (radius 222 to 230 px) is drawn in panel coordinates and is exempt.
 - Ignore changes smaller than 3°, and ease towards the new angle with a 150 ms time constant, so a hand-held board does not jitter.
 - Within 5° of 0°, 90°, 180° or 270°, snap to that angle: there the block edges line up with the panel's square pixel grid and stay perfectly sharp. At other angles each block edge gets a one-pixel anti-aliased border.
 - Flat on a desk (in-plane gravity below 0.5 g): keep the last angle.

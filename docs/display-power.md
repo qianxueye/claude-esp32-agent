@@ -37,7 +37,7 @@ Activity restarts the hold and returns the stage to ACTIVE at once. Sources:
 - a change into or out of LISTENING, THINKING, SPEAKING or ERROR;
 - boot.
 
-A touch that begins while the stage is DIM or OFF only wakes the screen: it sends no TAP on release and no LONG_PRESS at 1500 ms. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`); a tap after the wake is sent as usual. The BOOT and PWR keys are always sent.
+A touch that begins while the stage is DIM or OFF only wakes the screen: it sends no TAP on release, no LONG_PRESS at 1500 ms and no volume change however far it moves. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`); a tap after the wake is sent as usual. The BOOT and PWR keys are always sent.
 
 Not activity: PING and other host frames, a SET_STATE that repeats the current state, any change with OFFLINE at either end (including the OFFLINE to IDLE resume), and playback outside SPEAKING. A sleeping host would otherwise keep the screen lit overnight.
 

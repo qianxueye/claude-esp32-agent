@@ -1,4 +1,4 @@
-# Device ↔ host wire protocol (version 2)
+# Device ↔ host wire protocol (version 3)
 
 Single source of truth for `firmware/` and `host/`. Change both sides and this file together. Both sides refuse a peer whose `proto` differs from theirs.
 
@@ -63,11 +63,12 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 
 | Type   | Name            | Payload |
 |--------|-----------------|---------|
-| `0x01` | HELLO           | JSON `{"proto":2,"fw":"<version>","rate":16000,"reason":"boot"|"reply"|"resume","link":"usb"|"wifi","paired":true|false}`. |
+| `0x01` | HELLO           | JSON `{"proto":3,"fw":"<version>","rate":16000,"reason":"boot"|"reply"|"resume","link":"usb"|"wifi","paired":true|false,"vol":0-100,"vol_set":true|false}`. `vol` is the user volume; `vol_set` says a user volume exists (from storage, the knob, or a persist or seed SET_VOLUME). |
 | `0x02` | LOG             | UTF-8 log line. |
 | `0x10` | MIC_AUDIO       | 640 bytes of PCM (20 ms). Sent only while the state is LISTENING. |
 | `0x20` | INPUT           | `u8` code: `1` TAP, `2` LONG_PRESS, `3` BOOT_BUTTON (BOOT or PWR key). |
 | `0x21` | SPK_STATUS      | `u32` bytes queued, `u8` flags (bit0 playing, bit1 drained after SPK_END), `u32` consumed total. |
+| `0x22` | VOLUME          | `u8` user volume. Sent when a knob release changed it and after a persist or applied seed SET_VOLUME. Best effort; HELLO resynchronises. Never sent during a drag or for a transient set. |
 | `0x30` | PONG            | `u32` nonce copied from PING. |
 | `0x31` | SELFTEST_RESULT | JSON, see SELFTEST. |
 | `0x32` | SNAP_BEGIN      | JSON `{"w":466,"h":466,"fmt":"RGB565"}` (RGB565 little-endian, row-major). |
@@ -81,9 +82,9 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 
 | Type   | Name       | Payload |
 |--------|------------|---------|
-| `0x81` | HOST_HELLO | JSON `{"proto":2}`. |
+| `0x81` | HOST_HELLO | JSON `{"proto":3}`. |
 | `0x82` | SET_STATE  | `u8` state (table below). |
-| `0x83` | SET_VOLUME | `u8` 0–100. |
+| `0x83` | SET_VOLUME | `u8` volume (values above 100 are clamped to 100), then an optional `u8` mode: `0` transient (also when absent), `1` persist, `2` seed. Other modes and other lengths are ignored, as is any set while the knob is armed. See Volume. |
 | `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. |
 | `0x85` | FORGET     | USB only. Empty. Erase Wi-Fi credentials, PSK and relay addresses; disconnect Wi-Fi; then send FORGET_RESULT. |
 | `0x90` | SPK_AUDIO  | PCM, ≤ 4096 bytes, even length. Appended to the playback queue. |
@@ -92,13 +93,13 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0xA0` | PING       | `u32` nonce. |
 | `0xA2` | SELFTEST   | Empty. Device plays a 1 kHz tone for 1 s while recording, then sends SELFTEST_RESULT `{"mic_rms_before":…,"mic_rms_during":…,"spk_bytes_played":…}`. |
 | `0xA3` | SNAPSHOT   | Empty. Device sends SNAP_BEGIN, SNAP_DATA…, SNAP_END with the current LVGL screen. |
-| `0xF0` | DEBUG      | Test tools only; the relay never sends it. JSON `{"angle_override":<degrees>|null}` fixes the UI rotation angle (null returns control to the IMU). Other keys: `imu_dump` seconds (logs the raw accelerometer counts, five samples per line as `imu_dump i=<first index> x,y,z;…`, then `imu_dump done n=<count>`; `devctl imu-dump` rejects a trace whose indices have a gap), `bench` (frame-rate test mode), `disp_scale` N (display power timeline N times faster), `disp_force` 0 active / 1 dim / 2 off / null, `orbit` lattice index / null, `fill` grey 0–255 / null. Payload at most 127 bytes (the device keeps 128 bytes for the text and its terminator). See `display-power.md`. |
+| `0xF0` | DEBUG      | Test tools only; the relay never sends it. JSON `{"angle_override":<degrees>|null}` fixes the UI rotation angle (null returns control to the IMU). Other keys: `imu_dump` seconds (logs the raw accelerometer counts, five samples per line as `imu_dump i=<first index> x,y,z;…`, then `imu_dump done n=<count>`; `devctl imu-dump` rejects a trace whose indices have a gap), `bench` (frame-rate test mode), `disp_scale` N (display power timeline N times faster), `disp_force` 0 active / 1 dim / 2 off / null, `orbit` lattice index / null, `fill` grey 0–255 / null, `arc` 0–100 / null (shows the volume arc at that level without changing the volume). Payload at most 127 bytes (the device keeps 128 bytes for the text and its terminator). See `display-power.md`. |
 
 ## Handshake
 
 - The host sends HOST_HELLO only when it opens a link. Opening the USB port resets the board and loses what was sent before the reset, so on USB the host repeats HOST_HELLO every 1000 ms until the first HELLO arrives, and sends it once more after the first HELLO with `reason` `boot` that follows the open.
 - The device sends HELLO at boot (`reason` `boot`), when it leaves OFFLINE (`resume`) and in reply to HOST_HELLO (`reply`).
-- On any HELLO the host sends SET_STATE with its current state and SET_VOLUME. Apart from the USB case above, it never answers HELLO with HOST_HELLO. On `boot` it also resets its speaker byte counter.
+- On any HELLO the host sends SET_STATE with its current state, and SET_VOLUME with mode `2` (seed) only when the HELLO has `vol_set` false. Apart from the USB case above, it never answers HELLO with HOST_HELLO. On `boot` it also resets its speaker byte counter.
 
 ## States
 
@@ -115,9 +116,21 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 
 ## Input
 
-- TAP: touch released within 600 ms anywhere on the screen. A touch that began while the screen was dim or off only wakes it and sends no TAP or LONG_PRESS.
-- LONG_PRESS: touch held for 1500 ms; sent once when the threshold is reached.
+- A touch is classified when it starts: on a dark screen it is dead; starting 150 px or more from the centre it is an edge touch; otherwise a centre touch. A touch that moves more than 13 px is neither a TAP nor a LONG_PRESS.
+- TAP: touch released within 600 ms, anywhere on the screen, without moving more than 13 px. A touch that began while the screen was dim or off only wakes it and sends no TAP, LONG_PRESS or volume change.
+- LONG_PRESS: a centre touch held for 1500 ms; sent once when the threshold is reached. An edge touch never sends it.
+- The volume knob sends no INPUT.
 - BOOT_BUTTON: the BOOT key (GPIO0) or the PWR key (IO expander pin 4) pressed; both send the same code.
+
+## Volume
+
+- The device owns the user volume and keeps it in non-volatile storage (namespace `clawd`, key `vol`). Without a stored value it uses 70 and reports `vol_set` false.
+- Knob: an edge touch arms after 15° of net travel along the edge; the first 15° never change the volume. Then 270° of travel is 0–100, clockwise raises, in 1 % steps; the ends saturate and do not wrap. A touch that jumps farther than the plausible finger speed cancels the knob and restores the volume it armed with. Before arming, leaving radius 150 px ends the gesture; after arming, samples inside radius 100 px are skipped.
+- A transient SET_VOLUME changes the codec only. It ends, restoring the user volume, at the next valid HOST_HELLO, on entering OFFLINE, at reboot, when the knob arms, and at a persist set. A tool that needs it to last keeps its link alive.
+- A persist set becomes the user volume, is stored and reported by VOLUME. A seed does the same only when `vol_set` is false and is otherwise ignored, so repeated HELLOs do not repeat it.
+- Writes: only a knob release or a persist or applied seed set marks the volume for writing; the write waits until the amplifier is off and the state is not LISTENING, and at least 5 s after the previous write. A reset before the write loses that change.
+- Storage: if the partition is full or from a newer version, it is erased once and reinitialised, which also removes anything else kept there; any other storage error leaves the volume in RAM for that boot, with `vol_set` true after a knob or persist set.
+- The relay keeps the last `vol` or VOLUME value in memory only.
 
 ## Playback and flow control
 
@@ -134,4 +147,4 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 - The device enters OFFLINE when no valid frame has arrived on the active link for 5000 ms.
 - In OFFLINE, the first valid host frame other than SNAPSHOT ends OFFLINE (to IDLE) and makes the device send HELLO with `reason` `resume`. SNAPSHOT leaves OFFLINE in place so it can be captured.
 
-All numbers in this file are plain configuration constants of protocol version 2.
+All numbers in this file are plain configuration constants of protocol version 3.
