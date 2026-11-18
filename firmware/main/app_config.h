@@ -116,14 +116,10 @@
 #define DISP_ACTIVE_PERCENT 100 /* plain configuration */
 #define DISP_DIM_PERCENT 10 /* plain configuration */
 #define DISP_HOLD_MS 20000 /* plain configuration: ACTIVE time after the last activity */
-#define DISP_DIM_TO_OFF_MS 300000 /* plain configuration: DIM time before the panel turns off */
+#define DISP_DIM_TO_OFF_MS 1800000 /* plain configuration: DIM time before the panel turns off */
 #define DISP_SETDOWN_HOLD_MS 3000 /* plain configuration: ACTIVE time left after a desk rest ends a pickup */
 #define DISP_ATTN_CAP_MS 120000 /* plain configuration: ACTIVE limit in one unchanged non-IDLE state */
-#define DISP_RAMP_STEPS 4 /* plain configuration: equal-ratio brightness steps from ACTIVE down to DIM */
-#define DISP_RAMP_STEP_MS 80 /* plain configuration */
-#define DISP_STORM_BUDGET_MS 300000 /* mathematical model: ACTIVE time from IMU-only wakes per period */
-#define DISP_STORM_PERIOD_MS 3600000 /* mathematical model: sliding window the budget applies to */
-#define DISP_STORM_BINS 60 /* plain configuration: resolution of that window */
+#define DISP_RAMP_MS 300 /* plain configuration: equal-ratio brightness ramp between the two levels, both directions */
 #define ORBIT_DWELL_MS 60000 /* plain configuration */
 #define ORBIT_PITCH_PX 4 /* plain configuration: lattice pitch, one font design pixel */
 #define ORBIT_COLS 6 /* plain configuration */
@@ -168,11 +164,10 @@
 #define MOTION_THETA_PICKUP_G 0.174f /* mathematical model: 10 degrees of tilt */
 #define MOTION_N_PICKUP 25 /* mathematical model: samples above THETA_PICKUP before LIFTED */
 #define MOTION_TAU_REF_MS 20000 /* mathematical model: rest anchor follows the mean with this time constant */
-#define MOTION_SMALL_WAKE_ENABLED 0 /* plain configuration: small-motion wake stays off until its thresholds are fitted to recorded traces */
 #define MOTION_NOISE_BLOCKS 64 /* mathematical model: blocks in the estimate; 64 give sigma within 5 % in about 90 % of windows */
 #define MOTION_NOISE_MEANS 10 /* mathematical model: 100 ms means per 1 s block */
 #define MOTION_NOISE_RANK (MOTION_NOISE_BLOCKS / 4) /* mathematical model: lower quartile, 1-based rank */
-#define MOTION_NOISE_K 4.44f /* mathematical model: one false wake per 30 days at two independent 100 ms looks */
+#define MOTION_NOISE_K 4.44f /* mathematical model: desk-test floor in noise sigmas; one false exceedance per 30 days at two independent 100 ms looks */
 #define MOTION_NOISE_C 0.760f /* mathematical model: lower-quartile-to-variance factor of the block estimator */
 #define MOTION_PA_TAIL_MS 200 /* mathematical model: window + sensor filter settling + amplifier settle after the amplifier stops */
 

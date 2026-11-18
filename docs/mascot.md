@@ -36,7 +36,7 @@ Colour `#D97757` on pure black. The display is a round 466×466 AMOLED; the whol
 | ERROR | Eyes become crosses for a moment. |
 | OFFLINE | Dimmed, eyes closed (one-row lines), slow breathing. |
 
-Motion stays pixel-true: parts move in whole cells (or whole screen-pixel steps that keep cell edges sharp); no blur, fades or anti-aliased scaling of the mascot.
+Motion stays pixel-true: parts move in whole cells (or whole screen-pixel steps that keep cell edges sharp); no blur, fades or anti-aliased scaling of the mascot. The exception is the panel brightness ramp (`display-power.md`): it scales every pixel alike, so it is not a fade of the mascot and no edge changes.
 
 ## Status bubble
 

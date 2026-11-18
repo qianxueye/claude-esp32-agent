@@ -100,9 +100,10 @@ static volatile uint32_t s_wake_bits;
 static volatile bool s_panel_on = true;
 static int s_applied_level = DISP_ACTIVE_PERCENT, s_time_scale = 1, s_orbit_force = -1, s_fill = -1;
 static dp_stage_t s_logged_stage = DP_ACTIVE;
+static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
-static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "small", "setdown", "motion_budget"};
+static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown"};
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -546,13 +547,14 @@ static void touch_cb(lv_event_t *e)
 {
     switch (lv_event_get_code(e)) {
     case LV_EVENT_PRESSED:
+        dp_touch_press(&s_touch, s_logged_stage);
         dp_activity(&s_dp, dp_clock(), DP_CAUSE_TOUCH);
         s_pressed = true;
         s_long_sent = false;
         s_press_tick = lv_tick_get();
         break;
     case LV_EVENT_RELEASED:
-        if (s_pressed && !s_long_sent && lv_tick_elaps(s_press_tick) < TAP_MAX_MS) {
+        if (s_pressed && !s_long_sent && dp_touch_sends(&s_touch) && lv_tick_elaps(s_press_tick) < TAP_MAX_MS) {
             send_input(1);
         }
         s_pressed = false;
@@ -682,7 +684,9 @@ static void tick_cb(lv_timer_t *t)
     s_last_tick = now;
     if (s_pressed && !s_long_sent && lv_tick_elaps(s_press_tick) >= LONG_PRESS_MS) {
         s_long_sent = true;
-        send_input(2);
+        if (dp_touch_sends(&s_touch)) {
+            send_input(2);
+        }
     }
     if (s_pop != s_pop_target && now - s_pop_at >= BUBBLE_POP_STEP_MS) {
         s_pop += s_pop < s_pop_target ? 1 : -1;

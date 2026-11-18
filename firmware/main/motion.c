@@ -6,7 +6,7 @@ _Static_assert(MOTION_WINDOW_SAMPLES == 5, "motion_t.buf is sized for this windo
 
 motion_cfg_t motion_default_cfg(void)
 {
-    return (motion_cfg_t){MOTION_THETA_ON_G, MOTION_THETA_OFF_G, MOTION_THETA_PICKUP_G, MOTION_SMALL_WAKE_ENABLED != 0};
+    return (motion_cfg_t){MOTION_THETA_ON_G, MOTION_THETA_OFF_G, MOTION_THETA_PICKUP_G};
 }
 
 void motion_init(motion_t *m, const motion_cfg_t *cfg)
@@ -78,18 +78,6 @@ float motion_noise_theta(const motion_noise_t *n)
     return MOTION_NOISE_K * motion_noise_sigma_w(n) * sqrtf(1.0f + (float)MOTION_WINDOW_SAMPLES / MOTION_REF_SAMPLES);
 }
 
-static float theta_on(const motion_t *m)
-{
-    float t = m->cfg.use_noise ? motion_noise_theta(&m->noise) : 0.0f;
-    return t > m->cfg.theta_on ? t : m->cfg.theta_on;
-}
-
-static float theta_off(const motion_t *m)
-{
-    float t = m->cfg.use_noise ? motion_noise_theta(&m->noise) : 0.0f;
-    return t > m->cfg.theta_off ? t : m->cfg.theta_off;
-}
-
 void motion_reset(motion_t *m)
 {
     motion_t fresh = {.cfg = m->cfg, .noise = m->noise};
@@ -117,7 +105,7 @@ static bool settled(motion_t *m, const float g[3])
     for (int j = 0; j < 3; j++) {
         dev += (g[j] - m->settle_mean[j]) * (g[j] - m->settle_mean[j]);
     }
-    if (sqrtf(dev) >= theta_off(m)) {
+    if (sqrtf(dev) >= m->cfg.theta_off) {
         restart_settle(m, g);
         return false;
     }
@@ -181,13 +169,13 @@ int motion_feed(motion_t *m, const float a[3], uint32_t now_ms, bool amp_on)
         return ev;
     }
     if (m->state == MOTION_REST) {
-        if (d < theta_off(m)) {
+        if (d < m->cfg.theta_off) {
             const float alpha = (float)IMU_PERIOD_MS / MOTION_TAU_REF_MS;
             for (int j = 0; j < 3; j++) {
                 m->anchor[j] += (g[j] - m->anchor[j]) * alpha;
             }
         }
-        m->run_on = (!masked && d >= theta_on(m)) ? m->run_on + 1 : 0;
+        m->run_on = (!masked && d >= m->cfg.theta_on) ? m->run_on + 1 : 0;
         if (m->run_on >= MOTION_N_ON) {
             m->state = MOTION_MOVING;
             m->run_on = 0;

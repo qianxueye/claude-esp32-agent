@@ -10,7 +10,6 @@ enum { MOTION_EV_MOVING = 1, MOTION_EV_PICKUP = 2, MOTION_EV_REST = 4, MOTION_EV
 
 typedef struct {
     float theta_on, theta_off, theta_pickup;
-    bool use_noise; /* raise theta_on and theta_off to the estimated noise floor */
 } motion_cfg_t;
 
 /* Rest-noise estimator: Allan variance of ten 100 ms means per 1 s block, lower quartile over the last 64 blocks. */
@@ -42,5 +41,5 @@ void motion_noise_init(motion_noise_t *n);
 void motion_noise_feed(motion_noise_t *n, const float a[3], bool masked);
 /* Estimated sigma of a 100 ms mean in g; 0 until 64 blocks have been seen. */
 float motion_noise_sigma_w(const motion_noise_t *n);
-/* Floor on theta_on: k times the deviation sigma that follows from sigma_w; 0 when not valid. */
+/* Desk-test floor: k times the deviation sigma that follows from sigma_w; 0 when not valid. */
 float motion_noise_theta(const motion_noise_t *n);

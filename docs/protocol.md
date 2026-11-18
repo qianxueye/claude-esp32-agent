@@ -115,7 +115,7 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 
 ## Input
 
-- TAP: touch released within 600 ms anywhere on the screen.
+- TAP: touch released within 600 ms anywhere on the screen. A touch that began while the screen was dim or off only wakes it and sends no TAP or LONG_PRESS.
 - LONG_PRESS: touch held for 1500 ms; sent once when the threshold is reached.
 - BOOT_BUTTON: GPIO0 pressed.
 

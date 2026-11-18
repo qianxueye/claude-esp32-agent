@@ -306,8 +306,8 @@ static void life_task(void *arg)
                      (unsigned)st.tx_frames, (unsigned)st.tx_bytes, (unsigned)st.tx_dropped,
                      (unsigned)audio_spk_queued(), (unsigned)audio_spk_overflow_frames(), (int)audio_pa_is_on(),
                      (unsigned)ac.spk_underruns, (unsigned)ac.spk_slow_writes, (unsigned)ac.mic_gaps, (unsigned)ac.mic_dropped);
-            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u small=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
-                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)wk[DP_CAUSE_SMALL]);
+            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
+                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION]);
         }
     }
 }
