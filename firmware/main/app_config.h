@@ -122,12 +122,13 @@
 #define DISP_RAMP_STEP_MS 80 /* plain configuration */
 #define DISP_STORM_BUDGET_MS 300000 /* mathematical model: ACTIVE time from IMU-only wakes per period */
 #define DISP_STORM_PERIOD_MS 3600000 /* mathematical model: sliding window the budget applies to */
+#define DISP_STORM_BINS 60 /* plain configuration: resolution of that window */
 #define ORBIT_DWELL_MS 60000 /* plain configuration */
 #define ORBIT_PITCH_PX 4 /* plain configuration: lattice pitch, one font design pixel */
 #define ORBIT_COLS 6 /* plain configuration */
 #define ORBIT_ROWS 8 /* plain configuration */
 #define ORBIT_X0_PX -12 /* plain configuration: leftmost lattice column */
-#define ORBIT_Y0_PX -16 /* plain configuration: topmost lattice row */
+#define ORBIT_Y0_PX -4 /* plain configuration: topmost lattice row; the THINKING bubble reaches the scene top at this offset */
 
 /* IMU orientation (docs/mascot.md "Screen orientation") */
 #define IMU_I2C_ADDR_PRIMARY 0x6B
