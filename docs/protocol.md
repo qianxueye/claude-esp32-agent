@@ -93,7 +93,7 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0xA0` | PING       | `u32` nonce. |
 | `0xA2` | SELFTEST   | Empty. Device plays a 1 kHz tone for 1 s while recording, then sends SELFTEST_RESULT `{"mic_rms_before":…,"mic_rms_during":…,"spk_bytes_played":…}`. |
 | `0xA3` | SNAPSHOT   | Empty. Device sends SNAP_BEGIN, SNAP_DATA…, SNAP_END with the current LVGL screen. |
-| `0xF0` | DEBUG      | Test tools only; the relay never sends it. JSON `{"angle_override":<degrees>|null}` fixes the UI rotation angle (null returns control to the IMU). Other keys: `imu_dump` seconds (logs the raw accelerometer counts, five samples per line as `imu_dump i=<first index> x,y,z;…`, then `imu_dump done n=<count>`; `devctl imu-dump` rejects a trace whose indices have a gap), `bench` (frame-rate test mode), `disp_scale` N (display power timeline N times faster), `disp_force` 0 active / 1 dim / 2 off / null, `orbit` lattice index / null, `fill` grey 0–255 / null, `arc` 0–100 / null (shows the volume arc at that level without changing the volume). Payload at most 127 bytes (the device keeps 128 bytes for the text and its terminator). See `display-power.md`. |
+| `0xF0` | DEBUG      | Test tools only; the relay never sends it. JSON `{"angle_override":<degrees>|null}` fixes the UI rotation angle (null returns control to the IMU). Other keys: `imu_dump` seconds (logs the raw accelerometer counts, five samples per line as `imu_dump i=<first index> x,y,z;…`, then `imu_dump done n=<count>`; `devctl imu-dump` rejects a trace whose indices have a gap), `bench` (frame-rate test mode), `disp_scale` N (display power timeline N times faster), `disp_force` 0 active / 1 dim / 2 off / null, `orbit` lattice index / null, `fill` grey 0–255 / null, `arc` 0–100 / null (shows the volume arc at that level without changing the volume), `brt` 20–100 / null (pins the ACTIVE brightness without storing it until null, a reboot or the next armed swipe; HOST_HELLO and OFFLINE do not end it), `brt_set` 20–100 (sets and stores the user brightness as a swipe would). Both brightness values are clamped and snapped to the ladder. Payload at most 127 bytes (the device keeps 128 bytes for the text and its terminator). See `display-power.md`. |
 
 ## Handshake
 
@@ -116,10 +116,10 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 
 ## Input
 
-- A touch is classified when it starts: on a dark screen it is dead; starting 150 px or more from the centre it is an edge touch; otherwise a centre touch. A touch that moves more than 13 px is neither a TAP nor a LONG_PRESS.
-- TAP: touch released within 600 ms, anywhere on the screen, without moving more than 13 px. A touch that began while the screen was dim or off only wakes it and sends no TAP, LONG_PRESS or volume change.
+- A touch is classified when it starts: on a dark screen it is dead; starting 150 px or more from the centre it is an edge touch; otherwise a centre touch. A touch that moves more than 13 px is neither a TAP nor a LONG_PRESS. A centre touch that moves more than 13 px before LONG_PRESS was sent may become a brightness swipe (`display-power.md`, User brightness).
+- TAP: touch released within 600 ms, anywhere on the screen, without moving more than 13 px. A touch that began while the screen was dim or off only wakes it and sends no TAP, LONG_PRESS, volume or brightness change.
 - LONG_PRESS: a centre touch held for 1500 ms; sent once when the threshold is reached. An edge touch never sends it.
-- The volume knob sends no INPUT.
+- The volume knob and the brightness swipe send no INPUT.
 - BOOT_BUTTON: the BOOT key (GPIO0) or the PWR key (IO expander pin 4) pressed; both send the same code.
 
 ## Volume
@@ -130,8 +130,9 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 - A transient SET_VOLUME changes the codec only. It ends, restoring the user volume, at the next valid HOST_HELLO, on entering OFFLINE, at reboot, when the knob arms, and at a persist set. A tool that needs it to last keeps its link alive.
 - A persist set becomes the user volume, is stored and reported by VOLUME. A seed does the same only when `vol_set` is false and is otherwise ignored, so repeated HELLOs do not repeat it.
 - Writes: only a knob release or a persist or applied seed set marks the volume for writing; the write waits until the amplifier is off and the state is not LISTENING, and at least 5 s after the previous write. A reset before the write loses that change.
+- The 5 s gap is one clock for every stored key: a volume write and a brightness write are at least 5 s apart too.
 - Wear: a save is one 32-byte entry, 126 entries fill a 4096-byte page and the six pages rotate, so each sector is erased once per 756 saves. At one save per 5 s without pause that is 17 280 saves a day, about 12 years at 100 000 erase cycles per sector.
-- Storage: if the partition is full or from a newer version, it is erased once and reinitialised, which also removes anything else kept there; any other storage error, including a failed read of the stored volume, leaves the volume in RAM for that boot: nothing is written, so a stored value that could not be read is kept, and `vol_set` becomes true after a knob release or a persist or applied seed set.
+- Storage: if the partition is full or from a newer version, it is erased once and reinitialised, which also removes anything else kept there, including the stored brightness (key `brt`); any other storage error, including a failed read of the stored volume, leaves the volume in RAM for that boot: nothing is written, so a stored value that could not be read is kept, and `vol_set` becomes true after a knob release or a persist or applied seed set.
 - The relay keeps the last `vol` or VOLUME value in memory only.
 
 ## Playback and flow control
