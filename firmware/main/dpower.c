@@ -2,6 +2,9 @@
 #include <math.h>
 #include "app_config.h"
 
+/* Timestamps older than this are held at it, so a 32-bit clock wrap cannot make them look recent. */
+#define STALE_AGE 0x80000000u
+
 static bool is_attention(int state)
 {
     return state == DP_STATE_LISTENING || state == DP_STATE_THINKING || state == DP_STATE_SPEAKING || state == DP_STATE_ERROR;
@@ -73,7 +76,7 @@ void dp_state(dpower_t *d, uint32_t now, int state)
 
 void dp_force(dpower_t *d, int stage)
 {
-    d->force = stage;
+    d->force = stage > DP_OFF ? DP_OFF : (stage < 0 ? -1 : stage);
 }
 
 static dp_stage_t pick_stage(const dpower_t *d, uint32_t now, bool *imu_only)
@@ -102,21 +105,21 @@ static dp_stage_t pick_stage(const dpower_t *d, uint32_t now, bool *imu_only)
 
 static void advance_bins(dpower_t *d, uint32_t now)
 {
-    const uint32_t width = DISP_STORM_PERIOD_MS / DP_STORM_BINS;
+    const uint32_t width = DISP_STORM_PERIOD_MS / DISP_STORM_BINS;
     uint32_t el = since(now, d->bin_start);
     if (el < width) {
         return;
     }
     uint32_t n = el / width;
-    if (n >= DP_STORM_BINS) {
-        for (int i = 0; i < DP_STORM_BINS; i++) {
+    if (n >= DISP_STORM_BINS) {
+        for (int i = 0; i < DISP_STORM_BINS; i++) {
             d->bins[i] = 0;
         }
         d->bin_start = now;
         return;
     }
     for (uint32_t i = 0; i < n; i++) {
-        d->bin_idx = (d->bin_idx + 1) % DP_STORM_BINS;
+        d->bin_idx = (d->bin_idx + 1) % DISP_STORM_BINS;
         d->bins[d->bin_idx] = 0;
     }
     d->bin_start += n * width;
@@ -125,18 +128,28 @@ static void advance_bins(dpower_t *d, uint32_t now)
 static uint32_t storm_used(const dpower_t *d)
 {
     uint32_t sum = 0;
-    for (int i = 0; i < DP_STORM_BINS; i++) {
+    for (int i = 0; i < DISP_STORM_BINS; i++) {
         sum += d->bins[i];
     }
     return sum;
 }
 
+static void saturate_age(uint32_t *stamp, uint32_t now)
+{
+    if (since(now, *stamp) > STALE_AGE) {
+        *stamp = now - STALE_AGE;
+    }
+}
+
 dp_out_t dp_update(dpower_t *d, uint32_t now)
 {
+    saturate_age(&d->last_act, now);
+    saturate_age(&d->last_imu, now);
+    saturate_age(&d->state_since, now);
     uint32_t dt = since(now, d->last_update);
     d->last_update = now;
-    if (dt > DISP_STORM_PERIOD_MS / DP_STORM_BINS) {
-        dt = DISP_STORM_PERIOD_MS / DP_STORM_BINS;
+    if (dt > DISP_STORM_PERIOD_MS / DISP_STORM_BINS) {
+        dt = DISP_STORM_PERIOD_MS / DISP_STORM_BINS;
     }
     advance_bins(d, now);
     bool imu_only;

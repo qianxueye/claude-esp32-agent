@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "app_config.h"
 
 /* Display power timeline: activity events and a millisecond clock in, stage and panel level out. Model in docs/display-power.md. */
 
@@ -17,11 +18,9 @@ typedef struct {
     dp_cause_t cause;
 } dp_out_t;
 
-#define DP_STORM_BINS 60
-
 typedef struct {
     uint32_t last_act, last_imu, state_since, ramp_t0, last_update, bin_start;
-    uint32_t bins[DP_STORM_BINS];
+    uint32_t bins[DISP_STORM_BINS];
     int state, level, force, bin_idx;
     bool ramping, hold, imu_seen, exhausted;
     dp_cause_t cause;

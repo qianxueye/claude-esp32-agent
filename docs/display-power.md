@@ -23,6 +23,8 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 | `DISP_DIM_TO_OFF_MS` | C | DIM time before OFF |
 | `DISP_ATTN_CAP_MS` | C | ACTIVE limit in one unchanged non-IDLE state |
 | `DISP_RAMP_STEPS`, `DISP_RAMP_STEP_MS` | C | stepped descent |
+| `DISP_STORM_BINS` | C | resolution of the storm-budget window (see below) |
+| `ORBIT_*` | C | lattice size, pitch, origin and dwell |
 
 ## Activity
 
@@ -41,9 +43,13 @@ The IDLE palette dim is gone; the panel level carries the stage. The palette kee
 
 ## Orbit
 
-The drawing moves one lattice step every `ORBIT_DWELL_MS` to spread edge wear. The lattice is `ORBIT_COLS` × `ORBIT_ROWS` points at `ORBIT_PITCH_PX`, walked as a closed cycle that visits every point once: along row 0 and back in snake rows over columns 1 to 5, then up column 0. With 6 × 8 that is 48 steps, 48 minutes, x from −12 to +8 px and y from −16 to +12 px.
+The drawing moves one lattice step every `ORBIT_DWELL_MS` to spread edge wear. The lattice is `ORBIT_COLS` × `ORBIT_ROWS` points at `ORBIT_PITCH_PX`, walked as a closed cycle that visits every point once: along row 0 and back in snake rows over columns 1 to 5, then up column 0. With 6 × 8 that is 48 steps, 48 minutes, x from −12 to +8 px and y from −4 to +24 px. The top row is bounded by the THINKING bubble: above y = −4 its top edge would leave the 320 px scene and be clipped (`test_orbit_keeps_drawing_in_scene` repeats the extents of `draw_mascot` and `draw_bubble`).
 
 The orbit spreads edges only. The interior of the body is lit as long as the stage is ACTIVE; the level and the time in ACTIVE are the lever.
+
+## Counters
+
+The `wakes touch= button= state= motion=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative.
 
 ## Refresh while OFF
 
@@ -80,7 +86,7 @@ Detector tests: with θ = k·σ_D and σ_D = σ_W·√(1 + W/W_ref), 24 h of whi
 
 ## Storm budget
 
-Motion wakes that alone hold ACTIVE are limited to `DISP_STORM_BUDGET_MS` per `DISP_STORM_PERIOD_MS` (sliding window of 60 bins). When it is spent, motion reaches DIM at most, until old bins expire. Touch, button and state activity are not counted. Class M: a false-wake storm at 100 % costs no more panel wear than the resting dim level did before, `(0.174 − 0.10) / (1 − 0.10) = 8.2 %` of the time.
+Motion wakes that alone hold ACTIVE (time held in hand counts: a few untouched pickups of a minute each use an hour's budget) are limited to `DISP_STORM_BUDGET_MS` per `DISP_STORM_PERIOD_MS` (sliding window of 60 bins). When it is spent, motion reaches DIM at most, until old bins expire. Touch, button and state activity are not counted. Class M: a false-wake storm at 100 % costs no more panel wear than the resting dim level did before, `(0.174 − 0.10) / (1 − 0.10) = 8.2 %` of the time.
 
 ## Noise floor
 

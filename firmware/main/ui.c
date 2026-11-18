@@ -100,6 +100,7 @@ static volatile uint32_t s_wake_bits;
 static volatile bool s_panel_on = true;
 static int s_applied_level = DISP_ACTIVE_PERCENT, s_time_scale = 1, s_orbit_force = -1, s_fill = -1;
 static dp_stage_t s_logged_stage = DP_ACTIVE;
+static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
 static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force"};
 
@@ -663,6 +664,9 @@ static void power_tick(void)
         s_panel_on = false;
     }
     if (o.stage != s_logged_stage) {
+        if (o.stage < s_logged_stage) {
+            s_wakes[o.cause]++;
+        }
         s_logged_stage = o.stage;
         ESP_LOGI(TAG, "disp: stage=%s cause=%s level=%d", STAGE_NAME[o.stage], CAUSE_NAME[o.cause], o.level_pct);
     }
@@ -872,7 +876,7 @@ void ui_wake(dp_cause_t cause)
 void ui_set_disp_force(int stage)
 {
     bsp_display_lock(-1);
-    dp_force(&s_dp, stage);
+    dp_force(&s_dp, stage > DP_OFF ? DP_OFF : stage);
     bsp_display_unlock();
 }
 
@@ -905,4 +909,11 @@ void ui_set_fill(int grey)
         lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
     }
     bsp_display_unlock();
+}
+
+void ui_wake_counts(uint32_t out[DP_CAUSE_N])
+{
+    for (int i = 0; i < DP_CAUSE_N; i++) {
+        out[i] = s_wakes[i];
+    }
 }

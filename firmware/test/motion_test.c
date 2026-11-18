@@ -90,18 +90,18 @@ static void noisy(float a[3], double sigma)
 #define SIGMA_W 0.0003
 #define SIGMA_S (SIGMA_W * 2.2360679775) /* per-sample sigma giving SIGMA_W after the 5-sample mean */
 
-static motion_cfg_t noise_cfg(double k, float *theta)
+static motion_cfg_t noise_cfg(double k, double var_ratio, float *theta)
 {
-    double sigma_d = SIGMA_W * sqrt(1.0 + (double)MOTION_WINDOW_SAMPLES / MOTION_REF_SAMPLES);
+    double sigma_d = SIGMA_W * sqrt(var_ratio);
     *theta = (float)(k * sigma_d);
     return (motion_cfg_t){.theta_on = *theta, .theta_off = 2.0f * *theta, .theta_pickup = 1.0f};
 }
 
 /* Counts MOVING events over 24 h of rest noise and the two-look statistic from the module's own D. */
-static void rest_noise_24h(double k, int *events, long *pairs)
+static void rest_noise_24h(double k, double var_ratio, int *events, long *pairs)
 {
     float theta;
-    motion_cfg_t cfg = noise_cfg(k, &theta);
+    motion_cfg_t cfg = noise_cfg(k, var_ratio, &theta);
     rig_t r;
     rig_init(&r, &cfg, 0);
     long pair = 0;
@@ -120,11 +120,8 @@ static void rest_noise_24h(double k, int *events, long *pairs)
     *pairs = pair;
 }
 
-/*
- * Two consecutive non-overlapping 100 ms looks above theta have probability q^2 per look, q = P(chi2_3 >= (theta/sigma)^2).
- * The module's anchor is an exponential average, so its noise is sigma_s^2 a/(2-a) and the true sigma is a little below the model sigma_D.
- * Count over N looks is binomial; the band is 5 standard deviations sqrt(N q^2 (1-q^2)(1+2q)).
- */
+/* A look is one 100 ms mean; two consecutive looks above theta have probability q^2, q = P(chi2_3 >= (theta/sigma)^2). */
+/* The count over N looks is binomial; the band is 5 sd = 5 sqrt(N q^2 (1-q^2)(1+2q)), the last factor for overlapping pairs. */
 static void test_rest_noise(void)
 {
     const double looks = (double)SAMPLES_24H / MOTION_WINDOW_SAMPLES;
@@ -134,17 +131,27 @@ static void test_rest_noise(void)
     int events;
     long pairs;
 
-    rest_noise_24h(4.44, &events, &pairs);
+    rest_noise_24h(4.44, model_ratio, &events, &pairs);
     assert(events <= 1);
     assert(pairs <= 1);
 
-    rest_noise_24h(3.0, &events, &pairs);
+    /* The model threshold assumes anchor noise of a W_ref mean; the exponential anchor is quieter, so fewer pairs than 741. */
+    rest_noise_24h(3.0, model_ratio, &events, &pairs);
     double q = chi3_sf(9.0 * model_ratio / var_ratio), mean = looks * q * q;
     double band = 5.0 * sqrt(looks * q * q * (1.0 - q * q) * (1.0 + 2.0 * q));
-    printf("k=3: two-look pairs %ld expected %.0f +- %.0f, module events %d\n", pairs, mean, band, events);
+    printf("k=3, model sigma_D: two-look pairs %ld expected %.0f +- %.0f, module events %d\n", pairs, mean, band, events);
     assert(fabs((double)pairs - mean) <= band);
     assert(events <= pairs);
-    assert(mean > 300.0 && mean < 800.0);
+
+    /* Threshold from the true deviation sigma: q = P(chi2_3 >= 9) and about 741 pairs a day. */
+    rest_noise_24h(3.0, var_ratio, &events, &pairs);
+    q = chi3_sf(9.0);
+    mean = looks * q * q;
+    band = 5.0 * sqrt(looks * q * q * (1.0 - q * q) * (1.0 + 2.0 * q));
+    printf("k=3, true sigma_D: two-look pairs %ld expected %.0f +- %.0f, module events %d\n", pairs, mean, band, events);
+    assert(fabs((double)pairs - mean) <= band);
+    assert(events <= pairs);
+    assert(mean > 700.0 && mean < 780.0);
 }
 
 static void test_defaults_at_rest(void)
@@ -173,18 +180,23 @@ static void test_knock_and_impulses(void)
     rig_t r;
     rig_init(&r, NULL, 0);
     settle_rest(&r, 500);
+    int run = 0, longest = 0;
     for (int knock = 0; knock < 10; knock++) {
         for (int i = 0; i < 500; i++) {
             float a[3];
             noisy(a, SIGMA_S);
             const int len = 150 / DT_MS;
             if (i < len) {
-                double t = i * DT_MS / 1000.0, env = 0.5 * (1.0 - cos(2.0 * PI_F * i / len));
+                double t = i * DT_MS / 1000.0, env = exp(-t / 0.04);
                 a[2] += (float)(0.5 * env * sin(2.0 * PI_F * 30.0 * t));
             }
             rig_feed(&r, a, false);
+            run = r.m.d >= MOTION_THETA_ON_G ? run + 1 : 0;
+            longest = run > longest ? run : longest;
         }
     }
+    printf("knock: longest run above theta_on %d samples (N_ON %d)\n", longest, MOTION_N_ON);
+    assert(longest >= 3 && longest < MOTION_N_ON);
     assert(r.moving == 0 && r.pickup == 0 && r.m.state == MOTION_REST);
 
     for (int i = 0; i < 60 * 1000 / DT_MS; i++) {
@@ -217,11 +229,11 @@ static void test_speaker_mask(void)
     }
 }
 
-/* A step offset that starts when the amplifier stops fires N_ON samples after the tail; the delay is the same across the clock wrap. */
+/* The step fires after the amplifier tail plus N_ON samples; the delay is equal when the clock wraps inside the tail. */
 static void test_tail_and_wrap(void)
 {
     long first[2];
-    const uint32_t starts[2] = {1000u, 0u - 50u * DT_MS};
+    const uint32_t starts[2] = {1000u, 0u - 6300u};
     for (int v = 0; v < 2; v++) {
         rig_t r;
         rig_init(&r, NULL, starts[v]);
@@ -361,11 +373,8 @@ static void test_noise_estimator(void)
     qsort(v, TRIALS, sizeof v[0], cmp_float);
     double c_sim = v[TRIALS / 2];
     printf("c by simulation %.4f (configured %.4f)\n", c_sim, (double)MOTION_NOISE_C);
-    /*
-     * One block estimate has about 3 % relative spread in sigma, so a +-5 % band holds for about 90 % of 64-block windows (1.65 sigma).
-     * A rank statistic cannot ignore disturbance it cannot see: with a share p of blocks disturbed, the lower quartile of 64 sits at
-     * rank 16 among about 64(1-p) clean blocks, so sigma is over-estimated by about 5 % at p = 0.3 and 30 % at p = 0.7, never under-estimated.
-     */
+    /* Sigma has about 3 % spread per 64-block window, so +-5 % holds for about 90 % of windows. */
+    /* Disturbed blocks push the rank-16 quartile up among the clean ones: sigma reads high, never low (docs/display-power.md). */
     double med, frac;
     estimator_stats(0.0, TRIALS, &med, &frac);
     printf("clean: median sigma ratio %.3f, within 5%% in %.1f%% of trials\n", med, frac * 100);

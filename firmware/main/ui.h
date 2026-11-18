@@ -24,6 +24,8 @@ void ui_set_bench(int mode);
 void ui_wake(dp_cause_t cause);
 /* Test aids: pin the power stage (0 active, 1 dim, 2 off; negative releases), run its timeline N times faster, pin the orbit index (negative releases), fill the screen with a grey 0-255 (negative restores). */
 void ui_set_disp_force(int stage);
+/* Cumulative count of brightening stage changes by cause, indexed by dp_cause_t. */
+void ui_wake_counts(uint32_t out[DP_CAUSE_N]);
 void ui_set_disp_scale(int n);
 void ui_set_orbit(int index);
 void ui_set_fill(int grey);

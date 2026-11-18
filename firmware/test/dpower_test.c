@@ -207,7 +207,7 @@ static void test_storm_budget_from(uint32_t t0)
         }
         worst = sum > worst ? sum : worst;
     }
-    assert((uint64_t)worst * TICK <= (uint64_t)DISP_STORM_BUDGET_MS + hour / DP_STORM_BINS);
+    assert((uint64_t)worst * TICK <= (uint64_t)DISP_STORM_BUDGET_MS + hour / DISP_STORM_BINS);
     uint32_t all = 0;
     for (uint32_t i = 0; i < n; i++) {
         all += active[i];
@@ -258,6 +258,40 @@ static void test_touch_does_not_spend_budget(void)
     assert(dp_update(&d, t).stage == DP_ACTIVE);
 }
 
+/* Mirrors the extents in ui.c draw_mascot and draw_bubble: nothing may leave the scene at any lattice point. */
+static void test_orbit_keeps_drawing_in_scene(void)
+{
+    const int u = BUBBLE_UNIT_PX, c = MASCOT_CELL_PX, scene = SCENE_SIZE_PX, shift = BUBBLE_SHIFT_UNITS * u;
+    for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+        int gx, gy;
+        dp_orbit(i, &gx, &gy);
+        int anchor_top = scene / 2 - 5 * c + shift + gy;
+        int thought_top_u = (anchor_top - BUBBLE_GAP_UNITS * u) / u - 8 - 18;
+        assert(thought_top_u >= 0);
+        int body_top = scene / 2 - 5 * c + gy - 2 * u;
+        int legs_bottom = scene / 2 - 5 * c + gy + shift + u + 10 * c;
+        assert(body_top >= 0 && legs_bottom <= scene);
+        int reach = SCUTTLE_DISTANCE_UNITS * u;
+        assert(scene / 2 - 8 * c + gx - reach >= 0);
+        assert(scene / 2 + 8 * c + gx + reach <= scene);
+    }
+}
+
+static void test_stale_timestamps_stay_off(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 1000);
+    assert(dp_update(&d, t).stage == DP_OFF);
+    for (int hours = 0; hours < 50 * 24; hours++) {
+        t += 3600u * 1000u;
+        assert(dp_update(&d, t).stage == DP_OFF);
+    }
+    dp_activity(&d, t, DP_CAUSE_TOUCH);
+    assert(dp_update(&d, t).stage == DP_ACTIVE);
+}
+
 int main(void)
 {
     test_timeline_from(0);
@@ -274,6 +308,8 @@ int main(void)
     test_storm_dim_from_off();
     test_touch_does_not_spend_budget();
     test_orbit();
+    test_orbit_keeps_drawing_in_scene();
+    test_stale_timestamps_stay_off();
     puts("ok");
     return 0;
 }

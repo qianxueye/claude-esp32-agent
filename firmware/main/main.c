@@ -299,11 +299,15 @@ static void life_task(void *arg)
             transport_stats_t st;
             transport_get_stats(&st);
             audio_counters_t ac = audio_counters();
+            uint32_t wk[DP_CAUSE_N];
+            ui_wake_counts(wk);
             ESP_LOGI(TAG, "stats rx=%u/%uB crc=%u skip=%u tx=%u/%uB drop=%u spkq=%u spkovf=%u pa=%d under=%u slow=%u micgap=%u micdrop=%u", (unsigned)st.rx_frames,
                      (unsigned)st.rx_bytes, (unsigned)st.rx_crc_errors, (unsigned)st.rx_bytes_skipped,
                      (unsigned)st.tx_frames, (unsigned)st.tx_bytes, (unsigned)st.tx_dropped,
                      (unsigned)audio_spk_queued(), (unsigned)audio_spk_overflow_frames(), (int)audio_pa_is_on(),
                      (unsigned)ac.spk_underruns, (unsigned)ac.spk_slow_writes, (unsigned)ac.mic_gaps, (unsigned)ac.mic_dropped);
+            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
+                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION]);
         }
     }
 }
