@@ -33,11 +33,11 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 Activity restarts the hold and returns the stage to ACTIVE at once. Sources:
 
 - touch press;
-- BOOT button press;
+- BOOT or PWR key press;
 - a change into or out of LISTENING, THINKING, SPEAKING or ERROR;
 - boot.
 
-A touch that begins while the stage is DIM or OFF only wakes the screen: it sends no TAP on release and no LONG_PRESS at 1500 ms. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`); a tap after the wake is sent as usual. The BOOT button is always sent.
+A touch that begins while the stage is DIM or OFF only wakes the screen: it sends no TAP on release and no LONG_PRESS at 1500 ms. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`); a tap after the wake is sent as usual. The BOOT and PWR keys are always sent.
 
 Not activity: PING and other host frames, a SET_STATE that repeats the current state, any change with OFFLINE at either end (including the OFFLINE to IDLE resume), and playback outside SPEAKING. A sleeping host would otherwise keep the screen lit overnight.
 
@@ -53,7 +53,7 @@ The orbit spreads edges only. The interior of the body is lit as long as the sta
 
 ## Counters
 
-The `wakes touch= button= state= motion=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative. A brightening with no activity behind it (OFF to DIM in an attention state) is attributed to the state.
+The `wakes touch= button= state= motion= pwr_err=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative. A brightening with no activity behind it (OFF to DIM in an attention state) is attributed to the state. `pwr_err` counts failed reads of the PWR key input (cumulative; a failed read counts as not pressed).
 
 ## Refresh while OFF
 

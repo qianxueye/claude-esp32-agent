@@ -66,7 +66,7 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0x01` | HELLO           | JSON `{"proto":2,"fw":"<version>","rate":16000,"reason":"boot"|"reply"|"resume","link":"usb"|"wifi","paired":true|false}`. |
 | `0x02` | LOG             | UTF-8 log line. |
 | `0x10` | MIC_AUDIO       | 640 bytes of PCM (20 ms). Sent only while the state is LISTENING. |
-| `0x20` | INPUT           | `u8` code: `1` TAP, `2` LONG_PRESS, `3` BOOT_BUTTON. |
+| `0x20` | INPUT           | `u8` code: `1` TAP, `2` LONG_PRESS, `3` BOOT_BUTTON (BOOT or PWR key). |
 | `0x21` | SPK_STATUS      | `u32` bytes queued, `u8` flags (bit0 playing, bit1 drained after SPK_END), `u32` consumed total. |
 | `0x30` | PONG            | `u32` nonce copied from PING. |
 | `0x31` | SELFTEST_RESULT | JSON, see SELFTEST. |
@@ -117,7 +117,7 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 
 - TAP: touch released within 600 ms anywhere on the screen. A touch that began while the screen was dim or off only wakes it and sends no TAP or LONG_PRESS.
 - LONG_PRESS: touch held for 1500 ms; sent once when the threshold is reached.
-- BOOT_BUTTON: GPIO0 pressed.
+- BOOT_BUTTON: the BOOT key (GPIO0) or the PWR key (IO expander pin 4) pressed; both send the same code.
 
 ## Playback and flow control
 
