@@ -116,7 +116,7 @@ static void test_a2_scene_clear_of_arc(void)
 {
     double w = worst_corner();
     printf("scene worst corner %.1f\n", w);
-    assert(w + 2 < VOL_ARC_R_IN_PX);
+    assert(w + 2 < VOL_ARC_R_IN_PX && w <= SCENE_MAX_RADIUS_PX);
     assert(!(w + 2 < 211));
 }
 

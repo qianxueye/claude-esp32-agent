@@ -150,12 +150,16 @@ bool volume_poll(uint32_t now_ms, bool quiet)
         nvs_close(h);
     }
     bool wrote = e == ESP_OK;
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
     if (wrote) {
-        xSemaphoreTake(s_mtx, portMAX_DELAY);
         vs_saved(&s_st, v);
-        xSemaphoreGive(s_mtx);
-    } else {
-        ESP_LOGW(TAG, "nvs write failed: %s", esp_err_to_name(e));
+    }
+    int streak = vs_write_streak(&s_st, wrote);
+    xSemaphoreGive(s_mtx);
+    if (streak == VS_STREAK_START) {
+        ESP_LOGW(TAG, "nvs write failed (%s): retrying every %d ms", esp_err_to_name(e), VOL_SAVE_MIN_MS);
+    } else if (streak == VS_STREAK_END) {
+        ESP_LOGI(TAG, "nvs write succeeded again");
     }
     s_last_write = now_ms;
     s_saves += wrote;
