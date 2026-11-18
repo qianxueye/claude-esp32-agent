@@ -1,4 +1,4 @@
-"""Device side of wire protocol v2 over an in-process or TLS transport, for tests and the e2e run."""
+"""Device side of wire protocol v3 over an in-process or TLS transport, for tests and the e2e run."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from array import array
 from collections.abc import Awaitable, Callable
 
 from claude_voice.link import MemoryTransport, Transport, TransportClosed
-from claude_voice.protocol import Decoder, Input, State, T, encode
+from claude_voice.protocol import Decoder, Input, State, T, VolMode, encode
 from claude_voice.wifi import CIPHER, TcpTransport
 
 BYTES_PER_S = 32000
@@ -59,7 +59,8 @@ class FakeDevice:
         mic: bytes = b"",
         *,
         link: str = "usb",
-        proto: int = 2,
+        proto: int = 3,
+        vol: int | None = None,
         boot_delay: float | None = 0.05,
         consumed0: int = 0,
         relay_connector: Callable[[dict], Awaitable[str]] | None = None,
@@ -93,11 +94,14 @@ class FakeDevice:
         self.hellos: list[str] = []
         self.host_hellos = 0
         self.pings = 0
-        self.volume: int | None = None
+        self.vol = 70 if vol is None else vol
+        self.vol_set = vol is not None
+        self.override: int | None = None
         self.mic_frames_sent = 0
         self.paired: dict | None = None
         self.forgets = 0
         self.received: list[int] = []
+        self.set_volumes: list[bytes] = []
         self._booting = False
         self._mic_pos = 0
         self._tasks: list[asyncio.Task] = []
@@ -133,12 +137,13 @@ class FakeDevice:
     def hello(self, reason: str) -> None:
         self.hellos.append(reason)
         info = {"proto": self.proto, "fw": "fake", "rate": 16000, "reason": reason, "link": self.link,
-                "paired": self.paired is not None}
+                "paired": self.paired is not None, "vol": self.vol, "vol_set": self.vol_set}
         self.send(T.HELLO, json.dumps(info).encode())
 
     def reset(self) -> None:
         """Reboot: ROM text, then HELLO `boot`; the counters restart."""
         self._booting = False
+        self.override = None
         self.state = State.IDLE
         self.queued = 0
         self.consumed = self.consumed0
@@ -172,6 +177,7 @@ class FakeDevice:
     def _handle(self, ftype: int, payload: bytes) -> None:
         self.received.append(ftype)
         if ftype == T.HOST_HELLO:
+            self.override = None
             self.host_hellos += 1
             self.hello("reply")
             self.wifi_status()
@@ -186,7 +192,7 @@ class FakeDevice:
                 self._mic_task = asyncio.create_task(self._mic_loop())
             self.state = new
         elif ftype == T.SET_VOLUME:
-            self.volume = payload[0]
+            self._set_volume(payload)
         elif ftype == T.SPK_AUDIO:
             self.queued += len(payload)
             self.max_queued = max(self.max_queued, self.queued)
@@ -212,6 +218,20 @@ class FakeDevice:
                     self.wifi_status("off", "none")
             if self.forget_reply is not None:
                 self.send(T.FORGET_RESULT, self.forget_reply)
+
+    def _set_volume(self, payload: bytes) -> None:
+        v, mode = min(payload[0], 100), payload[1] if len(payload) > 1 else VolMode.TRANSIENT
+        if mode == VolMode.TRANSIENT:
+            self.override = v
+        elif mode == VolMode.PERSIST or (mode == VolMode.SEED and not self.vol_set):
+            self.vol, self.vol_set, self.override = v, True, None
+            self.send(T.VOLUME, bytes([v]))
+        self.set_volumes.append(bytes(payload))
+
+    def knob(self, v: int) -> None:
+        """The user turned the knob: the board keeps and reports v."""
+        self.vol, self.vol_set, self.override = v, True, None
+        self.send(T.VOLUME, bytes([v]))
 
     def wifi_status(self, wifi: str | None = None, relay: str | None = None) -> None:
         """Send WIFI_STATUS, first recording a new state when one is given."""

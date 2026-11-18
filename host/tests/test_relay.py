@@ -7,7 +7,7 @@ from fake_device import FakeDevice, speech_pcm
 from claude_voice.audio import tone
 from claude_voice.config import Config
 from claude_voice.link import Link, memory_pair
-from claude_voice.protocol import Input, State
+from claude_voice.protocol import Input, State, T
 from claude_voice.relay import Relay
 
 SPEED = 25.0
@@ -92,7 +92,7 @@ class Harness:
     async def up(self):
         self.task = asyncio.create_task(self.link.run())
         async with asyncio.timeout(3):
-            while not (self.devices and self.dev.volume is not None):
+            while not (self.devices and T.SET_STATE in self.dev.received):
                 await asyncio.sleep(0.01)
         await asyncio.sleep(0.05)
         self.dev.states.clear()
@@ -103,7 +103,7 @@ class Harness:
             await d.stop()
 
 
-DEVICE_KEYS = ("boot_delay", "consumed0", "proto")
+DEVICE_KEYS = ("boot_delay", "consumed0", "proto", "vol")
 
 
 def make(mic=None, stt=None, agent=None, tts=None, speed=SPEED, **over):
@@ -141,7 +141,7 @@ async def test_happy_path_states_and_audio(h):
     assert h.tts.texts == ["你好。", "再见。"]
     assert len(h.dev.spk) > 2 * 12800
     assert h.dev.max_queued <= 64000
-    assert h.dev.volume == 70
+    assert h.dev.vol == 70 and h.relay.device_volume == 70
     assert h.relay.turn_log and h.relay.turn_log[0]["t_first_spk"] >= h.relay.turn_log[0]["t_transcript"]
 
 
@@ -273,17 +273,18 @@ async def test_agent_failure_goes_error_then_idle():
         await h.down()
 
 
-async def test_boot_hello_mid_session_gets_state_and_volume_but_no_host_hello():
+async def test_boot_hello_mid_session_gets_state_but_no_host_hello_or_volume():
     h = make(agent=FakeAgent(hang=True))
     await h.up()
     try:
         h.dev.inject(Input.TAP)
         await settle(h.dev, State.THINKING)
         hellos = h.dev.host_hellos
-        h.dev.volume = None
+        sets = len(h.dev.set_volumes)
         h.dev.reset()
-        await until(lambda: h.dev.state == State.THINKING and h.dev.volume == 70)
+        await until(lambda: h.dev.state == State.THINKING)
         await asyncio.sleep(0.3)
+        assert len(h.dev.set_volumes) == sets
         assert h.dev.host_hellos == hellos
         assert h.dev.hellos == ["boot", "reply", "boot"]
         assert h.relay.speaker.outstanding == 0
@@ -301,7 +302,7 @@ async def test_reconnect_after_port_disappears():
         await asyncio.sleep(0.15)
         assert not h.link.connected
         h.allow_open = True
-        await until(lambda: len(h.devices) == 2 and h.dev.volume == 70)
+        await until(lambda: len(h.devices) == 2 and T.SET_STATE in h.dev.received)
         assert h.dev is not first and 1 <= h.dev.host_hellos <= 2
         h.dev.inject(Input.TAP)
         await settle(h.dev, State.LISTENING)
@@ -326,5 +327,37 @@ async def test_flow_control_never_exceeds_64000():
         await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states, timeout=20)
         assert len(h.dev.spk) >= 2 * 4000 * 32
         assert 60000 < h.dev.max_queued <= 64000
+    finally:
+        await h.down()
+
+
+async def test_seed_only_when_board_has_no_volume():
+    h = make(vol=35)
+    await h.up()
+    try:
+        await asyncio.sleep(0.3)
+        assert T.SET_VOLUME not in h.dev.received and h.relay.device_volume == 35
+    finally:
+        await h.down()
+    h = make()
+    await h.up()
+    try:
+        await until(lambda: h.dev.vol_set)
+        assert h.dev.set_volumes == [bytes([70, 2])] and h.relay.device_volume == 70
+    finally:
+        await h.down()
+
+
+async def test_knob_report_is_kept_across_hello():
+    h = make()
+    await h.up()
+    try:
+        await until(lambda: h.dev.vol_set)
+        h.dev.knob(20)
+        await until(lambda: h.relay.device_volume == 20)
+        sets = len(h.dev.set_volumes)
+        h.dev.hello("resume")
+        await asyncio.sleep(0.3)
+        assert h.relay.device_volume == 20 and len(h.dev.set_volumes) == sets and h.dev.vol == 20
     finally:
         await h.down()

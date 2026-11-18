@@ -14,12 +14,12 @@ import serial
 from serial.tools import list_ports
 
 USB_VID, USB_PID = 0x303A, 0x1001
-PROTO = 2
+PROTO = 3
 SYNC = b"\xC1\xAD"
 MAX_PAYLOAD = 4096
 PARTIAL_TIMEOUT = 0.2
 
-T_HELLO, T_LOG, T_MIC, T_INPUT, T_SPK_STATUS = 0x01, 0x02, 0x10, 0x20, 0x21
+T_HELLO, T_LOG, T_MIC, T_INPUT, T_SPK_STATUS, T_VOLUME = 0x01, 0x02, 0x10, 0x20, 0x21, 0x22
 T_PONG, T_SELFTEST_RESULT, T_SNAP_BEGIN, T_SNAP_DATA, T_SNAP_END = 0x30, 0x31, 0x32, 0x33, 0x34
 T_HOST_HELLO, T_SET_STATE, T_SET_VOLUME = 0x81, 0x82, 0x83
 T_SPK_AUDIO, T_SPK_FLUSH, T_SPK_END = 0x90, 0x91, 0x92
@@ -193,6 +193,8 @@ def show_frame(t, p):
         print("SELFTEST", p.decode())
     elif t == T_SPK_STATUS:
         print("SPK   ", struct.unpack("<IBI", p[:9]))
+    elif t == T_VOLUME and len(p) == 1:
+        print("VOLUME", p[0])
     elif t in (T_PAIR_RESULT, T_WIFI_STATUS, T_FORGET_RESULT):
         print({T_PAIR_RESULT: "PAIR_RESULT", T_FORGET_RESULT: "FORGET_RESULT"}.get(t, "WIFI  "), p.decode())
     elif t not in (T_MIC, T_SNAP_DATA):
@@ -268,7 +270,8 @@ def cmd_state(link, args):
 
 
 def cmd_volume(link, args):
-    link.send(T_SET_VOLUME, bytes([args.value]))
+    """Sets the volume for this session only; --save stores it on the board."""
+    link.send(T_SET_VOLUME, bytes([args.value, 1]) if args.save else bytes([args.value]))
 
 
 def cmd_selftest(link, args):
@@ -555,7 +558,7 @@ def cmd_imu_dump(link, args):
 def cmd_disp(link, args):
     """Display power test aids: speed up the timeline, pin a stage or an orbit index, fill the screen with a grey."""
     fields = []
-    for key, val in (("disp_scale", args.scale), ("disp_force", args.force), ("orbit", args.orbit), ("fill", args.fill), ("bench", args.bench)):
+    for key, val in (("disp_scale", args.scale), ("disp_force", args.force), ("orbit", args.orbit), ("fill", args.fill), ("arc", args.arc), ("bench", args.bench)):
         if val is not None:
             fields.append('"%s":%s' % (key, val if val == "null" else int(val)))
     link.send(T_DEBUG, ("{%s}" % ",".join(fields)).encode())
@@ -609,12 +612,14 @@ def expect(name, ok, detail=""):
     return ok
 
 
-def cmd_v2check(link, args):
-    """Silent protocol v2 checks: HELLO fields, consumed counter, flush, resume, proto refusal, PAIR stub."""
+def cmd_v3check(link, args):
+    """Silent protocol v3 checks: HELLO fields including the volume, consumed counter, flush, resume, proto refusal, PAIR stub."""
     ok = True
     h = link.hellos[-1] if link.hellos else {}
     ok &= expect("hello fields", h.get("proto") == PROTO and h.get("link") == "usb" and h.get("paired") is False
-                 and h.get("reason") in ("boot", "reply"), json.dumps(h))
+                 and h.get("reason") in ("boot", "reply") and isinstance(h.get("vol"), int) and isinstance(h.get("vol_set"), bool),
+                 json.dumps(h))
+    vol0 = h.get("vol")
     link.send(T_SET_VOLUME, bytes([0]))
     pcm = bytes(64000)
     stream_pcm(link, pcm, tail=0.2)
@@ -644,6 +649,8 @@ def cmd_v2check(link, args):
     ok &= expect("HELLO reply + WIFI_STATUS", link.wait_for(T_HELLO, 1.0, show=False) is not None
                  and link.wait_for(T_WIFI_STATUS, 1.0, show=False) == b'{"wifi":"off","relay":"none"}'
                  and link.hellos[-1]["reason"] == "reply", json.dumps(link.hellos[-1:]))
+    ok &= expect("transient 0 left the stored volume unchanged", link.hellos[-1:] and link.hellos[-1].get("vol") == vol0,
+                 "vol %r then %r" % (vol0, link.hellos[-1:] and link.hellos[-1].get("vol")))
     link.send(T_SET_STATE, bytes([5]))
     time.sleep(0.2)
     link.hellos.clear()
@@ -660,7 +667,7 @@ def cmd_v2check(link, args):
     ok &= expect("PAIR stub", link.wait_for(T_PAIR_RESULT, 1.0, show=False) == b'{"ok":false,"error":"not implemented"}')
     link.send(T_FORGET)
     ok &= expect("FORGET stub", link.wait_for(T_FORGET_RESULT, 1.0, show=False) == b'{"ok":false,"error":"not implemented"}')
-    print("v2check", "PASS" if ok else "FAIL")
+    print("v3check", "PASS" if ok else "FAIL")
 
 
 def main():
@@ -672,7 +679,7 @@ def main():
     s = sub.add_parser("ping"); s.add_argument("count", type=int, nargs="?", default=20); s.set_defaults(fn=cmd_ping)
     s = sub.add_parser("hello"); s.add_argument("--proto", type=int, default=PROTO); s.set_defaults(fn=cmd_hello)
     s = sub.add_parser("state"); s.add_argument("state"); s.set_defaults(fn=cmd_state)
-    s = sub.add_parser("volume"); s.add_argument("value", type=int); s.set_defaults(fn=cmd_volume)
+    s = sub.add_parser("volume"); s.add_argument("value", type=int); s.add_argument("--save", action="store_true"); s.set_defaults(fn=cmd_volume)
     s = sub.add_parser("selftest"); s.add_argument("--volume", type=int, default=0); s.set_defaults(fn=cmd_selftest)
     s = sub.add_parser("snapshot"); s.add_argument("out"); s.set_defaults(fn=cmd_snapshot)
     s = sub.add_parser("snapshots"); s.add_argument("outdir"); s.set_defaults(fn=cmd_snapshots)
@@ -686,8 +693,8 @@ def main():
     s = sub.add_parser("bench"); s.add_argument("mode", type=int); s.add_argument("state", nargs="?", default="idle"); s.add_argument("seconds", type=float, nargs="?", default=8); s.set_defaults(fn=cmd_bench)
     s = sub.add_parser("perf"); s.add_argument("state"); s.add_argument("mode", type=int); s.add_argument("--angle", type=float); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_perf)
     s = sub.add_parser("imu-dump"); s.add_argument("seconds", type=int); s.add_argument("out"); s.set_defaults(fn=cmd_imu_dump)
-    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--bench"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
-    s = sub.add_parser("v2check"); s.set_defaults(fn=cmd_v2check)
+    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--arc"); s.add_argument("--bench"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
+    s = sub.add_parser("v3check"); s.set_defaults(fn=cmd_v3check)
     args = ap.parse_args()
     link = Link(args.port, args.serial)
     try:

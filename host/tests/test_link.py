@@ -106,7 +106,8 @@ async def test_usb_open_sends_one_host_hello_after_the_reset_boot():
         # a retry in flight when the boot HELLO arrives may add one reply; nothing follows the open phase
         n = h.dev.host_hellos
         assert h.dev.hellos == ["boot"] + ["reply"] * n and 1 <= n <= 2
-        assert h.dev.received.count(T.SET_VOLUME) == n + 1 and h.dev.received.count(T.SET_STATE) >= n + 1
+        assert 1 <= h.dev.received.count(T.SET_VOLUME) <= n + 1 and h.dev.received.count(T.SET_STATE) >= n + 1
+        assert all(p == bytes([70, 2]) for p in h.dev.set_volumes)
         assert h.relay.speaker.synced and h.dev.flushes == 0
         await asyncio.sleep(0.3)
         assert h.dev.host_hellos == n
@@ -127,17 +128,17 @@ async def test_usb_open_without_reset_syncs_counter_by_flush():
         await h.down()
 
 
-async def test_resume_hello_gets_state_and_volume_only():
+async def test_resume_hello_gets_state_and_no_volume():
     h = make()
     await h.up()
     try:
         await asyncio.sleep(0.1)
         before = list(h.dev.received)
         h.dev.hello("resume")
-        await until(lambda: len(h.dev.received) > len(before) and T.SET_VOLUME in h.dev.received[len(before):])
+        await until(lambda: T.SET_STATE in h.dev.received[len(before):])
         await asyncio.sleep(0.1)
         new = h.dev.received[len(before):]
-        assert T.HOST_HELLO not in new and T.SET_STATE in new and T.SPK_FLUSH not in new
+        assert T.HOST_HELLO not in new and T.SET_STATE in new and T.SPK_FLUSH not in new and T.SET_VOLUME not in new
     finally:
         await h.down()
 
@@ -149,7 +150,7 @@ async def test_v1_board_is_refused():
         await until(lambda: h.devices and h.dev.state == State.ERROR)
         h.dev.inject(Input.TAP)
         await asyncio.sleep(0.3)
-        assert h.dev.state == State.ERROR and h.dev.volume is None
+        assert h.dev.state == State.ERROR and T.SET_VOLUME not in h.dev.received
         assert not h.link.connected and h.relay.state == State.IDLE
         assert T.SPK_AUDIO not in h.dev.received
     finally:
@@ -179,7 +180,7 @@ async def test_whole_reply_is_delivered_in_order():
         await h.down()
 
 
-async def test_listening_and_mic_require_v2_hello():
+async def test_listening_and_mic_require_v3_hello():
     h = make()
     await h.up()
     try:
@@ -199,7 +200,7 @@ def test_fake_device_status_layout():
     assert out == [(T.SPK_STATUS, struct.pack("<IBI", 10, 2, 5))]
 
 
-async def test_non_v2_hello_after_v2_stops_processing():
+async def test_non_v3_hello_after_v3_stops_processing():
     h = make()
     await h.up()
     try:

@@ -24,7 +24,7 @@ class Config:
     device_serial: str = ""
     usb_vid: int = 0x303A
     usb_pid: int = 0x1001
-    volume: int = 70
+    volume: int = 70  # initial value for a board with no stored volume
     ping_interval_s: float = 1.0
     reconnect_backoff_min_s: float = 0.5
     reconnect_backoff_max_s: float = 5.0
@@ -125,4 +125,7 @@ def load(path: Path | str | None = None) -> Config:
     unknown = sorted(set(data) - known)
     if unknown:
         raise ValueError(f"unknown config keys in {p}: {', '.join(unknown)}")
-    return dataclasses.replace(cfg, **data)
+    cfg = dataclasses.replace(cfg, **data)
+    if not 0 <= cfg.volume <= 100:
+        raise ValueError(f"volume must be 0-100, got {cfg.volume} in {p}")
+    return cfg

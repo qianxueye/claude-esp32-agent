@@ -201,3 +201,13 @@ def test_main_raises_open_files_limit_at_startup(monkeypatch, tmp_path, command)
             root.removeHandler(h)
             h.close()
     assert raised == [5000]
+
+
+def test_config_rejects_volume_out_of_range(tmp_path):
+    for bad in (-1, 101, 300):
+        p = tmp_path / "c.toml"
+        p.write_text(f"volume = {bad}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="volume"):
+            load(p)
+    p.write_text("volume = 100\n", encoding="utf-8")
+    assert load(p).volume == 100
