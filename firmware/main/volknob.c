@@ -74,8 +74,10 @@ int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
         k->reseed = true;
         return 0;
     }
-    if (k->state == VK_EDGE && r < VOL_R_MIN_PX) {
-        kill(k, VK_WHY_ZONE);
+    if (k->state == VK_EDGE && (k->noarm || r < VOL_R_MIN_PX)) {
+        /* inside the zone the touch can no longer arm, but may still be a tap */
+        k->noarm = true;
+        k->why = VK_WHY_ZONE;
         return 0;
     }
     double th = angle_of(x, y);
@@ -122,6 +124,11 @@ int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
     int ev = nv != k->v ? VK_EV_VOL : 0;
     k->v = nv;
     return ev;
+}
+
+void vk_rebase(volknob_t *k, int v)
+{
+    k->v = k->v0 = v;
 }
 
 int vk_tick(volknob_t *k, uint32_t t_ms)

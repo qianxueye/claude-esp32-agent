@@ -558,7 +558,7 @@ static void knob_events(int ev, uint32_t now)
         send_input(2);
     }
     if (ev & VK_EV_ARM) {
-        volume_knob_arm();
+        vk_rebase(&s_vk, volume_knob_arm());
         av_arm(&s_av, s_vk.v);
     }
     if (ev & VK_EV_VOL) {

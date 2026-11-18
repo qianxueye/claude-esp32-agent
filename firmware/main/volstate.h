@@ -26,7 +26,8 @@ bool vs_load(volst_t *s, int result, uint32_t raw);
 bool vs_host_set(volst_t *s, const uint8_t *payload, int len);
 /* A valid HOST_HELLO or entry to OFFLINE ends a transient override. */
 void vs_session_reset(volst_t *s);
-void vs_knob_arm(volst_t *s);
+/* Arms the knob; returns the user volume it armed with. */
+int vs_knob_arm(volst_t *s);
 void vs_knob_set(volst_t *s, int v);
 /* Ends the knob; returns true when a commit changed the user volume. */
 bool vs_knob_end(volst_t *s, bool cancel);

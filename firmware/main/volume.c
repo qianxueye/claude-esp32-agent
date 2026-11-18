@@ -95,13 +95,14 @@ void volume_session_reset(void)
     xSemaphoreGive(s_mtx);
 }
 
-void volume_knob_arm(void)
+int volume_knob_arm(void)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
-    vs_knob_arm(&s_st);
+    int base = vs_knob_arm(&s_st);
     apply_locked();
     s_arms++;
     xSemaphoreGive(s_mtx);
+    return base;
 }
 
 void volume_knob_set(int v)
