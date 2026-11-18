@@ -391,33 +391,6 @@ static void test_noise_estimator(void)
     assert(med >= 1.2 && med <= 1.4);
 }
 
-/* Samples spent in MOVING during an hour of rest noise far above the placeholder threshold, counted after the estimator has 64 blocks. */
-static long noisy_rest_moving(bool use_noise, double sigma_w)
-{
-    motion_cfg_t cfg = motion_default_cfg();
-    cfg.use_noise = use_noise;
-    rig_t r;
-    rig_init(&r, &cfg, 0);
-    long moving = 0;
-    for (long i = 0; i < 3600L * 1000L / DT_MS; i++) {
-        float a[3];
-        noisy(a, sigma_w * 2.2360679775);
-        rig_feed(&r, a, false);
-        moving += i > 70L * 1000L / DT_MS && r.m.state == MOTION_MOVING;
-    }
-    return moving;
-}
-
-static void test_noise_floor_raises_threshold(void)
-{
-    long without = noisy_rest_moving(false, 0.008);
-    long with = noisy_rest_moving(true, 0.008);
-    printf("noisy rest, one hour: %ld samples in MOVING without the floor, %ld with it\n", without, with);
-    assert(without >= 100000);
-    assert(with == 0);
-    assert(motion_default_cfg().use_noise == (MOTION_SMALL_WAKE_ENABLED != 0));
-}
-
 /* Vibration while the amplifier flag is set leaves sigma unchanged; the same vibration without the flag raises it. */
 static void test_noise_estimate_ignores_flagged_vibration(void)
 {
@@ -525,7 +498,6 @@ int main(void)
     test_reset_keeps_noise_estimate();
     test_drift();
     test_noise_estimator();
-    test_noise_floor_raises_threshold();
     test_noise_estimate_ignores_flagged_vibration();
     puts("ok");
     return 0;

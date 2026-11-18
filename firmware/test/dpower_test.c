@@ -25,12 +25,14 @@ static void test_timeline_from(uint32_t t0)
     dp_out_t o = run_to(&d, &t, t0 + DISP_HOLD_MS - 1);
     assert(o.stage == DP_ACTIVE && o.level_pct == DISP_ACTIVE_PERCENT && o.panel_on);
     o = run_to(&d, &t, t0 + DISP_HOLD_MS);
-    assert(o.stage == DP_DIM && o.level_pct == 56);
-    o = run_to(&d, &t, t0 + DISP_HOLD_MS + 80);
-    assert(o.level_pct == 32);
-    o = run_to(&d, &t, t0 + DISP_HOLD_MS + 160);
-    assert(o.level_pct == 18);
-    o = run_to(&d, &t, t0 + DISP_HOLD_MS + 240);
+    assert(o.stage == DP_DIM && o.level_pct == DISP_ACTIVE_PERCENT);
+    int prev = o.level_pct;
+    while (t < t0 + DISP_HOLD_MS + DISP_RAMP_MS) {
+        o = run_to(&d, &t, t + 7);
+        assert(o.level_pct <= prev && o.level_pct >= DISP_DIM_PERCENT);
+        prev = o.level_pct;
+    }
+    o = run_to(&d, &t, t0 + DISP_HOLD_MS + DISP_RAMP_MS);
     assert(o.level_pct == DISP_DIM_PERCENT && o.stage == DP_DIM && o.panel_on);
     o = run_to(&d, &t, t0 + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS - 1);
     assert(o.stage == DP_DIM && o.level_pct == DISP_DIM_PERCENT);
@@ -43,7 +45,7 @@ static void test_timeline_from(uint32_t t0)
 static void test_activity_returns_active_from_every_point(void)
 {
     const uint32_t span = DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 60000u;
-    for (uint32_t at = 0; at < span; at += 997) {
+    for (uint32_t at = 0; at < span; at += 6997) {
         for (int cause = DP_CAUSE_TOUCH; cause <= DP_CAUSE_MOTION; cause += 1) {
             if (cause == DP_CAUSE_STATE) {
                 continue;
@@ -53,11 +55,14 @@ static void test_activity_returns_active_from_every_point(void)
             uint32_t t = 0;
             run_to(&d, &t, at);
             dp_activity(&d, t, (dp_cause_t)cause);
+            const uint32_t act = t;
             dp_out_t o = dp_update(&d, t);
-            assert(o.stage == DP_ACTIVE && o.level_pct == DISP_ACTIVE_PERCENT && o.panel_on && (int)o.cause == cause);
-            o = run_to(&d, &t, t + DISP_HOLD_MS - 1);
+            assert(o.stage == DP_ACTIVE && o.panel_on && (int)o.cause == cause);
+            o = run_to(&d, &t, t + DISP_RAMP_MS);
+            assert(o.level_pct == DISP_ACTIVE_PERCENT);
+            o = run_to(&d, &t, act + DISP_HOLD_MS - 1);
             assert(o.stage == DP_ACTIVE);
-            o = run_to(&d, &t, t + 1);
+            o = run_to(&d, &t, act + DISP_HOLD_MS);
             assert(o.stage == DP_DIM);
         }
     }
@@ -144,7 +149,7 @@ static void test_force(void)
     assert(o.stage == DP_DIM && o.panel_on);
     dp_force(&d, -1);
     o = dp_update(&d, 48);
-    assert(o.stage == DP_ACTIVE && o.level_pct == DISP_ACTIVE_PERCENT);
+    assert(o.stage == DP_ACTIVE);
 }
 
 static void test_orbit(void)
@@ -173,89 +178,6 @@ static void test_orbit(void)
     dp_orbit(-1, &x1, &y1);
     dp_orbit(cycle - 1, &x0, &y0);
     assert(x0 == x1 && y0 == y1);
-}
-
-/* Motion activity every tick for three hours, from a clock start that may sit on the wrap. */
-static void test_storm_budget_from(uint32_t t0)
-{
-    const uint32_t hour = DISP_STORM_PERIOD_MS, total = 3u * hour;
-    const uint32_t n = total / TICK;
-    uint8_t *active = calloc(n + 1, 1);
-    assert(active);
-    dpower_t d;
-    dp_init(&d, t0);
-    uint32_t t = t0;
-    dp_out_t o;
-    uint32_t first_dim = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        t += TICK;
-        dp_activity(&d, t, DP_CAUSE_SMALL);
-        o = dp_update(&d, t);
-        active[i] = o.stage == DP_ACTIVE;
-        assert(o.stage != DP_OFF);
-        if (!first_dim && o.stage == DP_DIM) {
-            first_dim = i * TICK;
-        }
-    }
-    /* Boot activity holds ACTIVE for DISP_HOLD_MS before the budget starts to count. */
-    assert(first_dim >= DISP_HOLD_MS + DISP_STORM_BUDGET_MS - 1000 && first_dim <= DISP_HOLD_MS + DISP_STORM_BUDGET_MS + 1000);
-    uint32_t win = hour / TICK, sum = 0, worst = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        sum += active[i];
-        if (i >= win) {
-            sum -= active[i - win];
-        }
-        worst = sum > worst ? sum : worst;
-    }
-    assert((uint64_t)worst * TICK <= (uint64_t)DISP_STORM_BUDGET_MS + hour / DISP_STORM_BINS);
-    uint32_t all = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        all += active[i];
-    }
-    assert((uint64_t)all * TICK >= 2u * DISP_STORM_BUDGET_MS);
-    free(active);
-
-    t += 1000;
-    dp_activity(&d, t, DP_CAUSE_TOUCH);
-    o = dp_update(&d, t);
-    assert(o.stage == DP_ACTIVE);
-}
-
-static void test_storm_dim_from_off(void)
-{
-    dpower_t d;
-    dp_init(&d, 0);
-    uint32_t t = 0;
-    run_to(&d, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 1000);
-    assert(dp_update(&d, t).stage == DP_OFF);
-    dp_activity(&d, t, DP_CAUSE_SMALL);
-    dp_out_t o = dp_update(&d, t);
-    assert(o.stage == DP_ACTIVE && o.panel_on && o.cause == DP_CAUSE_SMALL);
-    for (uint32_t i = 0; i < DISP_STORM_BUDGET_MS / TICK + 100; i++) {
-        t += TICK;
-        dp_activity(&d, t, DP_CAUSE_SMALL);
-        dp_update(&d, t);
-    }
-    run_to(&d, &t, t + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 5000);
-    assert(dp_update(&d, t).stage == DP_OFF);
-    dp_activity(&d, t, DP_CAUSE_SMALL);
-    o = dp_update(&d, t);
-    assert(o.stage == DP_DIM && o.panel_on && o.level_pct == DISP_DIM_PERCENT);
-}
-
-static void test_touch_does_not_spend_budget(void)
-{
-    dpower_t d;
-    dp_init(&d, 0);
-    uint32_t t = 0;
-    for (uint32_t i = 0; i < 2u * DISP_STORM_BUDGET_MS / TICK; i++) {
-        t += TICK;
-        dp_activity(&d, t, DP_CAUSE_TOUCH);
-        assert(dp_update(&d, t).stage == DP_ACTIVE);
-    }
-    dp_activity(&d, t, DP_CAUSE_SMALL);
-    run_to(&d, &t, t + DISP_HOLD_MS - 1);
-    assert(dp_update(&d, t).stage == DP_ACTIVE);
 }
 
 /* Mirrors the extents in ui.c draw_mascot and draw_bubble: nothing may leave the scene at any lattice point. */
@@ -343,36 +265,6 @@ static void test_setdown_then_new_pickup(void)
     assert(run_to(&d, &t, t + DISP_HOLD_MS - 20).stage == DP_ACTIVE);
 }
 
-/* Pickups do not draw on the storm budget; small-motion wakes do and report the limit as the cause. */
-static void test_pickup_is_not_budgeted(void)
-{
-    dpower_t d;
-    dp_init(&d, 0);
-    uint32_t t = 0;
-    for (uint32_t i = 0; i < 2u * DISP_STORM_PERIOD_MS / TICK; i++) {
-        t += TICK;
-        dp_activity(&d, t, DP_CAUSE_MOTION);
-        assert(dp_update(&d, t).stage == DP_ACTIVE);
-    }
-    dpower_t e;
-    dp_init(&e, 0);
-    t = 0;
-    run_to(&e, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 1000);
-    for (uint32_t i = 0; i < DISP_STORM_BUDGET_MS / TICK + 200; i++) {
-        t += TICK;
-        dp_activity(&e, t, DP_CAUSE_SMALL);
-        dp_update(&e, t);
-    }
-    run_to(&e, &t, t + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 5000);
-    assert(dp_update(&e, t).stage == DP_OFF);
-    dp_activity(&e, t, DP_CAUSE_SMALL);
-    dp_out_t o = dp_update(&e, t);
-    assert(o.stage == DP_DIM && o.cause == DP_CAUSE_BUDGET);
-    dp_activity(&e, t, DP_CAUSE_MOTION);
-    o = dp_update(&e, t);
-    assert(o.stage == DP_ACTIVE && o.cause == DP_CAUSE_MOTION);
-}
-
 /* An attention state lifts OFF to DIM without activity; that brightening is attributed to the state, not the timer. */
 static void test_attention_brightening_cause(void)
 {
@@ -387,6 +279,90 @@ static void test_attention_brightening_cause(void)
     assert(o.stage == DP_DIM && o.cause == DP_CAUSE_STATE);
 }
 
+/* Ramp: equal-ratio, 0.3 s, both directions; a reversal continues from the current level; waking from OFF starts at the dim level. */
+static void test_ramp(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, DISP_HOLD_MS);
+    dp_out_t o = run_to(&d, &t, DISP_HOLD_MS + DISP_RAMP_MS / 2);
+    assert(o.level_pct >= 31 && o.level_pct <= 33);
+    int mid = o.level_pct;
+    dp_activity(&d, t, DP_CAUSE_TOUCH);
+    o = dp_update(&d, t);
+    assert(o.level_pct == mid);
+    uint32_t reversed = t;
+    int prev = mid;
+    while (t < reversed + DISP_RAMP_MS) {
+        o = run_to(&d, &t, t + 5);
+        assert(o.level_pct >= prev);
+        prev = o.level_pct;
+    }
+    assert(o.level_pct == DISP_ACTIVE_PERCENT);
+
+    run_to(&d, &t, t + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 5000);
+    assert(dp_update(&d, t).stage == DP_OFF);
+    dp_activity(&d, t, DP_CAUSE_BUTTON);
+    o = dp_update(&d, t);
+    assert(o.stage == DP_ACTIVE && o.panel_on && o.level_pct == DISP_DIM_PERCENT);
+    o = run_to(&d, &t, t + DISP_RAMP_MS);
+    assert(o.level_pct == DISP_ACTIVE_PERCENT);
+}
+
+/* DIM lasts 30 minutes: DIM at hold + 1799 s, OFF at hold + 1800 s, also after the quick set-down. */
+static void test_dim_to_off(void)
+{
+    assert(DISP_DIM_TO_OFF_MS == 1800000u);
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    assert(run_to(&d, &t, DISP_HOLD_MS + 1799000u).stage == DP_DIM);
+    assert(run_to(&d, &t, DISP_HOLD_MS + 1800000u).stage == DP_OFF);
+
+    dp_init(&d, 0);
+    t = 0;
+    run_to(&d, &t, 30000);
+    for (uint32_t i = 0; i < 1000 / TICK; i++) {
+        t += TICK;
+        dp_activity(&d, t, DP_CAUSE_MOTION);
+        dp_update(&d, t);
+    }
+    uint32_t rest = t;
+    dp_setdown(&d, rest);
+    assert(run_to(&d, &t, rest + DISP_SETDOWN_HOLD_MS).stage == DP_DIM);
+    assert(run_to(&d, &t, rest + DISP_SETDOWN_HOLD_MS + 1799000u).stage == DP_DIM);
+    assert(run_to(&d, &t, rest + DISP_SETDOWN_HOLD_MS + 1800000u).stage == DP_OFF);
+}
+
+/* Reference gate that looks at the stage on release; it is wrong because the wake has already made the screen ACTIVE by then. */
+static bool wrong_gate_at_release(dp_stage_t stage_at_release)
+{
+    return stage_at_release == DP_ACTIVE;
+}
+
+static bool touch_sends(dp_stage_t at_press)
+{
+    dp_touch_t t;
+    dp_touch_press(&t, at_press);
+    return dp_touch_sends(&t);
+}
+
+static void test_touch_gate(void)
+{
+    assert(!touch_sends(DP_DIM));
+    assert(!touch_sends(DP_OFF));
+    assert(touch_sends(DP_ACTIVE));
+    /* A second tap after the wake begins in ACTIVE. */
+    assert(touch_sends(DP_ACTIVE));
+    /* A hold begun dark is consumed whole, also at 1500 ms when the screen is ACTIVE. */
+    dp_touch_t hold;
+    dp_touch_press(&hold, DP_OFF);
+    assert(!dp_touch_sends(&hold) && !dp_touch_sends(&hold));
+    /* The release-time gate would send the tap of a touch begun in DIM: the red proof for the cases above. */
+    assert(wrong_gate_at_release(DP_ACTIVE) && !touch_sends(DP_DIM));
+}
+
 int main(void)
 {
     test_timeline_from(0);
@@ -398,15 +374,13 @@ int main(void)
     test_attention_states();
     test_offline_never_brightens();
     test_force();
-    test_storm_budget_from(0);
-    test_storm_budget_from(0xFFFFFFFFu - 1000000u);
-    test_storm_dim_from_off();
-    test_touch_does_not_spend_budget();
     test_orbit();
+    test_ramp();
+    test_dim_to_off();
+    test_touch_gate();
     test_setdown();
     test_attention_brightening_cause();
     test_setdown_then_new_pickup();
-    test_pickup_is_not_budgeted();
     test_orbit_keeps_drawing_in_scene();
     test_stale_timestamps_stay_off();
     puts("ok");

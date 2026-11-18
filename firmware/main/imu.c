@@ -161,8 +161,6 @@ static void imu_task(void *arg)
         }
         if (s_motion.state == MOTION_LIFTED) {
             ui_wake(DP_CAUSE_MOTION);
-        } else if (MOTION_SMALL_WAKE_ENABLED && s_motion.state == MOTION_MOVING) {
-            ui_wake(DP_CAUSE_SMALL);
         }
         if (ev & MOTION_EV_REST_DESK) {
             ui_wake(DP_CAUSE_SETDOWN);

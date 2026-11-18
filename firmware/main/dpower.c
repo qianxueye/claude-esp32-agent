@@ -24,37 +24,32 @@ static dp_stage_t stage_after(uint32_t elapsed)
     return elapsed < (uint32_t)DISP_HOLD_MS + DISP_DIM_TO_OFF_MS ? DP_DIM : DP_OFF;
 }
 
-static int ramp_level(int n)
+/* Equal-ratio interpolation in integer percent. */
+static int ramp_level(int from, int to, uint32_t elapsed)
 {
-    if (n >= DISP_RAMP_STEPS) {
-        return DISP_DIM_PERCENT;
+    if (elapsed >= DISP_RAMP_MS || from == to) {
+        return to;
     }
-    float ratio = (float)DISP_DIM_PERCENT / DISP_ACTIVE_PERCENT;
-    return (int)lroundf(DISP_ACTIVE_PERCENT * powf(ratio, (float)n / DISP_RAMP_STEPS));
+    return (int)lroundf((float)from * powf((float)to / (float)from, (float)elapsed / DISP_RAMP_MS));
 }
 
 void dp_init(dpower_t *d, uint32_t now)
 {
     *d = (dpower_t){0};
-    d->last_update = now;
-    d->bin_start = now;
     d->last_act = now;
     d->state_since = now;
     d->ramp_t0 = now;
     d->state = DP_STATE_IDLE;
     d->level = DISP_ACTIVE_PERCENT;
     d->force = -1;
-    d->ramping = false;
+    d->ramp_from = d->ramp_to = DISP_ACTIVE_PERCENT;
     d->hold = false;
     d->cause = DP_CAUSE_BOOT;
 }
 
 void dp_activity(dpower_t *d, uint32_t now, dp_cause_t cause)
 {
-    if (cause == DP_CAUSE_SMALL) {
-        d->last_imu = now;
-        d->imu_seen = true;
-    } else if (cause == DP_CAUSE_MOTION) {
+    if (cause == DP_CAUSE_MOTION) {
         d->last_lift = now;
         d->lift_seen = true;
     } else {
@@ -90,7 +85,7 @@ void dp_force(dpower_t *d, int stage)
     d->force = stage > DP_OFF ? DP_OFF : (stage < 0 ? -1 : stage);
 }
 
-static dp_stage_t pick_stage(const dpower_t *d, uint32_t now, bool *imu_only, bool *clamped)
+static dp_stage_t pick_stage(const dpower_t *d, uint32_t now)
 {
     dp_stage_t st = stage_after(since(now, d->last_act));
     if (is_attention(d->state)) {
@@ -104,51 +99,7 @@ static dp_stage_t pick_stage(const dpower_t *d, uint32_t now, bool *imu_only, bo
         dp_stage_t m = stage_after(since(now, d->last_lift));
         st = m < st ? m : st;
     }
-    dp_stage_t full = st;
-    *clamped = false;
-    if (d->imu_seen) {
-        dp_stage_t m = stage_after(since(now, d->last_imu));
-        if (d->exhausted && m == DP_ACTIVE) {
-            m = DP_DIM;
-            *clamped = m < st;
-        }
-        if (m < st) {
-            st = m;
-        }
-    }
-    *imu_only = st == DP_ACTIVE && full != DP_ACTIVE;
     return st;
-}
-
-static void advance_bins(dpower_t *d, uint32_t now)
-{
-    const uint32_t width = DISP_STORM_PERIOD_MS / DISP_STORM_BINS;
-    uint32_t el = since(now, d->bin_start);
-    if (el < width) {
-        return;
-    }
-    uint32_t n = el / width;
-    if (n >= DISP_STORM_BINS) {
-        for (int i = 0; i < DISP_STORM_BINS; i++) {
-            d->bins[i] = 0;
-        }
-        d->bin_start = now;
-        return;
-    }
-    for (uint32_t i = 0; i < n; i++) {
-        d->bin_idx = (d->bin_idx + 1) % DISP_STORM_BINS;
-        d->bins[d->bin_idx] = 0;
-    }
-    d->bin_start += n * width;
-}
-
-static uint32_t storm_used(const dpower_t *d)
-{
-    uint32_t sum = 0;
-    for (int i = 0; i < DISP_STORM_BINS; i++) {
-        sum += d->bins[i];
-    }
-    return sum;
 }
 
 static void saturate_age(uint32_t *stamp, uint32_t now)
@@ -161,45 +112,17 @@ static void saturate_age(uint32_t *stamp, uint32_t now)
 dp_out_t dp_update(dpower_t *d, uint32_t now)
 {
     saturate_age(&d->last_act, now);
-    saturate_age(&d->last_imu, now);
     saturate_age(&d->last_lift, now);
     saturate_age(&d->state_since, now);
-    uint32_t dt = since(now, d->last_update);
-    d->last_update = now;
-    if (dt > DISP_STORM_PERIOD_MS / DISP_STORM_BINS) {
-        dt = DISP_STORM_PERIOD_MS / DISP_STORM_BINS;
-    }
-    advance_bins(d, now);
-    bool imu_only, clamped;
-    dp_stage_t st = pick_stage(d, now, &imu_only, &clamped);
-    if (imu_only) {
-        d->bins[d->bin_idx] += dt;
-    }
-    bool exhausted = storm_used(d) >= DISP_STORM_BUDGET_MS;
-    if (exhausted != d->exhausted) {
-        d->exhausted = exhausted;
-        st = pick_stage(d, now, &imu_only, &clamped);
-    }
-    if (d->force >= 0) {
-        st = (dp_stage_t)d->force;
-    }
+    dp_stage_t st = d->force >= 0 ? (dp_stage_t)d->force : pick_stage(d, now);
     int want = st == DP_ACTIVE ? DISP_ACTIVE_PERCENT : DISP_DIM_PERCENT;
-    if (want >= d->level) {
-        d->level = want;
-        d->ramping = false;
-    } else {
-        if (!d->ramping) {
-            d->ramping = true;
-            d->ramp_t0 = now;
-        }
-        int n = (int)(since(now, d->ramp_t0) / DISP_RAMP_STEP_MS) + 1;
-        int lv = ramp_level(n);
-        d->level = lv < want ? want : lv;
-        if (d->level == want) {
-            d->ramping = false;
-        }
+    if (want != d->ramp_to) {
+        d->ramp_from = d->level;
+        d->ramp_to = want;
+        d->ramp_t0 = now;
     }
-    dp_cause_t cause = d->force >= 0 ? DP_CAUSE_FORCE : (st == DP_ACTIVE ? d->cause : (clamped ? DP_CAUSE_BUDGET : (is_attention(d->state) ? DP_CAUSE_STATE : DP_CAUSE_TIMER)));
+    d->level = ramp_level(d->ramp_from, d->ramp_to, since(now, d->ramp_t0));
+    dp_cause_t cause = d->force >= 0 ? DP_CAUSE_FORCE : (st == DP_ACTIVE ? d->cause : (is_attention(d->state) ? DP_CAUSE_STATE : DP_CAUSE_TIMER));
     return (dp_out_t){.stage = st, .level_pct = d->level, .panel_on = st != DP_OFF, .cause = cause};
 }
 
@@ -217,4 +140,14 @@ void dp_orbit(int index, int *x_px, int *y_px)
     }
     *x_px = ORBIT_X0_PX + col * ORBIT_PITCH_PX;
     *y_px = ORBIT_Y0_PX + row * ORBIT_PITCH_PX;
+}
+
+void dp_touch_press(dp_touch_t *t, dp_stage_t stage_at_press)
+{
+    t->consumed = stage_at_press != DP_ACTIVE;
+}
+
+bool dp_touch_sends(const dp_touch_t *t)
+{
+    return !t->consumed;
 }
