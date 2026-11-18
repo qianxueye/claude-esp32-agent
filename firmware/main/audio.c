@@ -178,6 +178,11 @@ static void pa_set(bool on)
     }
 }
 
+bool audio_pa_active(void)
+{
+    return s_pa_on;
+}
+
 int audio_pa_is_on(void)
 {
     return s_pa_on * 2 + gpio_get_level(BSP_POWER_AMP_IO);

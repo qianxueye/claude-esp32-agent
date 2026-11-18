@@ -1,19 +1,23 @@
 #include "imu.h"
 #include <math.h>
 #include "app_config.h"
+#include "audio.h"
 #include "bsp/esp-bsp.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "motion.h"
 #include "orient.h"
 #include "transport.h"
+#include "ui.h"
 
 static const char *TAG = "imu";
 
-enum { REG_WHO_AM_I = 0x00, REG_CTRL1 = 0x02, REG_CTRL2 = 0x03, REG_CTRL7 = 0x08, REG_STATUS0 = 0x2E, REG_AX_L = 0x35 };
+enum { REG_WHO_AM_I = 0x00, REG_CTRL1 = 0x02, REG_CTRL2 = 0x03, REG_CTRL5 = 0x06, REG_CTRL7 = 0x08, REG_STATUS0 = 0x2E, REG_AX_L = 0x35 };
 
 static i2c_master_dev_handle_t s_dev;
+static motion_t s_motion;
 
 static esp_err_t reg_write(uint8_t reg, uint8_t val)
 {
@@ -63,9 +67,18 @@ static void imu_task(void *arg)
         uint32_t t = now_ms();
         orient_feed(ux, uy, t - last);
         last = t;
+        int ev = motion_feed(&s_motion, a, t, audio_pa_active());
+        if (ev) {
+            ESP_LOGI(TAG, "motion: ev=%s D=%.1fmg th=%.1f/%.1f/%.1f amp=%d", ev & MOTION_EV_PICKUP ? "pickup" : (ev & MOTION_EV_MOVING ? "moving" : "rest"), s_motion.d * 1000.0f, s_motion.cfg.theta_on * 1000.0f,
+                     s_motion.cfg.theta_off * 1000.0f, s_motion.cfg.theta_pickup * 1000.0f, (int)audio_pa_active());
+        }
+        if (s_motion.state == MOTION_LIFTED) {
+            ui_wake(DP_CAUSE_MOTION);
+        }
         if (t - last_log >= IMU_LOG_PERIOD_MS) {
             last_log = t;
-            ESP_LOGI(TAG, "raw g x=%.2f y=%.2f z=%.2f up=(%.2f,%.2f) target=%.1f", a[0], a[1], a[2], ux, uy, orient_target());
+            ESP_LOGI(TAG, "raw g x=%.2f y=%.2f z=%.2f up=(%.2f,%.2f) target=%.1f D=%.2fmg st=%d", a[0], a[1], a[2], ux, uy,
+                     orient_target(), s_motion.d * 1000.0f, (int)s_motion.state);
         }
     }
 }
@@ -78,10 +91,12 @@ void imu_start(void)
         return;
     }
     esp_err_t w1 = reg_write(REG_CTRL1, IMU_CTRL1_VALUE), w2 = reg_write(REG_CTRL2, IMU_CTRL2_VALUE),
-              w7 = reg_write(REG_CTRL7, IMU_CTRL7_ACCEL_ON);
+              w5 = reg_write(REG_CTRL5, IMU_CTRL5_VALUE), w7 = reg_write(REG_CTRL7, IMU_CTRL7_ACCEL_ON);
     uint8_t rb[8] = {0};
     reg_read(REG_CTRL1, rb, 8);
-    ESP_LOGI(TAG, "ctrl write %d/%d/%d readback ctrl1=%02x ctrl2=%02x ctrl7=%02x", (int)w1, (int)w2, (int)w7, rb[0], rb[1], rb[6]);
+    ESP_LOGI(TAG, "ctrl write %d/%d/%d/%d readback ctrl1=%02x ctrl2=%02x ctrl5=%02x ctrl7=%02x", (int)w1, (int)w2, (int)w5, (int)w7, rb[0], rb[1],
+             rb[4], rb[6]);
+    motion_init(&s_motion, NULL);
     xTaskCreate(imu_task, "imu", STACK_IMU, NULL, PRIO_IMU, NULL);
     ESP_LOGI(TAG, "QMI8658 up");
 }

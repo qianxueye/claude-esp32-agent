@@ -121,7 +121,7 @@
 #define DISP_RAMP_STEPS 4 /* plain configuration: equal-ratio brightness steps from ACTIVE down to DIM */
 #define DISP_RAMP_STEP_MS 80 /* plain configuration */
 #define DISP_STORM_BUDGET_MS 300000 /* mathematical model: ACTIVE time from IMU-only wakes per period */
-#define DISP_STORM_PERIOD_MS 3600000 /* mathematical model: budget refill period */
+#define DISP_STORM_PERIOD_MS 3600000 /* mathematical model: sliding window the budget applies to */
 #define ORBIT_DWELL_MS 60000 /* plain configuration */
 #define ORBIT_PITCH_PX 4 /* plain configuration: lattice pitch, one font design pixel */
 #define ORBIT_COLS 6 /* plain configuration */
@@ -139,6 +139,7 @@
 #define IMU_RANGE_G 8.0f
 #define IMU_CTRL1_VALUE 0x40 /* register address auto-increment */
 #define IMU_CTRL2_VALUE 0x26 /* +-8 g, 125 Hz */
+#define IMU_CTRL5_VALUE 0x07 /* mathematical model: accelerometer low-pass on, mode 11 (16.7 Hz), below half the poll rate */
 #define IMU_CTRL7_ACCEL_ON 0x01
 #define IMU_UP_X_SRC 1 /* screen up-vector x = +accel Y, y = -accel X (Waveshare 04_Immersive_block) */
 #define IMU_UP_X_SIGN 1
@@ -153,6 +154,17 @@
 #define ORIENT_FREE_ANGLE 0 /* 1 = free angle with dead zone and snap; 0 = 90 degree steps */
 #define ORIENT_STEP_HYST_DEG 15.0f
 #define ORIENT_STEP_HOLD_MS 500
+
+/* Motion detector (docs/display-power.md); a g value is the length of the mean-acceleration deviation */
+#define MOTION_WINDOW_SAMPLES 5 /* mathematical model, placeholder until traces: mean window, 100 ms */
+#define MOTION_REF_SAMPLES 100 /* mathematical model, placeholder until traces: rest anchor and settle window, 2 s */
+#define MOTION_THETA_ON_G 0.013f /* mathematical model, placeholder until traces */
+#define MOTION_THETA_OFF_G 0.008f /* mathematical model, placeholder until traces */
+#define MOTION_N_ON 14 /* mathematical model, placeholder until traces: samples above THETA_ON before MOVING */
+#define MOTION_THETA_PICKUP_G 0.174f /* mathematical model: 10 degrees of tilt */
+#define MOTION_N_PICKUP 25 /* mathematical model: samples above THETA_PICKUP before LIFTED */
+#define MOTION_TAU_REF_MS 20000 /* mathematical model: rest anchor follows the mean with this time constant */
+#define MOTION_PA_TAIL_MS 200 /* mathematical model: window + sensor filter settling + amplifier settle after the amplifier stops */
 
 /* Task priorities and stacks */
 #define PRIO_RX 7

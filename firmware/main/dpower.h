@@ -17,15 +17,18 @@ typedef struct {
     dp_cause_t cause;
 } dp_out_t;
 
+#define DP_STORM_BINS 60
+
 typedef struct {
-    uint32_t last_act, state_since, ramp_t0;
-    int state, level, force;
-    bool ramping, hold;
+    uint32_t last_act, last_imu, state_since, ramp_t0, last_update, bin_start;
+    uint32_t bins[DP_STORM_BINS];
+    int state, level, force, bin_idx;
+    bool ramping, hold, imu_seen, exhausted;
     dp_cause_t cause;
 } dpower_t;
 
 void dp_init(dpower_t *d, uint32_t now);
-/* Touch, button or motion activity. */
+/* Touch, button or motion activity; motion holds ACTIVE for at most DISP_STORM_BUDGET_MS per DISP_STORM_PERIOD_MS, then reaches DIM only. */
 void dp_activity(dpower_t *d, uint32_t now, dp_cause_t cause);
 /* Reports the device state; a change into or out of LISTENING, THINKING, SPEAKING or ERROR counts as activity, unless OFFLINE is one end. */
 void dp_state(dpower_t *d, uint32_t now, int state);
