@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "dpower.h"
 #include "lvgl.h"
 
 typedef enum {
@@ -19,6 +20,13 @@ void ui_set_angle_override(bool on, float deg);
 /* Test aid for frame-rate measurement; 0 off, 1 spin, 2 redraw, 3 invalidate canvas, 4 invalidate screen, 5 spin with the flushed area deliberately shrunk. */
 enum { UI_BENCH_OFF, UI_BENCH_SPIN, UI_BENCH_REDRAW, UI_BENCH_CANVAS, UI_BENCH_SCREEN, UI_BENCH_SHRINK };
 void ui_set_bench(int mode);
+/* Posts an activity cause from any task; the UI timer applies it. */
+void ui_wake(dp_cause_t cause);
+/* Test aids: pin the power stage (0 active, 1 dim, 2 off; negative releases), run its timeline N times faster, pin the orbit index (negative releases), fill the screen with a grey 0-255 (negative restores). */
+void ui_set_disp_force(int stage);
+void ui_set_disp_scale(int n);
+void ui_set_orbit(int index);
+void ui_set_fill(int grey);
 /* Renders the active screen into an RGB565 buffer; release it with ui_snapshot_free. */
 lv_draw_buf_t *ui_snapshot_take(void);
 void ui_snapshot_free(lv_draw_buf_t *buf);

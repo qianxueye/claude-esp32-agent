@@ -29,7 +29,7 @@ Colour `#D97757` on pure black. The display is a round 466×466 AMOLED; the whol
 
 | State | Motion |
 |-------|--------|
-| IDLE | Slow breathing bob; blink every few seconds; occasional glance; now and then a short sideways scuttle (legs alternate) and back. Slow position drift over minutes, and dimming after a long idle period, to limit AMOLED burn-in. |
+| IDLE | Slow breathing bob; blink every few seconds; occasional glance; now and then a short sideways scuttle (legs alternate) and back. The whole drawing steps slowly around a lattice to limit AMOLED burn-in; the panel dims and later turns off when nothing happens (`display-power.md`). |
 | LISTENING | Claws raised, eyes open taller; a thin ring around the mascot whose width and brightness follow the mic level. |
 | THINKING | Legs walk in place; eyes look up; the status bubble shows a spinner cycling through the Claude Code thinking glyphs `· ✢ ✳ ✶ ✻ ✽`. |
 | SPEAKING | Body bounce and claw movement driven by the playback level. |
