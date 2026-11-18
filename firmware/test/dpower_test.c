@@ -214,8 +214,8 @@ static void test_stale_timestamps_stay_off(void)
     assert(dp_update(&d, t).stage == DP_ACTIVE);
 }
 
-/* Lifted at t, a desk rest at t + 1 s: the stage dims DISP_SETDOWN_HOLD_MS later, or DISP_HOLD_MS later without the desk call. */
-static dp_stage_t after_setdown(bool desk, int state, bool touch, uint32_t probe)
+/* Lifted at t, a rest at t + 1 s: the stage dims DISP_SETDOWN_HOLD_MS later, or DISP_HOLD_MS later without the set-down call. */
+static dp_stage_t after_setdown(bool setdown, int state, bool touch, uint32_t probe)
 {
     dpower_t d;
     dp_init(&d, 0);
@@ -228,7 +228,7 @@ static dp_stage_t after_setdown(bool desk, int state, bool touch, uint32_t probe
         dp_update(&d, t);
     }
     uint32_t rest = t;
-    if (desk) {
+    if (setdown) {
         dp_setdown(&d, t);
     }
     if (touch) {
@@ -250,6 +250,23 @@ static void test_setdown(void)
     assert(after_setdown(true, DP_STATE_IDLE, true, DISP_HOLD_MS - 20) == DP_ACTIVE);
     assert(after_setdown(true, DP_STATE_IDLE, true, DISP_HOLD_MS) == DP_DIM);
     assert(after_setdown(true, DP_STATE_THINKING, false, hold + 1000) == DP_ACTIVE);
+}
+
+/* The applied hold is reported: the short one after a set-down, the normal one once activity restores it. */
+static void test_setdown_hold_reported(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, 30000);
+    assert(dp_update(&d, t).hold_ms == DISP_HOLD_MS);
+    dp_activity(&d, t, DP_CAUSE_MOTION);
+    dp_setdown(&d, t);
+    assert(dp_update(&d, t).hold_ms == DISP_SETDOWN_HOLD_MS);
+    run_to(&d, &t, t + DISP_SETDOWN_HOLD_MS);
+    assert(dp_update(&d, t).stage == DP_DIM && dp_update(&d, t).hold_ms == DISP_SETDOWN_HOLD_MS);
+    dp_activity(&d, t, DP_CAUSE_TOUCH);
+    assert(dp_update(&d, t).hold_ms == DISP_HOLD_MS);
 }
 
 static void test_setdown_then_new_pickup(void)
@@ -380,6 +397,7 @@ int main(void)
     test_touch_gate();
     test_setdown();
     test_attention_brightening_cause();
+    test_setdown_hold_reported();
     test_setdown_then_new_pickup();
     test_orbit_keeps_drawing_in_scene();
     test_stale_timestamps_stay_off();
