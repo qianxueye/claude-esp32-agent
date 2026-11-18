@@ -34,6 +34,7 @@ int vk_press(volknob_t *k, int x, int y, uint32_t t_ms, bool dark, uint8_t user_
     k->theta_last = angle_of(x, y);
     k->v = k->v0 = user_vol;
     k->state = dark ? VK_DEAD : k->r0 >= VOL_R_MIN_PX ? VK_EDGE : VK_CENTRE;
+    k->cls = k->state;
     k->why = dark ? VK_WHY_DARK : VK_WHY_NONE;
     return 0;
 }
@@ -103,6 +104,7 @@ int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
             return 0;
         }
         k->state = VK_ARMED;
+        k->armed_ever = true;
         k->acc = 0;
         k->v = k->v0;
         return VK_EV_ARM;

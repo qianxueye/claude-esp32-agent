@@ -20,6 +20,7 @@
 #include "proto.h"
 #include "transport.h"
 #include "ui.h"
+#include "volume.h"
 
 static const char *TAG = "app";
 
@@ -34,9 +35,12 @@ static volatile uint32_t s_pwr_read_errors;
 static void send_hello(const char *reason)
 {
     char json[HELLO_JSON_BYTES];
+    int vol;
+    bool vol_set;
+    volume_hello_fields(&vol, &vol_set);
     int n = snprintf(json, sizeof(json),
-                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"usb\",\"paired\":false}",
-                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason);
+                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"usb\",\"paired\":false,\"vol\":%d,\"vol_set\":%s}",
+                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, vol, vol_set ? "true" : "false");
     transport_send(T_HELLO, json, n);
 }
 
@@ -116,6 +120,10 @@ static void handle_debug(const proto_frame_t *f)
     v = json_value(json, "orbit");
     if (v) {
         ui_set_orbit(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "arc");
+    if (v) {
+        ui_set_arc(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
     }
     v = json_value(json, "fill");
     if (v) {
@@ -237,6 +245,7 @@ static void on_frame(const proto_frame_t *f)
     }
     switch (f->type) {
     case T_HOST_HELLO:
+        volume_session_reset();
         send_hello(reply);
         send_json(T_WIFI_STATUS, "{\"wifi\":\"off\",\"relay\":\"none\"}");
         break;
@@ -246,8 +255,8 @@ static void on_frame(const proto_frame_t *f)
         }
         break;
     case T_SET_VOLUME:
-        if (f->len == 1) {
-            audio_set_volume(f->payload[0]);
+        if (f->len == 1 || f->len == 2) {
+            volume_host_set(f->payload, f->len);
         }
         break;
     case T_PAIR:
@@ -292,12 +301,18 @@ static void on_frame(const proto_frame_t *f)
 static void life_task(void *arg)
 {
     uint32_t last_stats = now_ms();
+    bool saved_logged = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(LIFE_PERIOD_MS));
         uint32_t last_host = s_last_host_ms;
         uint32_t t = now_ms();
         if (s_ready && s_state != ST_OFFLINE && t - last_host >= PROTO_HOST_SILENCE_TIMEOUT_MS) {
+            volume_session_reset();
             set_state(ST_OFFLINE);
+        }
+        if (volume_poll(t, !audio_pa_active() && s_state != ST_LISTENING) && !saved_logged) {
+            saved_logged = true;
+            ESP_LOGI(TAG, "volume saved; life stack high-water %u words", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
         if (t - last_stats >= STATS_LOG_PERIOD_MS) {
             last_stats = t;
@@ -313,6 +328,10 @@ static void life_task(void *arg)
                      (unsigned)ac.spk_underruns, (unsigned)ac.spk_slow_writes, (unsigned)ac.mic_gaps, (unsigned)ac.mic_dropped);
             ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u pwr_err=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
                      (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)s_pwr_read_errors);
+            volume_stats_t vs;
+            volume_stats(&vs);
+            ESP_LOGI(TAG, "knob vol=%d eff=%d set=%d arms=%u cancels=%u edge=%u saves=%u", vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms,
+                     (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves);
         }
     }
 }
@@ -393,6 +412,7 @@ void app_main(void)
     s_last_host_ms = now_ms();
     transport_start(on_frame);
     ESP_LOGI(TAG, "boot fw=%s reset_reason=%d", FW_VERSION, (int)esp_reset_reason());
+    volume_init();
     ui_start();
     ESP_LOGI(TAG, "display up; free internal %u largest %u psram %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

@@ -29,6 +29,8 @@ void ui_wake_counts(uint32_t out[DP_CAUSE_N]);
 void ui_set_disp_scale(int n);
 void ui_set_orbit(int index);
 void ui_set_fill(int grey);
+/* Test aid: shows the volume arc at a level 0-100 without touching the volume; negative releases. */
+void ui_set_arc(int level);
 /* Renders the active screen into an RGB565 buffer; release it with ui_snapshot_free. */
 lv_draw_buf_t *ui_snapshot_take(void);
 void ui_snapshot_free(lv_draw_buf_t *buf);
