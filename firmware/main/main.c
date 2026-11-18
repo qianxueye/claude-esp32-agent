@@ -96,6 +96,22 @@ static void handle_debug(const proto_frame_t *f)
     if (v) {
         ui_set_bench(atoi(v));
     }
+    v = json_value(json, "disp_scale");
+    if (v) {
+        ui_set_disp_scale(atoi(v));
+    }
+    v = json_value(json, "disp_force");
+    if (v) {
+        ui_set_disp_force(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "orbit");
+    if (v) {
+        ui_set_orbit(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "fill");
+    if (v) {
+        ui_set_fill(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
 }
 
 static void set_state(dev_state_t s)
@@ -296,19 +312,27 @@ static void button_task(void *arg)
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     gpio_config(&io);
-    int low = 0;
+    int low = 0, high = 0;
     bool sent = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(BOOT_BUTTON_POLL_MS));
         if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
-            if (++low >= BOOT_BUTTON_DEBOUNCE_POLLS && !sent) {
+            high = 0;
+            if (low < BOOT_BUTTON_DEBOUNCE_POLLS) {
+                low++;
+            }
+            if (low >= BOOT_BUTTON_DEBOUNCE_POLLS && !sent) {
                 sent = true;
+                ui_wake(DP_CAUSE_BUTTON);
                 uint8_t code = 3;
                 transport_send(T_INPUT, &code, 1);
             }
         } else {
             low = 0;
-            sent = false;
+            if (++high >= BOOT_BUTTON_DEBOUNCE_POLLS) {
+                sent = false;
+                high = BOOT_BUTTON_DEBOUNCE_POLLS;
+            }
         }
     }
 }

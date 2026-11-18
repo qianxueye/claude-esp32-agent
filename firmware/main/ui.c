@@ -7,7 +7,9 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
 #include "esp_heap_caps.h"
+#include "dpower.h"
 #include "driver/gpio.h"
+#include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -66,8 +68,6 @@ static const char *const SPINNER[SPINNER_N][SPINNER_PX] = {
 };
 static const int SPINNER_PINGPONG[] = {0, 1, 2, 3, 4, 5, 4, 3, 2, 1};
 
-static const int8_t DRIFT[8][2] = {{0, 0}, {2, 0}, {3, 2}, {2, 3}, {0, 3}, {-2, 2}, {-3, 0}, {-2, -2}};
-
 static const int LEG_COL[4] = {3, 5, 10, 12};
 
 static lv_obj_t *s_canvas;
@@ -94,6 +94,14 @@ static uint32_t s_press_tick;
 static float s_bench_angle;
 static int s_shown_rot = -1;
 static volatile uint32_t s_refr_count, s_refr_worst_ms, s_refr_start, s_refr_sum_ms;
+static dpower_t s_dp;
+static esp_lcd_panel_handle_t s_panel;
+static volatile uint32_t s_wake_bits;
+static volatile bool s_panel_on = true;
+static int s_applied_level = DISP_ACTIVE_PERCENT, s_time_scale = 1, s_orbit_force = -1, s_fill = -1;
+static dp_stage_t s_logged_stage = DP_ACTIVE;
+static const char *const STAGE_NAME[] = {"active", "dim", "off"};
+static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force"};
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -312,9 +320,7 @@ static void compute_scene(scene_t *s, uint32_t now)
     if (s_pop == 3 && BUBBLES[s_bub_state].spinner) {
         s->spin = SPINNER_PINGPONG[pingpong(t, SPINNER_STEP_MS, 10)];
     }
-    int drift = (int)((now / DRIFT_STEP_MS) % 8);
-    s->gx = DRIFT[drift][0] * U;
-    s->gy = DRIFT[drift][1] * U;
+    dp_orbit(s_orbit_force >= 0 ? s_orbit_force : (int)((now / ORBIT_DWELL_MS) % (ORBIT_COLS * ORBIT_ROWS)), &s->gx, &s->gy);
     switch (s_state) {
     case ST_IDLE: {
         s->dy += (t % IDLE_BOB_PERIOD_MS) >= IDLE_BOB_PERIOD_MS / 2 ? U : 0;
@@ -343,9 +349,6 @@ static void compute_scene(scene_t *s, uint32_t now)
             if (moving) {
                 s->legs_up = (steps & 1) ? 0x6 : 0x9;
             }
-        }
-        if (t >= IDLE_DIM_AFTER_MS) {
-            s->dim = IDLE_DIM_PERCENT;
         }
         break;
     }
@@ -515,10 +518,16 @@ static void apply_rotation(float deg)
     present(tenths);
 }
 
+static uint32_t dp_clock(void)
+{
+    return now_ms() * (uint32_t)s_time_scale;
+}
+
 static void ui_set_state_locked(dev_state_t s)
 {
     s_state = s;
     s_state_since = lv_tick_get();
+    dp_state(&s_dp, dp_clock(), (int)s);
     if (BUBBLES[s].text) {
         s_bub_state = s;
         s_pop_target = 3;
@@ -536,6 +545,7 @@ static void touch_cb(lv_event_t *e)
 {
     switch (lv_event_get_code(e)) {
     case LV_EVENT_PRESSED:
+        dp_activity(&s_dp, dp_clock(), DP_CAUSE_TOUCH);
         s_pressed = true;
         s_long_sent = false;
         s_press_tick = lv_tick_get();
@@ -558,7 +568,7 @@ static void refr_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) == LV_EVENT_REFR_START) {
         xSemaphoreTake(s_te_sem, 0);
-        if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(DISPLAY_TE_WAIT_MS)) != pdTRUE) {
+        if (s_panel_on && xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(DISPLAY_TE_WAIT_MS)) != pdTRUE) {
             s_te_missed++;
         }
         s_refr_start = lv_tick_get();
@@ -630,6 +640,34 @@ static void update_ring(void)
     }
 }
 
+static void power_tick(void)
+{
+    uint32_t t = dp_clock();
+    uint32_t bits = __atomic_exchange_n(&s_wake_bits, 0, __ATOMIC_RELAXED);
+    for (int c = 1; c < DP_CAUSE_N; c++) {
+        if (bits & (1u << c)) {
+            dp_activity(&s_dp, t, (dp_cause_t)c);
+        }
+    }
+    dp_out_t o = dp_update(&s_dp, t);
+    if (o.panel_on && !s_panel_on) {
+        bsp_display_brightness_set(o.level_pct);
+        s_applied_level = o.level_pct;
+        esp_lcd_panel_disp_on_off(s_panel, true);
+        s_panel_on = true;
+    } else if (o.panel_on && o.level_pct != s_applied_level) {
+        bsp_display_brightness_set(o.level_pct);
+        s_applied_level = o.level_pct;
+    } else if (!o.panel_on && s_panel_on) {
+        esp_lcd_panel_disp_on_off(s_panel, false);
+        s_panel_on = false;
+    }
+    if (o.stage != s_logged_stage) {
+        s_logged_stage = o.stage;
+        ESP_LOGI(TAG, "disp: stage=%s cause=%s level=%d", STAGE_NAME[o.stage], CAUSE_NAME[o.cause], o.level_pct);
+    }
+}
+
 static void tick_cb(lv_timer_t *t)
 {
     uint32_t now = lv_tick_get();
@@ -643,6 +681,7 @@ static void tick_cb(lv_timer_t *t)
         s_pop += s_pop < s_pop_target ? 1 : -1;
         s_pop_at = now;
     }
+    power_tick();
     scene_t sc;
     compute_scene(&sc, now);
     if (memcmp(&sc, &s_drawn, sizeof(sc)) != 0 || s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK || s_bench == UI_BENCH_REDRAW) {
@@ -720,6 +759,7 @@ static lv_display_t *display_start(void)
     esp_lcd_panel_handle_t panel;
     esp_lcd_panel_io_handle_t io;
     ESP_ERROR_CHECK(bsp_display_new(&dc, &panel, &io));
+    s_panel = panel;
     esp_lv_adapter_display_config_t dcfg = {
         .panel = panel,
         .panel_io = io,
@@ -779,6 +819,7 @@ void ui_start(void)
     lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_START, NULL);
     lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_READY, NULL);
     s_last_tick = lv_tick_get();
+    dp_init(&s_dp, dp_clock());
     ui_set_state_locked(ST_IDLE);
     scene_t sc;
     compute_scene(&sc, s_last_tick);
@@ -820,5 +861,48 @@ void ui_snapshot_free(lv_draw_buf_t *buf)
 {
     bsp_display_lock(-1);
     lv_draw_buf_destroy(buf);
+    bsp_display_unlock();
+}
+
+void ui_wake(dp_cause_t cause)
+{
+    __atomic_fetch_or(&s_wake_bits, 1u << cause, __ATOMIC_RELAXED);
+}
+
+void ui_set_disp_force(int stage)
+{
+    bsp_display_lock(-1);
+    dp_force(&s_dp, stage);
+    bsp_display_unlock();
+}
+
+void ui_set_disp_scale(int n)
+{
+    bsp_display_lock(-1);
+    s_time_scale = n < 1 ? 1 : n;
+    dp_init(&s_dp, dp_clock());
+    dp_state(&s_dp, dp_clock(), (int)s_state);
+    bsp_display_unlock();
+}
+
+void ui_set_orbit(int index)
+{
+    bsp_display_lock(-1);
+    s_orbit_force = index;
+    bsp_display_unlock();
+}
+
+void ui_set_fill(int grey)
+{
+    bsp_display_lock(-1);
+    s_fill = grey > 255 ? 255 : grey;
+    lv_obj_t *scr = lv_screen_active();
+    if (s_fill >= 0) {
+        lv_obj_set_style_bg_color(scr, lv_color_make(s_fill, s_fill, s_fill), 0);
+        lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+        lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
+    }
     bsp_display_unlock();
 }

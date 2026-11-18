@@ -26,6 +26,12 @@ jobs:
       - run: uv sync
       - run: uv run pytest -q
 
+  firmware-host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - run: sh firmware/test/run.sh
+
   firmware-build:
     runs-on: ubuntu-latest
     container: espressif/idf:v5.5.4

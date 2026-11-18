@@ -1,6 +1,6 @@
 #pragma once
 
-/* Every value below is plain configuration unless a comment says it is fixed by docs/protocol.md. */
+/* Values are plain configuration unless a comment says otherwise: "mathematical model" (docs/display-power.md) or fixed by docs/protocol.md. */
 
 #define FW_VERSION "0.1.0"
 
@@ -71,8 +71,6 @@
 #define SCENE_MAX_RADIUS_PX 225
 #define MASCOT_COLOR 0xD97757
 #define MASCOT_DIM_PERCENT 30
-#define IDLE_DIM_AFTER_MS 120000
-#define IDLE_DIM_PERCENT 45
 #define BUBBLE_FILL_COLOR 0xF4F3EE
 #define BUBBLE_INK_COLOR 0x141413
 #define BUBBLE_ERROR_COLOR 0xD14343
@@ -106,7 +104,6 @@
 #define SCUTTLE_STEP_MS 120
 #define SCUTTLE_HOLD_MS 700
 #define SCUTTLE_DISTANCE_UNITS 4
-#define DRIFT_STEP_MS 60000
 #define THINK_LEG_STEP_MS 180
 #define ERROR_CROSS_MS 1500
 #define ERROR_SHAKE_MS 480
@@ -114,6 +111,23 @@
 #define SPEAK_BOUNCE_MAX_UNITS 2
 #define SPEAK_CLAW_STEP_MS 140
 #define SPEAK_CLAW_LEVEL_MIN 120
+
+/* Display power (docs/display-power.md) */
+#define DISP_ACTIVE_PERCENT 100 /* plain configuration */
+#define DISP_DIM_PERCENT 10 /* plain configuration */
+#define DISP_HOLD_MS 20000 /* plain configuration: ACTIVE time after the last activity */
+#define DISP_DIM_TO_OFF_MS 300000 /* plain configuration: DIM time before the panel turns off */
+#define DISP_ATTN_CAP_MS 120000 /* plain configuration: ACTIVE limit in one unchanged non-IDLE state */
+#define DISP_RAMP_STEPS 4 /* plain configuration: equal-ratio brightness steps from ACTIVE down to DIM */
+#define DISP_RAMP_STEP_MS 80 /* plain configuration */
+#define DISP_STORM_BUDGET_MS 300000 /* mathematical model: ACTIVE time from IMU-only wakes per period */
+#define DISP_STORM_PERIOD_MS 3600000 /* mathematical model: budget refill period */
+#define ORBIT_DWELL_MS 60000 /* plain configuration */
+#define ORBIT_PITCH_PX 4 /* plain configuration: lattice pitch, one font design pixel */
+#define ORBIT_COLS 6 /* plain configuration */
+#define ORBIT_ROWS 8 /* plain configuration */
+#define ORBIT_X0_PX -12 /* plain configuration: leftmost lattice column */
+#define ORBIT_Y0_PX -16 /* plain configuration: topmost lattice row */
 
 /* IMU orientation (docs/mascot.md "Screen orientation") */
 #define IMU_I2C_ADDR_PRIMARY 0x6B
