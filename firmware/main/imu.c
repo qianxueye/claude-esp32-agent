@@ -154,11 +154,16 @@ static void imu_task(void *arg)
         last = t;
         int ev = motion_feed(&s_motion, a, t, audio_pa_active());
         if (ev) {
-            ESP_LOGI(TAG, "motion: ev=%s D=%.1fmg th=%.1f/%.1f/%.1f amp=%d", ev & MOTION_EV_PICKUP ? "pickup" : (ev & MOTION_EV_MOVING ? "moving" : "rest"), s_motion.d * 1000.0f, s_motion.cfg.theta_on * 1000.0f,
+            ESP_LOGI(TAG, "motion: ev=%s D=%.1fmg th=%.1f/%.1f/%.1f amp=%d", ev & MOTION_EV_PICKUP ? "pickup" : (ev & MOTION_EV_MOVING ? "moving" : (ev & MOTION_EV_REST_DESK ? "rest_desk" : "rest")), s_motion.d * 1000.0f, s_motion.cfg.theta_on * 1000.0f,
                      s_motion.cfg.theta_off * 1000.0f, s_motion.cfg.theta_pickup * 1000.0f, (int)audio_pa_active());
         }
-        if (s_motion.state == MOTION_LIFTED || (MOTION_SMALL_WAKE_ENABLED && s_motion.state == MOTION_MOVING)) {
+        if (s_motion.state == MOTION_LIFTED) {
             ui_wake(DP_CAUSE_MOTION);
+        } else if (MOTION_SMALL_WAKE_ENABLED && s_motion.state == MOTION_MOVING) {
+            ui_wake(DP_CAUSE_SMALL);
+        }
+        if (ev & MOTION_EV_REST_DESK) {
+            ui_wake(DP_CAUSE_SETDOWN);
         }
         if (t - last_log >= IMU_LOG_PERIOD_MS) {
             last_log = t;

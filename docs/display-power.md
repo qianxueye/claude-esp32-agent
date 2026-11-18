@@ -22,6 +22,7 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 | `DISP_HOLD_MS` | C | ACTIVE time after the last activity |
 | `DISP_DIM_TO_OFF_MS` | C | DIM time before OFF |
 | `DISP_ATTN_CAP_MS` | C | ACTIVE limit in one unchanged non-IDLE state |
+| `DISP_SETDOWN_HOLD_MS` | C | ACTIVE time left after a desk set-down |
 | `DISP_RAMP_STEPS`, `DISP_RAMP_STEP_MS` | C | stepped descent |
 | `DISP_STORM_BINS` | C | resolution of the storm-budget window (see below) |
 | `ORBIT_*` | C | lattice size, pitch, origin and dwell |
@@ -86,11 +87,17 @@ Detector tests: with θ = k·σ_D and σ_D = σ_W·√(1 + W/W_ref), 24 h of whi
 
 ## Storm budget
 
-Motion wakes that alone hold ACTIVE (time held in hand counts: a few untouched pickups of a minute each use an hour's budget) are limited to `DISP_STORM_BUDGET_MS` per `DISP_STORM_PERIOD_MS` (sliding window of 60 bins). When it is spent, motion reaches DIM at most, until old bins expire. Touch, button and state activity are not counted. Class M: a false-wake storm at 100 % costs no more panel wear than the resting dim level did before, `(0.174 − 0.10) / (1 − 0.10) = 8.2 %` of the time.
+Only small-motion wakes (MOVING as activity, `MOTION_SMALL_WAKE_ENABLED`) draw on a budget: `DISP_STORM_BUDGET_MS` of ACTIVE per `DISP_STORM_PERIOD_MS` (sliding window of 60 bins). When it is spent they reach DIM at most, and the `disp:` line gives `cause=motion_budget`. Class M: a false-wake storm at 100 % costs no more panel wear than the resting dim level did before, `(0.174 − 0.10) / (1 − 0.10) = 8.2 %` of the time.
+
+Pickups, touch, button and state activity are not budgeted. A push or a knock cannot fake a pickup (the travel bound above), and a budget for pickups would leave a screen that stays dark when the board is lifted after a few looks in an hour.
+
+## Quick dim after set-down
+
+When a LIFTED spell ends in a REST that passes the desk test and the device is in IDLE, the pickup hold shrinks to `DISP_SETDOWN_HOLD_MS` (class C) after that REST instead of `DISP_HOLD_MS`. Desk test: in the second half of the settle window the 100 ms mean stays within θ_noise of its running mean; θ_noise is the floor from the noise estimator below (valid after 64 rest blocks, blocks during LIFTED are not used). A hand holding the board still spreads by several mg and keeps the normal hold, as does a REST outside IDLE. Touch, BOOT, a state change or a new pickup after the set-down restore the normal hold.
 
 ## Noise floor
 
-Used only when `MOTION_SMALL_WAKE_ENABLED` is 1. The floor needs no rest/motion decision, so it cannot lock up.
+The floor raises θ_on and θ_off only when `MOTION_SMALL_WAKE_ENABLED` is 1; the desk test above always uses it. The floor needs no rest/motion decision, so it cannot lock up.
 
 - Per 1 s block with the amplifier off, take the ten 100 ms means m_k of the raw samples: `A_b = Σ(m_{k+1} − m_k)² / 54` over three axes (the Allan variance of the mean).
 - `σ̂_W² = (lower quartile of the last 64 blocks) / c`. Blocks that overlap amplifier time are dropped. The estimate is valid after 64 blocks.

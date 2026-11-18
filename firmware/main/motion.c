@@ -96,6 +96,7 @@ static void restart_settle(motion_t *m, const float g[3])
         m->settle_mean[j] = g[j];
     }
     m->settle_n = 1;
+    m->settle_max = 0;
 }
 
 /* Tracks the settle window; returns true once the mean has been steady for MOTION_REF_SAMPLES. */
@@ -108,6 +109,9 @@ static bool settled(motion_t *m, const float g[3])
     if (sqrtf(dev) >= theta_off(m)) {
         restart_settle(m, g);
         return false;
+    }
+    if (m->settle_n >= MOTION_REF_SAMPLES / 2 && sqrtf(dev) > m->settle_max) {
+        m->settle_max = sqrtf(dev);
     }
     m->settle_n++;
     for (int j = 0; j < 3; j++) {
@@ -124,7 +128,7 @@ int motion_feed(motion_t *m, const float a[3], uint32_t now_ms, bool amp_on)
     }
     m->pa_was_on = amp_on;
     bool masked = amp_on || (m->pa_tail && now_ms - m->pa_off_at < MOTION_PA_TAIL_MS);
-    motion_noise_feed(&m->noise, a, masked);
+    motion_noise_feed(&m->noise, a, masked || m->state == MOTION_LIFTED);
     for (int j = 0; j < 3; j++) {
         m->buf[m->idx][j] = a[j];
     }
@@ -180,6 +184,10 @@ int motion_feed(motion_t *m, const float a[3], uint32_t now_ms, bool amp_on)
             ev |= MOTION_EV_MOVING;
         }
     } else if (settled(m, g)) {
+        float floor_g = motion_noise_theta(&m->noise);
+        if (m->state == MOTION_LIFTED && floor_g > 0.0f && m->settle_max < floor_g) {
+            ev |= MOTION_EV_REST_DESK;
+        }
         m->state = MOTION_REST;
         for (int j = 0; j < 3; j++) {
             m->anchor[j] = m->settle_mean[j];

@@ -6,7 +6,7 @@
 /* Board-motion detector on the 100 ms mean acceleration vector against a rest anchor. Model in docs/display-power.md. */
 
 typedef enum { MOTION_REST, MOTION_MOVING, MOTION_LIFTED } motion_state_t;
-enum { MOTION_EV_MOVING = 1, MOTION_EV_PICKUP = 2, MOTION_EV_REST = 4 };
+enum { MOTION_EV_MOVING = 1, MOTION_EV_PICKUP = 2, MOTION_EV_REST = 4, MOTION_EV_REST_DESK = 8 };
 
 typedef struct {
     float theta_on, theta_off, theta_pickup;
@@ -23,7 +23,7 @@ typedef struct {
 typedef struct {
     motion_cfg_t cfg;
     motion_noise_t noise;
-    float buf[5][3], anchor[3], settle_mean[3], d;
+    float buf[5][3], anchor[3], settle_mean[3], settle_max, d;
     int fill, idx, run_on, run_pickup, settle_n;
     bool anchor_ok, pa_was_on, pa_tail;
     uint32_t pa_off_at;

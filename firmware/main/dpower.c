@@ -51,13 +51,24 @@ void dp_init(dpower_t *d, uint32_t now)
 
 void dp_activity(dpower_t *d, uint32_t now, dp_cause_t cause)
 {
-    if (cause == DP_CAUSE_MOTION) {
+    if (cause == DP_CAUSE_SMALL) {
         d->last_imu = now;
         d->imu_seen = true;
+    } else if (cause == DP_CAUSE_MOTION) {
+        d->last_lift = now;
+        d->lift_seen = true;
     } else {
         d->last_act = now;
     }
     d->cause = cause;
+}
+
+void dp_setdown(dpower_t *d, uint32_t now)
+{
+    const uint32_t shrink = (uint32_t)DISP_HOLD_MS - DISP_SETDOWN_HOLD_MS;
+    if (d->state == DP_STATE_IDLE && d->lift_seen && since(now, d->last_lift) < shrink) {
+        d->last_lift = now - shrink;
+    }
 }
 
 void dp_state(dpower_t *d, uint32_t now, int state)
@@ -79,7 +90,7 @@ void dp_force(dpower_t *d, int stage)
     d->force = stage > DP_OFF ? DP_OFF : (stage < 0 ? -1 : stage);
 }
 
-static dp_stage_t pick_stage(const dpower_t *d, uint32_t now, bool *imu_only)
+static dp_stage_t pick_stage(const dpower_t *d, uint32_t now, bool *imu_only, bool *clamped)
 {
     dp_stage_t st = stage_after(since(now, d->last_act));
     if (is_attention(d->state)) {
@@ -89,11 +100,17 @@ static dp_stage_t pick_stage(const dpower_t *d, uint32_t now, bool *imu_only)
             st = DP_DIM;
         }
     }
+    if (d->lift_seen) {
+        dp_stage_t m = stage_after(since(now, d->last_lift));
+        st = m < st ? m : st;
+    }
     dp_stage_t full = st;
+    *clamped = false;
     if (d->imu_seen) {
         dp_stage_t m = stage_after(since(now, d->last_imu));
         if (d->exhausted && m == DP_ACTIVE) {
             m = DP_DIM;
+            *clamped = m < st;
         }
         if (m < st) {
             st = m;
@@ -145,6 +162,7 @@ dp_out_t dp_update(dpower_t *d, uint32_t now)
 {
     saturate_age(&d->last_act, now);
     saturate_age(&d->last_imu, now);
+    saturate_age(&d->last_lift, now);
     saturate_age(&d->state_since, now);
     uint32_t dt = since(now, d->last_update);
     d->last_update = now;
@@ -152,15 +170,15 @@ dp_out_t dp_update(dpower_t *d, uint32_t now)
         dt = DISP_STORM_PERIOD_MS / DISP_STORM_BINS;
     }
     advance_bins(d, now);
-    bool imu_only;
-    dp_stage_t st = pick_stage(d, now, &imu_only);
+    bool imu_only, clamped;
+    dp_stage_t st = pick_stage(d, now, &imu_only, &clamped);
     if (imu_only) {
         d->bins[d->bin_idx] += dt;
     }
     bool exhausted = storm_used(d) >= DISP_STORM_BUDGET_MS;
     if (exhausted != d->exhausted) {
         d->exhausted = exhausted;
-        st = pick_stage(d, now, &imu_only);
+        st = pick_stage(d, now, &imu_only, &clamped);
     }
     if (d->force >= 0) {
         st = (dp_stage_t)d->force;
@@ -181,7 +199,7 @@ dp_out_t dp_update(dpower_t *d, uint32_t now)
             d->ramping = false;
         }
     }
-    dp_cause_t cause = d->force >= 0 ? DP_CAUSE_FORCE : (st == DP_ACTIVE ? d->cause : DP_CAUSE_TIMER);
+    dp_cause_t cause = d->force >= 0 ? DP_CAUSE_FORCE : (st == DP_ACTIVE ? d->cause : (clamped ? DP_CAUSE_BUDGET : DP_CAUSE_TIMER));
     return (dp_out_t){.stage = st, .level_pct = d->level, .panel_on = st != DP_OFF, .cause = cause};
 }
 
