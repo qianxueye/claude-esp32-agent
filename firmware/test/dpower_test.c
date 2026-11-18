@@ -373,6 +373,20 @@ static void test_pickup_is_not_budgeted(void)
     assert(o.stage == DP_ACTIVE && o.cause == DP_CAUSE_MOTION);
 }
 
+/* An attention state lifts OFF to DIM without activity; that brightening is attributed to the state, not the timer. */
+static void test_attention_brightening_cause(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 1000);
+    assert(dp_update(&d, t).stage == DP_OFF);
+    dp_state(&d, t, DP_STATE_OFFLINE);
+    dp_state(&d, t, DP_STATE_SPEAKING);
+    dp_out_t o = dp_update(&d, t);
+    assert(o.stage == DP_DIM && o.cause == DP_CAUSE_STATE);
+}
+
 int main(void)
 {
     test_timeline_from(0);
@@ -390,6 +404,7 @@ int main(void)
     test_touch_does_not_spend_budget();
     test_orbit();
     test_setdown();
+    test_attention_brightening_cause();
     test_setdown_then_new_pickup();
     test_pickup_is_not_budgeted();
     test_orbit_keeps_drawing_in_scene();

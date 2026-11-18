@@ -92,7 +92,7 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0xA0` | PING       | `u32` nonce. |
 | `0xA2` | SELFTEST   | Empty. Device plays a 1 kHz tone for 1 s while recording, then sends SELFTEST_RESULT `{"mic_rms_before":…,"mic_rms_during":…,"spk_bytes_played":…}`. |
 | `0xA3` | SNAPSHOT   | Empty. Device sends SNAP_BEGIN, SNAP_DATA…, SNAP_END with the current LVGL screen. |
-| `0xF0` | DEBUG      | Test tools only; the relay never sends it. JSON `{"angle_override":<degrees>|null}` fixes the UI rotation angle (null returns control to the IMU). Other keys: `imu_dump` seconds (logs the raw accelerometer counts, five samples per line as `imu_dump i=<first index> x,y,z;…`, then `imu_dump done n=<count>`; `devctl imu-dump` rejects a trace whose indices have a gap), `bench` (frame-rate test mode), `disp_scale` N (display power timeline N times faster), `disp_force` 0 active / 1 dim / 2 off / null, `orbit` lattice index / null, `fill` grey 0–255 / null. Payload ≤ 128 bytes. See `display-power.md`. |
+| `0xF0` | DEBUG      | Test tools only; the relay never sends it. JSON `{"angle_override":<degrees>|null}` fixes the UI rotation angle (null returns control to the IMU). Other keys: `imu_dump` seconds (logs the raw accelerometer counts, five samples per line as `imu_dump i=<first index> x,y,z;…`, then `imu_dump done n=<count>`; `devctl imu-dump` rejects a trace whose indices have a gap), `bench` (frame-rate test mode), `disp_scale` N (display power timeline N times faster), `disp_force` 0 active / 1 dim / 2 off / null, `orbit` lattice index / null, `fill` grey 0–255 / null. Payload at most 127 bytes (the device keeps 128 bytes for the text and its terminator). See `display-power.md`. |
 
 ## Handshake
 

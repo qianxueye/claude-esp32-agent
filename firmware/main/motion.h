@@ -32,6 +32,8 @@ typedef struct {
 
 motion_cfg_t motion_default_cfg(void);
 void motion_init(motion_t *m, const motion_cfg_t *cfg);
+/* Restarts the detector and keeps the configuration and the noise estimate. */
+void motion_reset(motion_t *m);
 /* One call per sample (axes in g, nominal IMU_PERIOD_MS apart); returns MOTION_EV_* bits. */
 int motion_feed(motion_t *m, const float a[3], uint32_t now_ms, bool amp_on);
 

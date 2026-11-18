@@ -50,7 +50,7 @@ The orbit spreads edges only. The interior of the body is lit as long as the sta
 
 ## Counters
 
-The `wakes touch= button= state= motion=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative.
+The `wakes touch= button= state= motion=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative. A brightening with no activity behind it (OFF to DIM in an attention state) is attributed to the state; the storm budget limit is `motion_budget`.
 
 ## Refresh while OFF
 

@@ -478,6 +478,40 @@ static void test_desk_versus_hand_rest(void)
     assert(r.rest == 1 && r.desk == 0);
 }
 
+/* A reset in LIFTED keeps the noise estimate, so the next lift and desk rest are still recognised. */
+static void test_reset_keeps_noise_estimate(void)
+{
+    rig_t r;
+    rig_init(&r, NULL, 0);
+    settle_rest(&r, 70 * 50);
+    float before = motion_noise_sigma_w(&r.m.noise);
+    assert(before > 0.0f);
+    const int ramp = 300 / DT_MS;
+    for (int i = 0; i < 10 * 1000 / DT_MS; i++) {
+        float a[3];
+        tilt(a, 15.0 * (i < ramp ? (double)i / ramp : 1.0));
+        a[0] += (float)(0.03 * sin(2.0 * PI_F * 9.0 * i * DT_MS / 1000.0) + 0.01 * sin(2.0 * PI_F * 0.3 * i * DT_MS / 1000.0) + SIGMA_S * rng_gauss());
+        rig_feed(&r, a, false);
+    }
+    assert(r.m.state == MOTION_LIFTED);
+    motion_reset(&r.m);
+    assert(r.m.state == MOTION_REST && motion_noise_sigma_w(&r.m.noise) == before);
+    for (int i = 0; i < 4 * 1000 / DT_MS; i++) {
+        float a[3];
+        tilt(a, 15.0);
+        a[0] += (float)(SIGMA_S * rng_gauss());
+        rig_feed(&r, a, false);
+    }
+    for (int i = 0; i < 10 * 1000 / DT_MS; i++) {
+        float a[3];
+        tilt(a, 0.0);
+        a[0] += (float)(SIGMA_S * rng_gauss());
+        rig_feed(&r, a, false);
+    }
+    assert(r.pickup == 2 && r.m.state == MOTION_REST);
+    assert(r.desk == 1);
+}
+
 int main(void)
 {
     test_rest_noise();
@@ -488,6 +522,7 @@ int main(void)
     test_pickup_tremor_setdown();
     test_pickup_under_speaker();
     test_desk_versus_hand_rest();
+    test_reset_keeps_noise_estimate();
     test_drift();
     test_noise_estimator();
     test_noise_floor_raises_threshold();
