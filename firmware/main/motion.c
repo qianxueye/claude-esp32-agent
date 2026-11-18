@@ -14,79 +14,9 @@ void motion_init(motion_t *m, const motion_cfg_t *cfg)
     *m = (motion_t){.cfg = cfg ? *cfg : motion_default_cfg()};
 }
 
-void motion_noise_init(motion_noise_t *n)
-{
-    *n = (motion_noise_t){0};
-}
-
-void motion_noise_feed(motion_noise_t *n, const float a[3], bool masked)
-{
-    n->tainted = n->tainted || masked;
-    for (int j = 0; j < 3; j++) {
-        n->acc[j] += a[j];
-    }
-    if (++n->in_mean < MOTION_WINDOW_SAMPLES) {
-        return;
-    }
-    for (int j = 0; j < 3; j++) {
-        n->means[n->n_means][j] = n->acc[j] / MOTION_WINDOW_SAMPLES;
-        n->acc[j] = 0;
-    }
-    n->in_mean = 0;
-    if (++n->n_means < MOTION_NOISE_MEANS) {
-        return;
-    }
-    n->n_means = 0;
-    if (n->tainted) {
-        n->tainted = false;
-        return;
-    }
-    float sum = 0;
-    for (int k = 0; k + 1 < MOTION_NOISE_MEANS; k++) {
-        for (int j = 0; j < 3; j++) {
-            float d = n->means[k + 1][j] - n->means[k][j];
-            sum += d * d;
-        }
-    }
-    n->blocks[n->head] = sum / (2.0f * 3.0f * (MOTION_NOISE_MEANS - 1));
-    n->head = (n->head + 1) % MOTION_NOISE_BLOCKS;
-    if (n->n_blocks < MOTION_NOISE_BLOCKS) {
-        n->n_blocks++;
-    }
-}
-
-float motion_noise_sigma_w(const motion_noise_t *n)
-{
-    if (n->n_blocks < MOTION_NOISE_BLOCKS) {
-        return 0.0f;
-    }
-    float v[MOTION_NOISE_BLOCKS] = {0};
-    for (int i = 0; i < MOTION_NOISE_BLOCKS; i++) {
-        float x = n->blocks[i];
-        int k = i;
-        while (k > 0 && v[k - 1] > x) {
-            v[k] = v[k - 1];
-            k--;
-        }
-        v[k] = x;
-    }
-    return sqrtf(v[MOTION_NOISE_RANK - 1] / MOTION_NOISE_C);
-}
-
-float motion_noise_theta(const motion_noise_t *n)
-{
-    return MOTION_NOISE_K * motion_noise_sigma_w(n) * sqrtf(1.0f + (float)MOTION_WINDOW_SAMPLES / MOTION_REF_SAMPLES);
-}
-
 void motion_reset(motion_t *m)
 {
-    motion_t fresh = {.cfg = m->cfg, .noise = m->noise};
-    fresh.noise.in_mean = fresh.noise.n_means = 0;
-    fresh.noise.tainted = false;
-    for (int j = 0; j < 3; j++) {
-        fresh.noise.acc[j] = 0;
-    }
-    *m = fresh;
+    *m = (motion_t){.cfg = m->cfg};
 }
 
 static void restart_settle(motion_t *m, const float g[3])
@@ -127,7 +57,6 @@ int motion_feed(motion_t *m, const float a[3], uint32_t now_ms, bool amp_on)
     }
     m->pa_was_on = amp_on;
     bool masked = amp_on || (m->pa_tail && now_ms - m->pa_off_at < MOTION_PA_TAIL_MS);
-    motion_noise_feed(&m->noise, a, masked || m->state == MOTION_LIFTED);
     for (int j = 0; j < 3; j++) {
         m->buf[m->idx][j] = a[j];
     }
@@ -183,9 +112,10 @@ int motion_feed(motion_t *m, const float a[3], uint32_t now_ms, bool amp_on)
             ev |= MOTION_EV_MOVING;
         }
     } else if (settled(m, g)) {
-        float floor_g = motion_noise_theta(&m->noise);
-        if (m->state == MOTION_LIFTED && floor_g > 0.0f && m->settle_max < floor_g) {
-            ev |= MOTION_EV_REST_DESK;
+        m->rest_spread = m->settle_max;
+        m->rest_from = m->state;
+        if (m->state == MOTION_LIFTED) {
+            ev |= MOTION_EV_SETDOWN;
         }
         m->state = MOTION_REST;
         for (int j = 0; j < 3; j++) {

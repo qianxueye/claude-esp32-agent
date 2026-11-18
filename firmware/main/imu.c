@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "imu.h"
 #include <math.h>
 #include <string.h>
@@ -156,19 +157,23 @@ static void imu_task(void *arg)
         last = t;
         int ev = motion_feed(&s_motion, a, t, audio_pa_active());
         if (ev) {
-            ESP_LOGI(TAG, "motion: ev=%s D=%.1fmg th=%.1f/%.1f/%.1f amp=%d", ev & MOTION_EV_PICKUP ? "pickup" : (ev & MOTION_EV_MOVING ? "moving" : (ev & MOTION_EV_REST_DESK ? "rest_desk" : "rest")), s_motion.d * 1000.0f, s_motion.cfg.theta_on * 1000.0f,
-                     s_motion.cfg.theta_off * 1000.0f, s_motion.cfg.theta_pickup * 1000.0f, (int)audio_pa_active());
+            char extra[40] = "";
+            if (ev & MOTION_EV_REST) {
+                snprintf(extra, sizeof extra, " spread=%.1fmg from=%s", s_motion.rest_spread * 1000.0f, s_motion.rest_from == MOTION_LIFTED ? "LIFTED" : "MOVING");
+            }
+            ESP_LOGI(TAG, "motion: ev=%s D=%.1fmg th=%.1f/%.1f/%.1f amp=%d%s", ev & MOTION_EV_PICKUP ? "pickup" : (ev & MOTION_EV_MOVING ? "moving" : "rest"), s_motion.d * 1000.0f, s_motion.cfg.theta_on * 1000.0f,
+                     s_motion.cfg.theta_off * 1000.0f, s_motion.cfg.theta_pickup * 1000.0f, (int)audio_pa_active(), extra);
         }
         if (s_motion.state == MOTION_LIFTED) {
             ui_wake(DP_CAUSE_MOTION);
         }
-        if (ev & MOTION_EV_REST_DESK) {
+        if (ev & MOTION_EV_SETDOWN) {
             ui_wake(DP_CAUSE_SETDOWN);
         }
         if (t - last_log >= IMU_LOG_PERIOD_MS) {
             last_log = t;
-            ESP_LOGI(TAG, "raw g x=%.2f y=%.2f z=%.2f up=(%.2f,%.2f) target=%.1f D=%.2fmg st=%d sigW=%.2fmg ts_d=%u same=%u", a[0], a[1], a[2], ux, uy,
-                     orient_target(), s_motion.d * 1000.0f, (int)s_motion.state, motion_noise_sigma_w(&s_motion.noise) * 1000.0f,
+            ESP_LOGI(TAG, "raw g x=%.2f y=%.2f z=%.2f up=(%.2f,%.2f) target=%.1f D=%.2fmg st=%d ts_d=%u same=%u", a[0], a[1], a[2], ux, uy,
+                     orient_target(), s_motion.d * 1000.0f, (int)s_motion.state,
                      (unsigned)((ts - ts_last_log) & 0xFFFFFF), (unsigned)same);
             ts_last_log = ts;
         }

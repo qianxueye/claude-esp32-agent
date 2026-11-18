@@ -22,7 +22,7 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 | `DISP_HOLD_MS` | C | ACTIVE time after the last activity |
 | `DISP_DIM_TO_OFF_MS` | C | DIM time before OFF |
 | `DISP_ATTN_CAP_MS` | C | ACTIVE limit in one unchanged non-IDLE state |
-| `DISP_SETDOWN_HOLD_MS` | C | ACTIVE time left after a desk set-down |
+| `DISP_SETDOWN_HOLD_MS` | C | ACTIVE time left after a set-down REST |
 | `DISP_RAMP_MS` | C | brightness ramp time |
 | `ORBIT_*` | C | lattice size, pitch, origin and dwell |
 
@@ -85,25 +85,15 @@ The accelerometer (QMI8658) is polled every `IMU_PERIOD_MS` and all three axes f
 | `MOTION_TAU_REF_MS` | M | between 10·N_on·dt and θ_off / (drift rate) |
 | `MOTION_PA_TAIL_MS` | M | window 100 ms + sensor filter settling + amplifier settle |
 
-Detector tests (the noise statistics behind the desk test): with θ = k·σ_D and σ_D = σ_W·√(1 + W/W_ref), 24 h of white rest noise at k = 4.44 gives at most one event. A look is one non-overlapping 100 ms mean; two consecutive looks above θ have probability q² with q = P(χ²₃ ≥ k²), so k = 3 gives about 740 pairs a day if the anchor carried the noise of a W_ref mean. The module's anchor is an exponential average, whose noise is far lower, so the expected count is about 500; `firmware/test/motion_test.c` computes it in closed form and checks the module's own D against it. The module's debounce of 14 samples is stricter than two looks, so it fires less often than the pair count.
+Detector tests: with θ = k·σ_D and σ_D = σ_W·√(1 + W/W_ref), 24 h of white rest noise at k = 4.44 gives at most one event. A look is one non-overlapping 100 ms mean; two consecutive looks above θ have probability q² with q = P(χ²₃ ≥ k²), so k = 3 gives about 740 pairs a day if the anchor carried the noise of a W_ref mean. The module's anchor is an exponential average, whose noise is far lower, so the expected count is about 500; `firmware/test/motion_test.c` computes it in closed form and checks the module's own D against it. The module's debounce of 14 samples is stricter than two looks, so it fires less often than the pair count.
 
 ## Quick dim after set-down
 
-When a LIFTED spell ends in a REST that passes the desk test and the device is in IDLE, the pickup hold shrinks to `DISP_SETDOWN_HOLD_MS` (class C) after that REST instead of `DISP_HOLD_MS`. Desk test: in the second half of the settle window the 100 ms mean stays within θ_noise of its running mean; θ_noise is the floor from the noise estimator below (valid after 64 rest blocks, blocks during LIFTED are not used). A hand holding the board still spreads by several mg and keeps the normal hold, as does a REST outside IDLE. Touch, BOOT, a state change or a new pickup after the set-down restore the normal hold.
+Every REST that ends a LIFTED spell (event `MOTION_EV_SETDOWN`) while the device is in IDLE shrinks the pickup hold to `DISP_SETDOWN_HOLD_MS` (1000 ms, class C) after that REST instead of `DISP_HOLD_MS`. REST needs `MOTION_REF_SAMPLES` of stillness (2 s) first, so the screen dims about 3 s after the board reaches the desk. There is no test for desk versus hand: no dim while held has been observed, and a wrong call only dims to 10 %, which a tilt (new pickup) or a touch undoes. A REST outside IDLE, a REST that ends MOVING, and any later touch, BOOT, state change or new pickup keep or restore the normal hold.
 
-## Noise floor
+Logged inputs, so that ordinary use produces data:
 
-θ_noise is used for one thing: the desk test of the quick dim above. The floor needs no rest/motion decision, so it cannot lock up.
+- `motion: ev=rest ... spread=<mg> from=<LIFTED|MOVING>`: the largest deviation of the 100 ms means from their running mean in the second half of the settle window, and the state the REST left;
+- `disp: stage=DIM ... hold=<ms>`: the hold that applied (`DISP_SETDOWN_HOLD_MS` or `DISP_HOLD_MS`).
 
-- Per 1 s block with the amplifier off, take the ten 100 ms means m_k of the raw samples: `A_b = Σ(m_{k+1} − m_k)² / 54` over three axes (the Allan variance of the mean).
-- `σ̂_W² = (lower quartile of the last 64 blocks) / c`. Blocks that overlap amplifier time are dropped. The estimate is valid after 64 blocks.
-- `σ_D = σ̂_W·√(1 + W/W_ref)` and `θ_noise = k·σ_D`.
-- k = 4.44: a look is one 100 ms mean; with the debounce spanning about two independent looks, `q = P(χ²₃ ≥ k²) = 2.0e-4` per look and `q² × 25.9e6 looks` is one event per 30 days.
-- c = 0.760 is the median over 4000 simulated windows of (lower quartile) / σ_W² for white noise; the test pins it to ±1 %.
-- Accuracy: one window gives σ̂ within ±5 % in about 90 % of windows (relative spread about 3 %). Disturbed blocks bias σ̂ upward, never downward: the lower quartile of 64 sits at rank 16 among the clean blocks, so with 30 % of blocks disturbed σ̂ is about 5 % high and with 70 % about 30 % high. The effect is that the desk test is easier to pass, never harder.
-
-| Constant | Class |
-|---|---|
-| `MOTION_NOISE_K` | M |
-| `MOTION_NOISE_C` | M |
-| `MOTION_NOISE_BLOCKS`, `MOTION_NOISE_MEANS`, `MOTION_NOISE_RANK` | M |
+A future in-hand classifier must be designed from logged set-down and in-hand spreads, not from assumed noise figures.

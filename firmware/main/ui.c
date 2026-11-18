@@ -673,7 +673,7 @@ static void power_tick(void)
             s_wakes[o.cause]++;
         }
         s_logged_stage = o.stage;
-        ESP_LOGI(TAG, "disp: stage=%s cause=%s level=%d", STAGE_NAME[o.stage], CAUSE_NAME[o.cause], o.level_pct);
+        ESP_LOGI(TAG, "disp: stage=%s cause=%s level=%d hold=%u", STAGE_NAME[o.stage], CAUSE_NAME[o.cause], o.level_pct, (unsigned)o.hold_ms);
     }
 }
 

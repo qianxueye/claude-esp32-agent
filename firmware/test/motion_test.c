@@ -40,7 +40,7 @@ typedef struct {
     motion_t m;
     uint32_t now;
     long n;
-    int moving, pickup, rest, desk;
+    int moving, pickup, rest, setdown, from_lifted;
     long first_moving, first_pickup, first_rest;
 } rig_t;
 
@@ -49,7 +49,7 @@ static void rig_init(rig_t *r, const motion_cfg_t *cfg, uint32_t now0)
     motion_init(&r->m, cfg);
     r->now = now0;
     r->n = 0;
-    r->moving = r->pickup = r->rest = r->desk = 0;
+    r->moving = r->pickup = r->rest = r->setdown = r->from_lifted = 0;
     r->first_moving = r->first_pickup = r->first_rest = -1;
 }
 
@@ -68,11 +68,12 @@ static int rig_feed(rig_t *r, const float a[3], bool amp)
             r->first_pickup = r->n;
         }
     }
-    if (ev & MOTION_EV_REST_DESK) {
-        r->desk++;
+    if (ev & MOTION_EV_SETDOWN) {
+        r->setdown++;
     }
     if (ev & MOTION_EV_REST) {
         r->rest++;
+        r->from_lifted += r->m.rest_from == MOTION_LIFTED;
         if (r->first_rest < 0) {
             r->first_rest = r->n;
         }
@@ -321,103 +322,11 @@ static void test_drift(void)
     assert(r.moving == 0 && r.pickup == 0 && r.m.state == MOTION_REST);
 }
 
-/* Feeds 64 one-second blocks of rest noise; a block is disturbed with probability p by extra white noise of 3 to 10 times the rest sigma. */
-static float estimate_sigma_w(double p, float *q25_over_var)
-{
-    motion_noise_t n;
-    motion_noise_init(&n);
-    for (int b = 0; b < MOTION_NOISE_BLOCKS; b++) {
-        double extra = rng_uniform() < p ? SIGMA_S * (3.0 + 7.0 * rng_uniform()) : 0.0;
-        for (int i = 0; i < 50; i++) {
-            float a[3];
-            noisy(a, SIGMA_S);
-            if (extra > 0.0) {
-                a[0] += (float)(extra * rng_gauss());
-                a[1] += (float)(extra * rng_gauss());
-                a[2] += (float)(extra * rng_gauss());
-            }
-            motion_noise_feed(&n, a, false);
-        }
-    }
-    float sw = motion_noise_sigma_w(&n);
-    *q25_over_var = sw * sw * MOTION_NOISE_C / (float)(SIGMA_W * SIGMA_W);
-    return sw;
-}
-
-static int cmp_float(const void *a, const void *b)
-{
-    float x = *(const float *)a, y = *(const float *)b;
-    return (x > y) - (x < y);
-}
-
-static void estimator_stats(double p, int trials, double *median_ratio, double *frac_within5)
-{
-    static float ratio[8000];
-    float q;
-    int within = 0;
-    for (int t = 0; t < trials; t++) {
-        ratio[t] = estimate_sigma_w(p, &q) / (float)SIGMA_W;
-        within += fabsf(ratio[t] - 1.0f) <= 0.05f;
-    }
-    qsort(ratio, (size_t)trials, sizeof ratio[0], cmp_float);
-    *median_ratio = ratio[trials / 2];
-    *frac_within5 = (double)within / trials;
-}
-
-static void test_noise_estimator(void)
-{
-    enum { TRIALS = 4000 };
-    static float v[TRIALS];
-    float q;
-    for (int t = 0; t < TRIALS; t++) {
-        estimate_sigma_w(0.0, &q);
-        v[t] = q;
-    }
-    qsort(v, TRIALS, sizeof v[0], cmp_float);
-    double c_sim = v[TRIALS / 2];
-    printf("c by simulation %.4f (configured %.4f)\n", c_sim, (double)MOTION_NOISE_C);
-    /* Sigma has about 3 % spread per 64-block window, so +-5 % holds for about 90 % of windows. */
-    /* Disturbed blocks push the rank-16 quartile up among the clean ones: sigma reads high, never low (docs/display-power.md). */
-    double med, frac;
-    estimator_stats(0.0, TRIALS, &med, &frac);
-    printf("clean: median sigma ratio %.3f, within 5%% in %.1f%% of trials\n", med, frac * 100);
-    assert(fabs(med - 1.0) <= 0.01 && frac >= 0.85);
-    assert(fabs(c_sim - MOTION_NOISE_C) / c_sim <= 0.01);
-    estimator_stats(0.3, TRIALS, &med, &frac);
-    printf("30%% disturbed: median sigma ratio %.3f\n", med);
-    assert(med >= 1.0 && med <= 1.10);
-    estimator_stats(0.7, TRIALS, &med, &frac);
-    printf("70%% disturbed: median sigma ratio %.3f\n", med);
-    assert(med >= 1.2 && med <= 1.4);
-}
-
-/* Vibration while the amplifier flag is set leaves sigma unchanged; the same vibration without the flag raises it. */
-static void test_noise_estimate_ignores_flagged_vibration(void)
-{
-    float before[2], after[2];
-    for (int flagged = 0; flagged <= 1; flagged++) {
-        rig_t r;
-        rig_init(&r, NULL, 0);
-        settle_rest(&r, 70 * 50);
-        before[flagged] = motion_noise_sigma_w(&r.m.noise);
-        assert(before[flagged] > 0.0f);
-        for (int i = 0; i < 55 * 50; i++) {
-            float a[3];
-            noisy(a, 0.1);
-            rig_feed(&r, a, flagged);
-        }
-        after[flagged] = motion_noise_sigma_w(&r.m.noise);
-    }
-    assert(after[1] == before[1]);
-    assert(after[0] > 10.0f * before[0]);
-}
-
-/* Lifts with a 30 mg 9 Hz tremor for 10 s after a 70 s desk rest, then either sets down or holds the board nearly still. */
+/* Lifts with a 30 mg 9 Hz tremor for 10 s, then sets down (ramp to level) or holds the board nearly still. */
 static void lift_then(bool desk, rig_t *r)
 {
     rig_init(r, NULL, 0);
     settle_rest(r, 70 * 50);
-    assert(motion_noise_sigma_w(&r->m.noise) > 0.0f);
     const int ramp = 300 / DT_MS;
     for (int i = 0; i < 10 * 1000 / DT_MS; i++) {
         float a[3];
@@ -441,24 +350,46 @@ static void lift_then(bool desk, rig_t *r)
     }
 }
 
-/* Desk noise spread stays under theta_noise (about 1.4 mg); a hand held still spreads about 3 mg and fails. */
-static void test_desk_versus_hand_rest(void)
+/* Every REST that ends a LIFTED spell is a set-down, whatever its spread; the spread is reported either way. */
+static void test_setdown_event_and_spread(void)
 {
     rig_t r;
     lift_then(true, &r);
-    assert(r.rest == 1 && r.desk == 1);
+    assert(r.rest == 1 && r.setdown == 1 && r.from_lifted == 1);
+    float desk_spread = r.m.rest_spread;
     lift_then(false, &r);
-    assert(r.rest == 1 && r.desk == 0);
+    assert(r.rest == 1 && r.setdown == 1 && r.from_lifted == 1);
+    assert(r.m.rest_spread > desk_spread && r.m.rest_spread > 0.0f);
 }
 
-/* A reset in LIFTED keeps the noise estimate, so the next lift and desk rest are still recognised. */
-static void test_reset_keeps_noise_estimate(void)
+/* A REST that ends a MOVING spell is not a set-down. */
+static void test_moving_rest_is_not_setdown(void)
+{
+    rig_t r;
+    rig_init(&r, NULL, 0);
+    settle_rest(&r, 500);
+    for (int i = 0; i < 2000 / DT_MS; i++) {
+        float a[3];
+        tilt(a, 4.0);
+        a[0] += (float)(SIGMA_S * rng_gauss());
+        rig_feed(&r, a, false);
+    }
+    assert(r.moving == 1 && r.pickup == 0 && r.m.state == MOTION_MOVING);
+    for (int i = 0; i < 6 * 1000 / DT_MS; i++) {
+        float a[3];
+        tilt(a, 4.0);
+        a[0] += (float)(SIGMA_S * rng_gauss());
+        rig_feed(&r, a, false);
+    }
+    assert(r.rest == 1 && r.setdown == 0 && r.m.rest_from == MOTION_MOVING);
+}
+
+/* A reset in LIFTED returns to REST; the next lift and set-down still report. */
+static void test_reset_in_lifted(void)
 {
     rig_t r;
     rig_init(&r, NULL, 0);
     settle_rest(&r, 70 * 50);
-    float before = motion_noise_sigma_w(&r.m.noise);
-    assert(before > 0.0f);
     const int ramp = 300 / DT_MS;
     for (int i = 0; i < 10 * 1000 / DT_MS; i++) {
         float a[3];
@@ -468,7 +399,7 @@ static void test_reset_keeps_noise_estimate(void)
     }
     assert(r.m.state == MOTION_LIFTED);
     motion_reset(&r.m);
-    assert(r.m.state == MOTION_REST && motion_noise_sigma_w(&r.m.noise) == before);
+    assert(r.m.state == MOTION_REST);
     for (int i = 0; i < 4 * 1000 / DT_MS; i++) {
         float a[3];
         tilt(a, 15.0);
@@ -481,8 +412,7 @@ static void test_reset_keeps_noise_estimate(void)
         a[0] += (float)(SIGMA_S * rng_gauss());
         rig_feed(&r, a, false);
     }
-    assert(r.pickup == 2 && r.m.state == MOTION_REST);
-    assert(r.desk == 1);
+    assert(r.pickup == 2 && r.m.state == MOTION_REST && r.setdown == 1);
 }
 
 int main(void)
@@ -494,11 +424,10 @@ int main(void)
     test_tail_and_wrap();
     test_pickup_tremor_setdown();
     test_pickup_under_speaker();
-    test_desk_versus_hand_rest();
-    test_reset_keeps_noise_estimate();
+    test_setdown_event_and_spread();
+    test_moving_rest_is_not_setdown();
+    test_reset_in_lifted();
     test_drift();
-    test_noise_estimator();
-    test_noise_estimate_ignores_flagged_vibration();
     puts("ok");
     return 0;
 }

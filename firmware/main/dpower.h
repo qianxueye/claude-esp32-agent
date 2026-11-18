@@ -16,19 +16,20 @@ typedef struct {
     int level_pct;
     bool panel_on;
     dp_cause_t cause;
+    uint32_t hold_ms;
 } dp_out_t;
 
 typedef struct {
     uint32_t last_act, last_lift, state_since, ramp_t0;
     int state, level, force, ramp_from, ramp_to;
-    bool hold, lift_seen;
+    bool hold, lift_seen, quick;
     dp_cause_t cause;
 } dpower_t;
 
 void dp_init(dpower_t *d, uint32_t now);
 /* Touch, button or pickup (DP_CAUSE_MOTION) activity. */
 void dp_activity(dpower_t *d, uint32_t now, dp_cause_t cause);
-/* A desk rest ended a pickup: in IDLE the pickup hold shrinks to DISP_SETDOWN_HOLD_MS. */
+/* A rest ended a pickup: in IDLE the pickup hold shrinks to DISP_SETDOWN_HOLD_MS. */
 void dp_setdown(dpower_t *d, uint32_t now);
 /* Reports the device state; a change into or out of LISTENING, THINKING, SPEAKING or ERROR counts as activity, unless OFFLINE is one end. */
 void dp_state(dpower_t *d, uint32_t now, int state);
