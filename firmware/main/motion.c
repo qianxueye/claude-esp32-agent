@@ -70,7 +70,7 @@ float motion_noise_sigma_w(const motion_noise_t *n)
         }
         v[k] = x;
     }
-    return sqrtf(v[MOTION_NOISE_BLOCKS / 4 - 1] / MOTION_NOISE_C);
+    return sqrtf(v[MOTION_NOISE_RANK - 1] / MOTION_NOISE_C);
 }
 
 float motion_noise_theta(const motion_noise_t *n)

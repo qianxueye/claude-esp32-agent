@@ -2,7 +2,7 @@
 
 The panel is AMOLED, so wear follows level × lit time. The device lowers the level when nothing happens, turns the panel off after a longer rest, and lights it again on activity. This is local to the device: no state and no protocol frame changes, and INPUT frames are sent as before.
 
-Constant classes: **M** mathematical model, **C** plain configuration. Every value lives in `firmware/main/app_config.h`; none is a run-time judgement or a console setting.
+Constant classes: **M** mathematical model, **C** plain configuration. Every value lives in `firmware/main/app_config.h`; none is a run-time judgement or a console setting. The simulated constant c is pinned there by a test.
 
 ## Stages
 
@@ -94,7 +94,7 @@ Used only when `MOTION_SMALL_WAKE_ENABLED` is 1. The floor needs no rest/motion 
 
 - Per 1 s block with the amplifier off, take the ten 100 ms means m_k of the raw samples: `A_b = Σ(m_{k+1} − m_k)² / 54` over three axes (the Allan variance of the mean).
 - `σ̂_W² = (lower quartile of the last 64 blocks) / c`. Blocks that overlap amplifier time are dropped. The estimate is valid after 64 blocks.
-- `σ_D = σ̂_W·√(1 + W/W_ref)` and `θ_noise = k·σ_D`. θ_on and θ_off are raised to θ_noise when it is higher.
+- `σ_D = σ̂_W·√(1 + W/W_ref)` and `θ_noise = k·σ_D`. θ_on and θ_off are both raised to θ_noise when it is higher, so the settle test also tolerates the noise.
 - k = 4.44: a look is one 100 ms mean; with the debounce spanning about two independent looks, `q = P(χ²₃ ≥ k²) = 2.0e-4` per look and `q² × 25.9e6 looks` is one event per 30 days.
 - c = 0.760 is the median over 4000 simulated windows of (lower quartile) / σ_W² for white noise; the test pins it to ±1 %.
 - Accuracy: one window gives σ̂ within ±5 % in about 90 % of windows (relative spread about 3 %). Disturbed blocks bias σ̂ upward, never downward: the lower quartile of 64 sits at rank 16 among the clean blocks, so with 30 % of blocks disturbed σ̂ is about 5 % high and with 70 % about 30 % high. The effect is fewer wakes, not more.
@@ -103,4 +103,5 @@ Used only when `MOTION_SMALL_WAKE_ENABLED` is 1. The floor needs no rest/motion 
 |---|---|
 | `MOTION_NOISE_K` | M |
 | `MOTION_NOISE_C` | M |
+| `MOTION_NOISE_BLOCKS`, `MOTION_NOISE_MEANS`, `MOTION_NOISE_RANK` | M |
 | `MOTION_SMALL_WAKE_ENABLED` | C |

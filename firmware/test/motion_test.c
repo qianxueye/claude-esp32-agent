@@ -415,6 +415,27 @@ static void test_noise_floor_raises_threshold(void)
     assert(motion_default_cfg().use_noise == (MOTION_SMALL_WAKE_ENABLED != 0));
 }
 
+/* Vibration while the amplifier flag is set leaves sigma unchanged; the same vibration without the flag raises it. */
+static void test_noise_estimate_ignores_flagged_vibration(void)
+{
+    float before[2], after[2];
+    for (int flagged = 0; flagged <= 1; flagged++) {
+        rig_t r;
+        rig_init(&r, NULL, 0);
+        settle_rest(&r, 70 * 50);
+        before[flagged] = motion_noise_sigma_w(&r.m.noise);
+        assert(before[flagged] > 0.0f);
+        for (int i = 0; i < 55 * 50; i++) {
+            float a[3];
+            noisy(a, 0.1);
+            rig_feed(&r, a, flagged);
+        }
+        after[flagged] = motion_noise_sigma_w(&r.m.noise);
+    }
+    assert(after[1] == before[1]);
+    assert(after[0] > 10.0f * before[0]);
+}
+
 int main(void)
 {
     test_rest_noise();
@@ -427,6 +448,7 @@ int main(void)
     test_drift();
     test_noise_estimator();
     test_noise_floor_raises_threshold();
+    test_noise_estimate_ignores_flagged_vibration();
     puts("ok");
     return 0;
 }
