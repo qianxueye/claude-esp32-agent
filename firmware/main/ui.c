@@ -17,6 +17,8 @@
 #include "freertos/task.h"
 #include "core/lv_refr_private.h"
 #include "arcvis.h"
+#include "bright.h"
+#include "brtmap.h"
 #include "orient.h"
 #include "proto.h"
 #include "rotblit.h"
@@ -108,6 +110,7 @@ static int s_applied_level = DISP_ACTIVE_PERCENT, s_time_scale = 1, s_orbit_forc
 static dp_stage_t s_logged_stage = DP_ACTIVE;
 static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
+static volatile uint32_t s_inputs;
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
 static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown"};
 
@@ -546,7 +549,15 @@ static void ui_set_state_locked(dev_state_t s)
 
 static void send_input(uint8_t code)
 {
+    s_inputs++;
     transport_send(T_INPUT, &code, 1);
+}
+
+/* (Re)starts the power timeline at the current brightness. */
+static void dp_start(void)
+{
+    dp_init(&s_dp, dp_clock());
+    dp_set_active(&s_dp, bright_effective());
 }
 
 static void knob_events(int ev, uint32_t now)
@@ -565,12 +576,30 @@ static void knob_events(int ev, uint32_t now)
         volume_knob_set(s_vk.v);
         av_set(&s_av, s_vk.v);
     }
-    if (ev & (VK_EV_ARM | VK_EV_VOL)) {
+    if (ev & VK_EV_BRT_ARM) {
+        vk_swipe_rebase(&s_vk, brt_index(bright_swipe_arm()));
+        dp_set_active(&s_dp, bright_effective());
+    }
+    if (ev & VK_EV_BRT) {
+        bright_swipe_set(brt_level(s_vk.bi));
+        dp_set_active(&s_dp, bright_effective());
+    }
+    if (ev & VK_EV_BRT_STOP) {
+        bright_count_stop();
+        if (BRT_BOUNCE_STEPS > 0) {
+            dp_bump(&s_dp, dp_clock(), brt_level(s_vk.bi == BRT_STEPS ? s_vk.bi - BRT_BOUNCE_STEPS : s_vk.bi + BRT_BOUNCE_STEPS));
+        }
+    }
+    if (ev & (VK_EV_ARM | VK_EV_VOL | VK_EV_BRT_ARM | VK_EV_BRT | VK_EV_BRT_STOP)) {
         dp_activity(&s_dp, dp_clock(), DP_CAUSE_TOUCH);
     }
     if (ev & (VK_EV_COMMIT | VK_EV_CANCEL)) {
         volume_knob_end((ev & VK_EV_CANCEL) != 0);
         av_end(&s_av, s_vk.v, now);
+    }
+    if (ev & (VK_EV_BRT_COMMIT | VK_EV_BRT_CANCEL)) {
+        bright_swipe_end((ev & VK_EV_BRT_CANCEL) != 0);
+        dp_set_active(&s_dp, bright_effective());
     }
 }
 
@@ -585,6 +614,18 @@ static void log_knob_end(uint32_t now)
              WHY[s_vk.why], s_vk.v0, s_vk.v, s_vk.travel, s_vk.max_disp, s_vk.x0, s_vk.y0, s_vk.r0, (unsigned)(now - s_vk.t0));
 }
 
+/* One line per touch that left the slop; b0 and b are percent, -1 when the swipe never armed. */
+static void log_swipe_end(uint32_t now)
+{
+    if (!s_vk.moved) {
+        return;
+    }
+    int b0 = s_vk.bright_ever ? brt_level(s_vk.bi0) : -1, b = s_vk.bright_ever ? brt_level(s_vk.bi) : -1;
+    ESP_LOGI(TAG, "swipe: end cls=%s q=%d why=%s arm=%d b0=%d b=%d dx=%d dy=%d up=%.0f pk=%.0f lat=%.0f arm_ms=%d r1=%.0f rev=%d dur=%u", CLS[s_vk.cls],
+             s_vk.quad, WHY[s_vk.why], s_vk.bright_ever, b0, b, s_vk.lx - s_vk.x0, s_vk.ly - s_vk.y0, s_vk.up, s_vk.up_peak, s_vk.lat_peak, s_vk.arm_ms,
+             s_vk.r1, s_vk.rev, (unsigned)(now - s_vk.t0));
+}
+
 static void touch_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -595,7 +636,7 @@ static void touch_cb(lv_event_t *e)
     }
     switch (code) {
     case LV_EVENT_PRESSED: {
-        if (s_vk.state == VK_ARMED) {
+        if (s_vk.state == VK_ARMED || s_vk.state == VK_BRIGHT) {
             knob_events(vk_lost(&s_vk), now);
         }
         dp_touch_press(&s_touch, s_logged_stage);
@@ -604,21 +645,29 @@ static void touch_cb(lv_event_t *e)
         bool set;
         volume_hello_fields(&user, &set);
         vk_press(&s_vk, p.x, p.y, now, !dp_touch_sends(&s_touch), (uint8_t)user);
+        vk_swipe_frame(&s_vk, orient_target());
         if (s_vk.cls == VK_EDGE) {
             volume_count_edge();
         }
         break;
     }
-    case LV_EVENT_PRESSING:
+    case LV_EVENT_PRESSING: {
+        bool slid = s_vk.slid;
         knob_events(vk_move(&s_vk, p.x, p.y, now), now);
+        if (!slid && s_vk.slid) {
+            bright_count_slide();
+        }
         break;
+    }
     case LV_EVENT_RELEASED:
         knob_events(vk_release(&s_vk, now), now);
         log_knob_end(now);
+        log_swipe_end(now);
         break;
     case LV_EVENT_PRESS_LOST:
         knob_events(vk_lost(&s_vk), now);
         log_knob_end(now);
+        log_swipe_end(now);
         break;
     default:
         break;
@@ -910,7 +959,8 @@ static lv_display_t *display_start(void)
     ESP_ERROR_CHECK(bsp_touch_new(&cfg, &tp));
     const esp_lv_adapter_touch_config_t tc = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, tp);
     ESP_ERROR_CHECK(esp_lv_adapter_register_touch(&tc) ? ESP_OK : ESP_FAIL);
-    ESP_ERROR_CHECK(bsp_display_brightness_init());
+    s_applied_level = bright_effective();
+    ESP_ERROR_CHECK(bsp_display_brightness_set(s_applied_level));
     ESP_ERROR_CHECK(esp_lv_adapter_start());
     return disp;
 }
@@ -955,7 +1005,7 @@ void ui_start(void)
     lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_START, NULL);
     lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_READY, NULL);
     s_last_tick = lv_tick_get();
-    dp_init(&s_dp, dp_clock());
+    dp_start();
     ui_set_state_locked(ST_IDLE);
     scene_t sc;
     compute_scene(&sc, s_last_tick);
@@ -1023,7 +1073,7 @@ void ui_set_disp_scale(int n)
 {
     bsp_display_lock(-1);
     s_time_scale = n < 1 ? 1 : n;
-    dp_init(&s_dp, dp_clock());
+    dp_start();
     dp_state(&s_dp, dp_clock(), (int)s_state);
     bsp_display_unlock();
 }
@@ -1048,6 +1098,32 @@ void ui_set_fill(int grey)
         lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
     }
     bsp_display_unlock();
+}
+
+void ui_set_brightness_pin(int pct)
+{
+    bsp_display_lock(-1);
+    bright_test_pin(pct);
+    dp_set_active(&s_dp, bright_effective());
+    bsp_display_unlock();
+}
+
+void ui_set_brightness(int pct)
+{
+    bsp_display_lock(-1);
+    bright_set(pct);
+    dp_set_active(&s_dp, bright_effective());
+    bsp_display_unlock();
+}
+
+int ui_panel_level(void)
+{
+    return __atomic_load_n(&s_applied_level, __ATOMIC_RELAXED);
+}
+
+uint32_t ui_inputs_sent(void)
+{
+    return s_inputs;
 }
 
 void ui_wake_counts(uint32_t out[DP_CAUSE_N])

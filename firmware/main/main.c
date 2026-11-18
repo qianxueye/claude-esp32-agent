@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "imu.h"
 #include "keydebounce.h"
+#include "bright.h"
 #include "nvstore.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -129,6 +130,14 @@ static void handle_debug(const proto_frame_t *f)
     v = json_value(json, "fill");
     if (v) {
         ui_set_fill(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "brt");
+    if (v) {
+        ui_set_brightness_pin(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "brt_set");
+    if (v) {
+        ui_set_brightness(atoi(v));
     }
 }
 
@@ -313,10 +322,12 @@ static void life_task(void *arg)
         if (s_ready && s_state != ST_OFFLINE && t - last_host >= PROTO_HOST_SILENCE_TIMEOUT_MS) {
             set_state(ST_OFFLINE);
         }
-        if (volume_poll(t, !audio_pa_active() && s_state != ST_LISTENING) && !saved_logged) {
+        bool quiet = !audio_pa_active() && s_state != ST_LISTENING;
+        if (volume_poll(t, quiet) && !saved_logged) {
             saved_logged = true;
             ESP_LOGI(TAG, "volume saved; life stack high-water %u words", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
+        bright_poll(t, quiet);
         if (t - last_stats >= STATS_LOG_PERIOD_MS) {
             last_stats = t;
             transport_stats_t st;
@@ -335,6 +346,11 @@ static void life_task(void *arg)
             volume_stats(&vs);
             ESP_LOGI(TAG, "knob vol=%d eff=%d set=%d arms=%u cancels=%u edge=%u saves=%u", vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms,
                      (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves);
+            bright_stats_t bs;
+            bright_stats(&bs);
+            ESP_LOGI(TAG, "bright lvl=%d eff=%d panel=%d set=%d arms=%u cancels=%u slides=%u stops=%u saves=%u in=%u", bs.user, bs.effective, ui_panel_level(),
+                     (int)bs.set, (unsigned)bs.arms, (unsigned)bs.cancels, (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves,
+                     (unsigned)ui_inputs_sent());
         }
     }
 }
@@ -417,6 +433,7 @@ void app_main(void)
     ESP_LOGI(TAG, "boot fw=%s reset_reason=%d", FW_VERSION, (int)esp_reset_reason());
     nvstore_init();
     volume_init();
+    bright_init();
     ui_start();
     ESP_LOGI(TAG, "display up; free internal %u largest %u psram %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

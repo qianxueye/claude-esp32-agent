@@ -31,6 +31,13 @@ void ui_set_orbit(int index);
 void ui_set_fill(int grey);
 /* Test aid: shows the volume arc at a level 0-100 without touching the volume; negative releases. */
 void ui_set_arc(int level);
+/* Test aids: pin the ACTIVE brightness without storing it (negative releases), or set and store it as a swipe would; values are snapped to the ladder. */
+void ui_set_brightness_pin(int pct);
+void ui_set_brightness(int pct);
+/* The percent last written to the panel. */
+int ui_panel_level(void);
+/* Cumulative count of TAP and LONG_PRESS frames sent by touch. */
+uint32_t ui_inputs_sent(void);
 /* Renders the active screen into an RGB565 buffer; release it with ui_snapshot_free. */
 lv_draw_buf_t *ui_snapshot_take(void);
 void ui_snapshot_free(lv_draw_buf_t *buf);
