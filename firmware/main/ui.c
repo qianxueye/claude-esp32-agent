@@ -714,7 +714,7 @@ static void tick_cb(lv_timer_t *t)
         s_bench_angle = fmodf(s_bench_angle + 0.18f * (float)dt, 360.0f);
         apply_rotation(s_bench_angle);
     } else {
-        apply_rotation(orient_step(dt));
+        apply_rotation(orient_step(dt, s_panel_on));
     }
     static uint32_t last_log;
     if (now - last_log >= UI_FPS_LOG_PERIOD_MS) {
