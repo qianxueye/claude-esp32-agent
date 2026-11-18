@@ -166,6 +166,9 @@
 #define MOTION_N_PICKUP 25 /* mathematical model: samples above THETA_PICKUP before LIFTED */
 #define MOTION_TAU_REF_MS 20000 /* mathematical model: rest anchor follows the mean with this time constant */
 #define MOTION_SMALL_WAKE_ENABLED 0 /* plain configuration: small-motion wake stays off until its thresholds are fitted to recorded traces */
+#define MOTION_NOISE_BLOCKS 64 /* mathematical model: blocks in the estimate; 64 give sigma within 5 % in about 90 % of windows */
+#define MOTION_NOISE_MEANS 10 /* mathematical model: 100 ms means per 1 s block */
+#define MOTION_NOISE_RANK (MOTION_NOISE_BLOCKS / 4) /* mathematical model: lower quartile, 1-based rank */
 #define MOTION_NOISE_K 4.44f /* mathematical model: one false wake per 30 days at two independent 100 ms looks */
 #define MOTION_NOISE_C 0.760f /* mathematical model: lower-quartile-to-variance factor of the block estimator */
 #define MOTION_PA_TAIL_MS 200 /* mathematical model: window + sensor filter settling + amplifier settle after the amplifier stops */
