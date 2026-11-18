@@ -661,12 +661,17 @@ static void power_tick(void)
         s_applied_level = o.level_pct;
         esp_lcd_panel_disp_on_off(s_panel, true);
         s_panel_on = true;
-    } else if (o.panel_on && o.level_pct != s_applied_level) {
-        bsp_display_brightness_set(o.level_pct);
-        s_applied_level = o.level_pct;
-    } else if (!o.panel_on && s_panel_on) {
-        esp_lcd_panel_disp_on_off(s_panel, false);
-        s_panel_on = false;
+        ESP_LOGI(TAG, "disp: panel=on level=%d", o.level_pct);
+    } else {
+        if (s_panel_on && o.level_pct != s_applied_level) {
+            bsp_display_brightness_set(o.level_pct);
+            s_applied_level = o.level_pct;
+        }
+        if (!o.panel_on && s_panel_on) {
+            esp_lcd_panel_disp_on_off(s_panel, false);
+            s_panel_on = false;
+            ESP_LOGI(TAG, "disp: panel=off level=%d", o.level_pct);
+        }
     }
     if (o.stage != s_logged_stage) {
         if (o.stage < s_logged_stage) {

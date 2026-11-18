@@ -14,7 +14,7 @@ enum { DP_STATE_IDLE, DP_STATE_LISTENING, DP_STATE_THINKING, DP_STATE_SPEAKING, 
 typedef struct {
     dp_stage_t stage;
     int level_pct;
-    bool panel_on;
+    bool panel_on; /* stays on while the fade to DISP_FLOOR_PERCENT before OFF runs */
     dp_cause_t cause;
     uint32_t hold_ms;
 } dp_out_t;
