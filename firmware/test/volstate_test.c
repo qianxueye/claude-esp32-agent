@@ -1,0 +1,106 @@
+#include <assert.h>
+#include <stdio.h>
+#include "volstate.h"
+
+static void loaded(volst_t *s, int vol)
+{
+    vs_load(s, vol >= 0, (uint32_t)vol);
+}
+
+static void test_s1_transient_never_stored(void)
+{
+    volst_t s;
+    loaded(&s, 45);
+    const uint8_t one[] = {0}, two[] = {0, 0};
+    assert(!vs_host_set(&s, one, 1) && vs_effective(&s) == 0 && s.user == 45 && !s.dirty);
+    assert(!vs_host_set(&s, two, 2) && vs_effective(&s) == 0 && s.user == 45 && !s.dirty);
+    vs_session_reset(&s);
+    assert(vs_effective(&s) == 45);
+    const uint8_t bad[] = {10, 7}, three[] = {10, 1, 0};
+    assert(!vs_host_set(&s, bad, 2) && !vs_host_set(&s, three, 3) && vs_effective(&s) == 45);
+    const uint8_t big[] = {200};
+    vs_host_set(&s, big, 1);
+    assert(vs_effective(&s) == 100);
+}
+
+static void test_s2_seed_idempotent_and_loses(void)
+{
+    volst_t s;
+    loaded(&s, -1);
+    const uint8_t seed[] = {70, 2}, seed2[] = {20, 2};
+    assert(!s.set && vs_host_set(&s, seed, 2) && s.set && s.dirty && s.user == 70);
+    assert(!vs_host_set(&s, seed2, 2) && s.user == 70);
+    loaded(&s, -1);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 33);
+    assert(vs_knob_end(&s, false) && s.user == 33 && s.set);
+    assert(!vs_host_set(&s, seed, 2) && s.user == 33);
+    loaded(&s, 50);
+    vs_knob_arm(&s);
+    assert(!vs_host_set(&s, (const uint8_t[]){10, 1}, 2) && s.user == 50);
+    vs_knob_set(&s, 60);
+    assert(!vs_knob_end(&s, true) && s.user == 50);
+}
+
+static void test_knob_cancel_restores(void)
+{
+    volst_t s;
+    loaded(&s, 50);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 80);
+    assert(!vs_knob_end(&s, true) && s.user == 50 && !s.dirty && !s.knob);
+    vs_knob_arm(&s);
+    const uint8_t t[] = {5};
+    vs_host_set(&s, t, 1);
+    assert(vs_effective(&s) == 50);
+    vs_knob_set(&s, 50);
+    assert(!vs_knob_end(&s, false));
+}
+
+static void test_s3_save_and_load_rules(void)
+{
+    volst_t s;
+    loaded(&s, 45);
+    assert(s.set && s.user == 45 && s.stored == 45 && !s.dirty);
+    loaded(&s, -1);
+    assert(!s.set && s.user == DEFAULT_VOLUME && s.stored == -1);
+    vs_load(&s, true, 200);
+    assert(!s.set && s.user == DEFAULT_VOLUME);
+    vs_load(&s, false, 0);
+    assert(!s.set);
+    loaded(&s, 45);
+    uint32_t last = 0, t = 100000, writes = 0;
+    for (int i = 0; i < 10; i++) {
+        vs_knob_arm(&s);
+        vs_knob_set(&s, 46 + i);
+        vs_knob_end(&s, false);
+        t += 400;
+        assert(!vs_save_due(&s, t, last, false));
+        if (vs_save_due(&s, t, last, true)) {
+            vs_saved(&s, s.user);
+            last = t;
+            writes++;
+        }
+    }
+    assert(writes == 1 && s.dirty);
+    t += VOL_SAVE_MIN_MS;
+    assert(vs_save_due(&s, t, last, true));
+    vs_knob_arm(&s);
+    assert(!vs_save_due(&s, t, last, true));
+    vs_knob_end(&s, false);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 99);
+    vs_knob_end(&s, false);
+    assert(vs_save_due(&s, 0xFFFFFF00u + VOL_SAVE_MIN_MS, 0xFFFFFF00u, true));
+    assert(!vs_save_due(&s, 0xFFFFFF00u + VOL_SAVE_MIN_MS - 1, 0xFFFFFF00u, true));
+}
+
+int main(void)
+{
+    test_s1_transient_never_stored();
+    test_s2_seed_idempotent_and_loses();
+    test_knob_cancel_restores();
+    test_s3_save_and_load_rules();
+    puts("ok");
+    return 0;
+}

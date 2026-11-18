@@ -5,7 +5,7 @@
 #define FW_VERSION "0.1.0"
 
 /* Wire protocol (docs/protocol.md) */
-#define PROTO_VERSION 2
+#define PROTO_VERSION 3
 #define PROTO_MAX_PAYLOAD 4096
 #define PROTO_PARTIAL_FRAME_TIMEOUT_MS 200
 #define PROTO_HOST_SILENCE_TIMEOUT_MS 5000
@@ -47,6 +47,30 @@
 #define MIC_GAP_MARGIN_MS 20
 #define MIC_LEVEL_FULL_SCALE 8000
 #define SPK_LEVEL_FULL_SCALE 12000
+
+/* Volume knob (docs/protocol.md "Volume", docs/mascot.md "Volume arc"); values marked placeholder are fitted from the logged knob lines */
+#define TOUCH_SLOP_PX 13 /* plain configuration, placeholder: movement beyond this is not a tap or a hold */
+#define VOL_R_MIN_PX 150 /* plain configuration, placeholder: a touch starting at this radius or beyond is an edge touch */
+#define VOL_R_TRACK_PX 100 /* plain configuration, placeholder: an armed knob tolerates drift down to this radius */
+#define VOL_ARM_DEG 15 /* mathematical model, placeholder: travel along the edge before the volume responds */
+#define VOL_SWEEP_DEG 270 /* plain configuration: travel for 0 to 100 percent, also the arc sweep */
+#define VOL_CW_SIGN 1 /* plain configuration: +1 when clockwise on the glass is rising touch angle */
+#define VOL_JUMP_MIN_DEG 10 /* mathematical model, placeholder: base of the per-sample angle limit */
+#define VOL_OMEGA_MAX_DPS 720 /* mathematical model, placeholder: fastest plausible finger, two turns per second */
+#define VOL_JUMP_DT_CAP_MS 50 /* mathematical model, placeholder: limit growth stops at this sample gap */
+#ifndef VOL_ARC_R_IN_PX
+#define VOL_ARC_R_IN_PX 222 /* plain configuration: above the listening ring's outermost rewritten radius */
+#endif
+#ifndef VOL_ARC_R_OUT_PX
+#define VOL_ARC_R_OUT_PX 230 /* plain configuration: below the glass edge at 233 */
+#endif
+#define VOL_ARC_START_DEG 135 /* plain configuration: UI-frame angle of the 0 percent end, clockwise from 3 o'clock */
+#define VOL_ARC_MUTE_THR 3 /* plain configuration: pixels shown red at 0 percent */
+#define VOL_ARC_CHUNK_THR 10 /* plain configuration: percent covered by one invalidated area */
+#define VOL_ARC_LINGER_MS 800 /* plain configuration: the arc stays this long after release */
+#define VOL_SAVE_MIN_MS 5000 /* mathematical model: flash wear, docs/protocol.md "Volume" */
+#define VOL_NVS_NAMESPACE "clawd"
+#define VOL_NVS_KEY "vol"
 
 /* Selftest */
 #define SELFTEST_BEFORE_MS 400
@@ -187,7 +211,7 @@
 #define STACK_TX 4096
 #define STACK_MIC 6144
 #define STACK_SPK 6144
-#define STACK_LIFE 4096
+#define STACK_LIFE 6144
 #define STACK_BUTTON 3072
 #define STACK_IMU 4096
 #define STACK_BLIT 3072
