@@ -62,7 +62,7 @@ The accelerometer (QMI8658) is polled every `IMU_PERIOD_MS` and all three axes f
 - REST to MOVING: D ≥ θ_on for `MOTION_N_ON` consecutive samples. MOVING (or LIFTED) to REST: the mean stays within θ_off of its own running mean for `MOTION_REF_SAMPLES` samples; that mean becomes the anchor.
 - Pickup: D ≥ θ_P for `MOTION_N_PICKUP` samples, from REST or MOVING, gives LIFTED until the next REST. A push that ends where it began cannot reach it: 0.174 g held for 0.5 s needs 0.85 m/s and 0.21 m of travel.
 - Speaker mask: while the amplifier is on, and for `MOTION_PA_TAIL_MS` after it stops, REST to MOVING is not counted. Pickup stays armed, since zero-mean vibration cannot hold a 0.17 g offset.
-- Activity: a pickup, and every sample while LIFTED. MOVING does not count as activity.
+- Activity: a pickup, and every sample while LIFTED. MOVING counts as activity only when `MOTION_SMALL_WAKE_ENABLED` is 1; it is 0 until θ_on, θ_off and N_on are fitted to recorded traces.
 - Turning the board about the vertical axis leaves gravity unchanged; it wakes only through incidental tilt.
 
 | Constant | Class | Origin |
@@ -81,3 +81,20 @@ Detector tests: with θ = k·σ_D and σ_D = σ_W·√(1 + W/W_ref), 24 h of whi
 ## Storm budget
 
 Motion wakes that alone hold ACTIVE are limited to `DISP_STORM_BUDGET_MS` per `DISP_STORM_PERIOD_MS` (sliding window of 60 bins). When it is spent, motion reaches DIM at most, until old bins expire. Touch, button and state activity are not counted. Class M: a false-wake storm at 100 % costs no more panel wear than the resting dim level did before, `(0.174 − 0.10) / (1 − 0.10) = 8.2 %` of the time.
+
+## Noise floor
+
+Used only when `MOTION_SMALL_WAKE_ENABLED` is 1. The floor needs no rest/motion decision, so it cannot lock up.
+
+- Per 1 s block with the amplifier off, take the ten 100 ms means m_k of the raw samples: `A_b = Σ(m_{k+1} − m_k)² / 54` over three axes (the Allan variance of the mean).
+- `σ̂_W² = (lower quartile of the last 64 blocks) / c`. Blocks that overlap amplifier time are dropped. The estimate is valid after 64 blocks.
+- `σ_D = σ̂_W·√(1 + W/W_ref)` and `θ_noise = k·σ_D`. θ_on and θ_off are raised to θ_noise when it is higher.
+- k = 4.44: a look is one 100 ms mean; with the debounce spanning about two independent looks, `q = P(χ²₃ ≥ k²) = 2.0e-4` per look and `q² × 25.9e6 looks` is one event per 30 days.
+- c = 0.760 is the median over 4000 simulated windows of (lower quartile) / σ_W² for white noise; the test pins it to ±1 %.
+- Accuracy: one window gives σ̂ within ±5 % in about 90 % of windows (relative spread about 3 %). Disturbed blocks bias σ̂ upward, never downward: the lower quartile of 64 sits at rank 16 among the clean blocks, so with 30 % of blocks disturbed σ̂ is about 5 % high and with 70 % about 30 % high. The effect is fewer wakes, not more.
+
+| Constant | Class |
+|---|---|
+| `MOTION_NOISE_K` | M |
+| `MOTION_NOISE_C` | M |
+| `MOTION_SMALL_WAKE_ENABLED` | C |

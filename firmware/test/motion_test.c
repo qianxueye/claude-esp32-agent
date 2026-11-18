@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "app_config.h"
 #include "motion.h"
 
@@ -305,6 +306,106 @@ static void test_drift(void)
     assert(r.moving == 0 && r.pickup == 0 && r.m.state == MOTION_REST);
 }
 
+/* Feeds 64 one-second blocks of rest noise; a block is disturbed with probability p by extra white noise of 3 to 10 times the rest sigma. */
+static float estimate_sigma_w(double p, float *q25_over_var)
+{
+    motion_noise_t n;
+    motion_noise_init(&n);
+    for (int b = 0; b < MOTION_NOISE_BLOCKS; b++) {
+        double extra = rng_uniform() < p ? SIGMA_S * (3.0 + 7.0 * rng_uniform()) : 0.0;
+        for (int i = 0; i < 50; i++) {
+            float a[3];
+            noisy(a, SIGMA_S);
+            if (extra > 0.0) {
+                a[0] += (float)(extra * rng_gauss());
+                a[1] += (float)(extra * rng_gauss());
+                a[2] += (float)(extra * rng_gauss());
+            }
+            motion_noise_feed(&n, a, false);
+        }
+    }
+    float sw = motion_noise_sigma_w(&n);
+    *q25_over_var = sw * sw * MOTION_NOISE_C / (float)(SIGMA_W * SIGMA_W);
+    return sw;
+}
+
+static int cmp_float(const void *a, const void *b)
+{
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+static void estimator_stats(double p, int trials, double *median_ratio, double *frac_within5)
+{
+    static float ratio[8000];
+    float q;
+    int within = 0;
+    for (int t = 0; t < trials; t++) {
+        ratio[t] = estimate_sigma_w(p, &q) / (float)SIGMA_W;
+        within += fabsf(ratio[t] - 1.0f) <= 0.05f;
+    }
+    qsort(ratio, (size_t)trials, sizeof ratio[0], cmp_float);
+    *median_ratio = ratio[trials / 2];
+    *frac_within5 = (double)within / trials;
+}
+
+static void test_noise_estimator(void)
+{
+    enum { TRIALS = 4000 };
+    static float v[TRIALS];
+    float q;
+    for (int t = 0; t < TRIALS; t++) {
+        estimate_sigma_w(0.0, &q);
+        v[t] = q;
+    }
+    qsort(v, TRIALS, sizeof v[0], cmp_float);
+    double c_sim = v[TRIALS / 2];
+    printf("c by simulation %.4f (configured %.4f)\n", c_sim, (double)MOTION_NOISE_C);
+    /*
+     * One block estimate has about 3 % relative spread in sigma, so a +-5 % band holds for about 90 % of 64-block windows (1.65 sigma).
+     * A rank statistic cannot ignore disturbance it cannot see: with a share p of blocks disturbed, the lower quartile of 64 sits at
+     * rank 16 among about 64(1-p) clean blocks, so sigma is over-estimated by about 5 % at p = 0.3 and 30 % at p = 0.7, never under-estimated.
+     */
+    double med, frac;
+    estimator_stats(0.0, TRIALS, &med, &frac);
+    printf("clean: median sigma ratio %.3f, within 5%% in %.1f%% of trials\n", med, frac * 100);
+    assert(fabs(med - 1.0) <= 0.01 && frac >= 0.85);
+    assert(fabs(c_sim - MOTION_NOISE_C) / c_sim <= 0.01);
+    estimator_stats(0.3, TRIALS, &med, &frac);
+    printf("30%% disturbed: median sigma ratio %.3f\n", med);
+    assert(med >= 1.0 && med <= 1.10);
+    estimator_stats(0.7, TRIALS, &med, &frac);
+    printf("70%% disturbed: median sigma ratio %.3f\n", med);
+    assert(med >= 1.2 && med <= 1.4);
+}
+
+/* Samples spent in MOVING during an hour of rest noise far above the placeholder threshold, counted after the estimator has 64 blocks. */
+static long noisy_rest_moving(bool use_noise, double sigma_w)
+{
+    motion_cfg_t cfg = motion_default_cfg();
+    cfg.use_noise = use_noise;
+    rig_t r;
+    rig_init(&r, &cfg, 0);
+    long moving = 0;
+    for (long i = 0; i < 3600L * 1000L / DT_MS; i++) {
+        float a[3];
+        noisy(a, sigma_w * 2.2360679775);
+        rig_feed(&r, a, false);
+        moving += i > 70L * 1000L / DT_MS && r.m.state == MOTION_MOVING;
+    }
+    return moving;
+}
+
+static void test_noise_floor_raises_threshold(void)
+{
+    long without = noisy_rest_moving(false, 0.008);
+    long with = noisy_rest_moving(true, 0.008);
+    printf("noisy rest, one hour: %ld samples in MOVING without the floor, %ld with it\n", without, with);
+    assert(without >= 100000);
+    assert(with == 0);
+    assert(motion_default_cfg().use_noise == (MOTION_SMALL_WAKE_ENABLED != 0));
+}
+
 int main(void)
 {
     test_rest_noise();
@@ -315,6 +416,8 @@ int main(void)
     test_pickup_tremor_setdown();
     test_pickup_under_speaker();
     test_drift();
+    test_noise_estimator();
+    test_noise_floor_raises_threshold();
     puts("ok");
     return 0;
 }
