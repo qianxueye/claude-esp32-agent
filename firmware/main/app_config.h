@@ -60,6 +60,11 @@
 #define BOOT_BUTTON_GPIO 0
 #define BOOT_BUTTON_POLL_MS 10
 #define BOOT_BUTTON_DEBOUNCE_POLLS 3
+#define PWR_KEY_EXIO 4 /* plain configuration: TCA9554 pin of the PWR key, active high */
+#define PWR_LOG_MIN_MS 200 /* plain configuration: minimum gap between TCA9554 input byte log lines */
+#define PMU_I2C_ADDR 0x34 /* plain configuration: AXP2101, read-only */
+#define PMU_I2C_HZ 400000 /* plain configuration */
+#define PMU_I2C_TIMEOUT_MS 50 /* plain configuration */
 
 /* Display geometry (docs/mascot.md); cell and bubble unit are whole screen pixels */
 #define LCD_SIZE 466

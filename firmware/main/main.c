@@ -4,10 +4,14 @@
 #include <string.h>
 #include "app_config.h"
 #include "audio.h"
+#include "bsp/esp-bsp.h"
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
+#include "esp_io_expander.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "imu.h"
+#include "keydebounce.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -25,6 +29,7 @@ static volatile bool s_ready;
 static volatile bool s_selftest_busy;
 static QueueHandle_t s_snap_queue;
 static SemaphoreHandle_t s_state_mtx;
+static volatile uint32_t s_pwr_read_errors;
 
 static void send_hello(const char *reason)
 {
@@ -306,10 +311,37 @@ static void life_task(void *arg)
                      (unsigned)st.tx_frames, (unsigned)st.tx_bytes, (unsigned)st.tx_dropped,
                      (unsigned)audio_spk_queued(), (unsigned)audio_spk_overflow_frames(), (int)audio_pa_is_on(),
                      (unsigned)ac.spk_underruns, (unsigned)ac.spk_slow_writes, (unsigned)ac.mic_gaps, (unsigned)ac.mic_dropped);
-            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
-                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION]);
+            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u pwr_err=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
+                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)s_pwr_read_errors);
         }
     }
+}
+
+static void key_press(const char *name)
+{
+    ESP_LOGI(TAG, "button: press key=%s", name);
+    ui_wake(DP_CAUSE_BUTTON);
+    uint8_t code = 3;
+    transport_send(T_INPUT, &code, 1);
+}
+
+static void log_pmu_regs(i2c_master_bus_handle_t bus)
+{
+    i2c_master_dev_handle_t dev;
+    i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = PMU_I2C_ADDR, .scl_speed_hz = PMU_I2C_HZ};
+    if (bus == NULL || i2c_master_bus_add_device(bus, &cfg, &dev) != ESP_OK) {
+        ESP_LOGW(TAG, "pmu: no device");
+        return;
+    }
+    uint8_t r22 = 0, r27 = 0, a22 = 0x22, a27 = 0x27;
+    esp_err_t e1 = i2c_master_transmit_receive(dev, &a22, 1, &r22, 1, PMU_I2C_TIMEOUT_MS);
+    esp_err_t e2 = i2c_master_transmit_receive(dev, &a27, 1, &r27, 1, PMU_I2C_TIMEOUT_MS);
+    i2c_master_bus_rm_device(dev);
+    if (e1 != ESP_OK || e2 != ESP_OK) {
+        ESP_LOGW(TAG, "pmu: read failed %d %d", (int)e1, (int)e2);
+        return;
+    }
+    ESP_LOGI(TAG, "pmu: reg22=0x%02x reg27=0x%02x", r22, r27);
 }
 
 static void button_task(void *arg)
@@ -320,27 +352,34 @@ static void button_task(void *arg)
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     gpio_config(&io);
-    int low = 0, high = 0;
-    bool sent = false;
+    log_pmu_regs(bsp_i2c_get_handle());
+    esp_io_expander_handle_t exp = bsp_io_expander_init();
+    keydeb_t boot, pwr;
+    keydeb_init(&boot);
+    keydeb_init(&pwr);
+    bool logged = false;
+    uint32_t logged_byte = 0, logged_ms = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(BOOT_BUTTON_POLL_MS));
-        if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
-            high = 0;
-            if (low < BOOT_BUTTON_DEBOUNCE_POLLS) {
-                low++;
-            }
-            if (low >= BOOT_BUTTON_DEBOUNCE_POLLS && !sent) {
-                sent = true;
-                ui_wake(DP_CAUSE_BUTTON);
-                uint8_t code = 3;
-                transport_send(T_INPUT, &code, 1);
+        if (keydeb_poll(&boot, gpio_get_level(BOOT_BUTTON_GPIO) == 0, BOOT_BUTTON_DEBOUNCE_POLLS)) {
+            key_press("boot");
+        }
+        uint32_t in = 0;
+        bool pwr_down = false;
+        if (exp != NULL && esp_io_expander_get_level(exp, 0xFF, &in) == ESP_OK) {
+            pwr_down = (in >> PWR_KEY_EXIO) & 1;
+            uint32_t t = now_ms();
+            if (!logged || (in != logged_byte && t - logged_ms >= PWR_LOG_MIN_MS)) {
+                ESP_LOGI(TAG, "tca9554 in=0x%02x", (unsigned)in);
+                logged = true;
+                logged_byte = in;
+                logged_ms = t;
             }
         } else {
-            low = 0;
-            if (++high >= BOOT_BUTTON_DEBOUNCE_POLLS) {
-                sent = false;
-                high = BOOT_BUTTON_DEBOUNCE_POLLS;
-            }
+            s_pwr_read_errors++;
+        }
+        if (keydeb_poll(&pwr, pwr_down, BOOT_BUTTON_DEBOUNCE_POLLS)) {
+            key_press("pwr");
         }
     }
 }
