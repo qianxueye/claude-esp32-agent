@@ -20,6 +20,8 @@ void audio_spk_end(void);
 uint32_t audio_spk_queued(void);
 uint32_t audio_spk_bytes_played(void);
 uint32_t audio_spk_overflow_frames(void);
+/* True while the amplifier is switched on. */
+bool audio_pa_active(void);
 /* bit1 = requested state, bit0 = pin level read back */
 int audio_pa_is_on(void);
 

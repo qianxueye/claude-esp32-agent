@@ -175,6 +175,89 @@ static void test_orbit(void)
     assert(x0 == x1 && y0 == y1);
 }
 
+/* Motion activity every tick for three hours, from a clock start that may sit on the wrap. */
+static void test_storm_budget_from(uint32_t t0)
+{
+    const uint32_t hour = DISP_STORM_PERIOD_MS, total = 3u * hour;
+    const uint32_t n = total / TICK;
+    uint8_t *active = calloc(n + 1, 1);
+    assert(active);
+    dpower_t d;
+    dp_init(&d, t0);
+    uint32_t t = t0;
+    dp_out_t o;
+    uint32_t first_dim = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        t += TICK;
+        dp_activity(&d, t, DP_CAUSE_MOTION);
+        o = dp_update(&d, t);
+        active[i] = o.stage == DP_ACTIVE;
+        assert(o.stage != DP_OFF);
+        if (!first_dim && o.stage == DP_DIM) {
+            first_dim = i * TICK;
+        }
+    }
+    /* Boot activity holds ACTIVE for DISP_HOLD_MS before the budget starts to count. */
+    assert(first_dim >= DISP_HOLD_MS + DISP_STORM_BUDGET_MS - 1000 && first_dim <= DISP_HOLD_MS + DISP_STORM_BUDGET_MS + 1000);
+    uint32_t win = hour / TICK, sum = 0, worst = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        sum += active[i];
+        if (i >= win) {
+            sum -= active[i - win];
+        }
+        worst = sum > worst ? sum : worst;
+    }
+    assert((uint64_t)worst * TICK <= (uint64_t)DISP_STORM_BUDGET_MS + hour / DP_STORM_BINS);
+    uint32_t all = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        all += active[i];
+    }
+    assert((uint64_t)all * TICK >= 2u * DISP_STORM_BUDGET_MS);
+    free(active);
+
+    t += 1000;
+    dp_activity(&d, t, DP_CAUSE_TOUCH);
+    o = dp_update(&d, t);
+    assert(o.stage == DP_ACTIVE);
+}
+
+static void test_storm_dim_from_off(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    run_to(&d, &t, DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 1000);
+    assert(dp_update(&d, t).stage == DP_OFF);
+    dp_activity(&d, t, DP_CAUSE_MOTION);
+    dp_out_t o = dp_update(&d, t);
+    assert(o.stage == DP_ACTIVE && o.panel_on && o.cause == DP_CAUSE_MOTION);
+    for (uint32_t i = 0; i < DISP_STORM_BUDGET_MS / TICK + 100; i++) {
+        t += TICK;
+        dp_activity(&d, t, DP_CAUSE_MOTION);
+        dp_update(&d, t);
+    }
+    run_to(&d, &t, t + DISP_HOLD_MS + DISP_DIM_TO_OFF_MS + 5000);
+    assert(dp_update(&d, t).stage == DP_OFF);
+    dp_activity(&d, t, DP_CAUSE_MOTION);
+    o = dp_update(&d, t);
+    assert(o.stage == DP_DIM && o.panel_on && o.level_pct == DISP_DIM_PERCENT);
+}
+
+static void test_touch_does_not_spend_budget(void)
+{
+    dpower_t d;
+    dp_init(&d, 0);
+    uint32_t t = 0;
+    for (uint32_t i = 0; i < 2u * DISP_STORM_BUDGET_MS / TICK; i++) {
+        t += TICK;
+        dp_activity(&d, t, DP_CAUSE_TOUCH);
+        assert(dp_update(&d, t).stage == DP_ACTIVE);
+    }
+    dp_activity(&d, t, DP_CAUSE_MOTION);
+    run_to(&d, &t, t + DISP_HOLD_MS - 1);
+    assert(dp_update(&d, t).stage == DP_ACTIVE);
+}
+
 int main(void)
 {
     test_timeline_from(0);
@@ -186,6 +269,10 @@ int main(void)
     test_attention_states();
     test_offline_never_brightens();
     test_force();
+    test_storm_budget_from(0);
+    test_storm_budget_from(0xFFFFFFFFu - 1000000u);
+    test_storm_dim_from_off();
+    test_touch_does_not_spend_budget();
     test_orbit();
     puts("ok");
     return 0;

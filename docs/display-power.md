@@ -52,3 +52,32 @@ The panel's TE output may stop while it is off. `refr_cb` therefore does not wai
 ## Test aids
 
 DEBUG keys in `protocol.md`: `disp_scale` runs the timeline N times faster (and restarts it), `disp_force` pins a stage, `orbit` pins a lattice index, `fill` shows a flat grey for ghost inspection. Host tests: `firmware/test/run.sh`.
+
+## Motion
+
+The accelerometer (QMI8658) is polled every `IMU_PERIOD_MS` and all three axes feed `motion.c`. CTRL5 is written with `IMU_CTRL5_VALUE` (low-pass on, 16.7 Hz) and read back in the `imu: ctrl write` log line as `ctrl5=`.
+
+- Signal: `D = |ḡ − g_ref|` in g. ḡ is the mean of the last `MOTION_WINDOW_SAMPLES` samples of the three axes. g_ref is the rest anchor: the mean of the window that last established rest, followed with time constant `MOTION_TAU_REF_MS` while D < θ_off to absorb offset drift.
+- A knock, a keystroke or speaker vibration leaves the board in the same pose, so its acceleration averages to zero in the window and D returns to the anchor. A nudge or a lift changes the pose for hundreds of milliseconds.
+- REST to MOVING: D ≥ θ_on for `MOTION_N_ON` consecutive samples. MOVING (or LIFTED) to REST: the mean stays within θ_off of its own running mean for `MOTION_REF_SAMPLES` samples; that mean becomes the anchor.
+- Pickup: D ≥ θ_P for `MOTION_N_PICKUP` samples, from REST or MOVING, gives LIFTED until the next REST. A push that ends where it began cannot reach it: 0.174 g held for 0.5 s needs 0.85 m/s and 0.21 m of travel.
+- Speaker mask: while the amplifier is on, and for `MOTION_PA_TAIL_MS` after it stops, REST to MOVING is not counted. Pickup stays armed, since zero-mean vibration cannot hold a 0.17 g offset.
+- Activity: a pickup, and every sample while LIFTED. MOVING does not count as activity.
+- Turning the board about the vertical axis leaves gravity unchanged; it wakes only through incidental tilt.
+
+| Constant | Class | Origin |
+|---|---|---|
+| `IMU_CTRL5_VALUE` | M | datasheet bandwidth table; below 25 Hz, half the poll rate |
+| `MOTION_WINDOW_SAMPLES` | M, placeholder until traces | at least two periods of board ringing, at most a quarter of the latency target |
+| `MOTION_REF_SAMPLES` | M, placeholder until traces | twice the 99th-percentile still interval in hand |
+| `MOTION_THETA_ON_G`, `MOTION_THETA_OFF_G` | M, placeholder until traces | `θ_on = max(θ_noise, √(A_amb·S_min))`, `θ_off = (A_amb³·S_min)^¼`; A_amb is the largest D of the reject traces and S_min the 5th-percentile sustained D of the accept traces |
+| `MOTION_N_ON` | M, placeholder until traces | `W + ⌈T_knock/dt⌉ + 1` |
+| `MOTION_THETA_PICKUP_G`, `MOTION_N_PICKUP` | M | geometric mean of the largest nudge tilt (5°) and the smallest lift tilt (20°); travel bound above |
+| `MOTION_TAU_REF_MS` | M | between 10·N_on·dt and θ_off / (drift rate) |
+| `MOTION_PA_TAIL_MS` | M | window 100 ms + sensor filter settling + amplifier settle |
+
+Detector tests: with θ = k·σ_D and σ_D = σ_W·√(1 + W/W_ref), 24 h of white rest noise at k = 4.44 gives at most one event. A look is one non-overlapping 100 ms mean; two consecutive looks above θ have probability q² with q = P(χ²₃ ≥ k²), so k = 3 gives about 740 pairs a day if the anchor carried the noise of a W_ref mean. The module's anchor is an exponential average, whose noise is far lower, so the expected count is about 500; `firmware/test/motion_test.c` computes it in closed form and checks the module's own D against it. The module's debounce of 14 samples is stricter than two looks, so it fires less often than the pair count.
+
+## Storm budget
+
+Motion wakes that alone hold ACTIVE are limited to `DISP_STORM_BUDGET_MS` per `DISP_STORM_PERIOD_MS` (sliding window of 60 bins). When it is spent, motion reaches DIM at most, until old bins expire. Touch, button and state activity are not counted. Class M: a false-wake storm at 100 % costs no more panel wear than the resting dim level did before, `(0.174 − 0.10) / (1 − 0.10) = 8.2 %` of the time.
