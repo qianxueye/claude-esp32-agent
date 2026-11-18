@@ -170,6 +170,17 @@ static void test_s7_failed_write_stays_due(void)
     assert(!vs_needs_save(&s) && s.stored == 50);
 }
 
+static void test_s8_write_failures_logged_once_per_streak(void)
+{
+    volst_t s;
+    loaded(&s, 45);
+    const bool outcome[] = {true, false, false, false, true, true, false, true};
+    const int want[] = {VS_STREAK_SAME, VS_STREAK_START, VS_STREAK_SAME, VS_STREAK_SAME, VS_STREAK_END, VS_STREAK_SAME, VS_STREAK_START, VS_STREAK_END};
+    for (int i = 0; i < 8; i++) {
+        assert(vs_write_streak(&s, outcome[i]) == want[i]);
+    }
+}
+
 int main(void)
 {
     test_s1_transient_never_stored();
@@ -180,6 +191,7 @@ int main(void)
     test_s5_fresh_board_never_due();
     test_s6_save_in_flight_then_cancel();
     test_s7_failed_write_stays_due();
+    test_s8_write_failures_logged_once_per_streak();
     puts("ok");
     return 0;
 }

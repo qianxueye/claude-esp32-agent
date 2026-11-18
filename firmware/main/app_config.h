@@ -97,7 +97,7 @@
 #define SCENE_SIZE_PX 320 /* square the group is drawn into before rotation */
 #define DIRTY_BAND_ROWS 40 /* rotated output is invalidated in horizontal bands of this height */
 #define SCENE_OUT_PX 466 /* rotated output square; must cover SCENE_MAX_RADIUS_PX of content */
-#define SCENE_MAX_RADIUS_PX 225
+#define SCENE_MAX_RADIUS_PX 225 /* glass bound; content also stays inside VOL_ARC_R_IN_PX, checked by volarc_test A2 */
 #define MASCOT_COLOR 0xD97757
 #define MASCOT_DIM_PERCENT 30
 #define BUBBLE_FILL_COLOR 0xF4F3EE

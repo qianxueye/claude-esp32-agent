@@ -682,6 +682,8 @@ static void invalidate_ring(void)
     }
 }
 
+_Static_assert(SCENE_OUT_PX == LCD_SIZE, "the arc and its clear loop index s_out in panel coordinates");
+
 static void arc_put(uint32_t e, int quad, int v)
 {
     int x, y;

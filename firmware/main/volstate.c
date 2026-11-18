@@ -74,6 +74,15 @@ void vs_saved(volst_t *s, int v)
     s->stored = v;
 }
 
+int vs_write_streak(volst_t *s, bool wrote)
+{
+    if (wrote != s->failing) {
+        return VS_STREAK_SAME;
+    }
+    s->failing = !wrote;
+    return wrote ? VS_STREAK_END : VS_STREAK_START;
+}
+
 bool vs_needs_save(const volst_t *s)
 {
     int committed = s->knob ? s->base : s->user;
