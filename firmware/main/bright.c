@@ -51,8 +51,7 @@ void bright_swipe_set(int pct)
 void bright_swipe_end(bool cancel)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
-    bool same = s_st.user == s_st.base;
-    vs_knob_end(&s_st, cancel || same);
+    vs_swipe_end(&s_st, cancel);
     s_cancels += cancel;
     xSemaphoreGive(s_mtx);
 }

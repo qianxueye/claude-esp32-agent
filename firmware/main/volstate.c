@@ -74,6 +74,11 @@ bool vs_knob_end(volst_t *s, bool cancel)
     return s->user != s->base;
 }
 
+bool vs_swipe_end(volst_t *s, bool cancel)
+{
+    return vs_knob_end(s, cancel || s->user == s->base);
+}
+
 void vs_saved(volst_t *s, int v)
 {
     s->stored = v;

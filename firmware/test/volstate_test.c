@@ -263,6 +263,37 @@ static void test_s11_one_clock_for_both_keys(void)
     assert(wrong_writes == 2);
 }
 
+static void test_s12_fresh_board_unchanged_swipe_stores_nothing(void)
+{
+    volst_t s, wrong;
+    assert(!brt_loaded(&s, VS_LOAD_ABSENT, 0) && !s.set && s.user == DISP_ACTIVE_PERCENT);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 100);
+    wrong = s;
+    assert(!vs_swipe_end(&s, false) && !s.set && !vs_needs_save(&s) && s.user == 100 && !s.knob);
+    /* The plain knob commit marks the default for a write: the red proof. */
+    assert(!vs_knob_end(&wrong, false) && wrong.set && vs_needs_save(&wrong));
+}
+
+static void test_s13_swipe_back_to_start_stores_nothing(void)
+{
+    volst_t s;
+    brt_loaded(&s, VS_LOAD_FOUND, 49);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 55);
+    vs_knob_set(&s, 49);
+    assert(!vs_swipe_end(&s, false) && !vs_needs_save(&s) && s.stored == 49 && s.user == 49);
+}
+
+static void test_s14_swipe_change_is_stored(void)
+{
+    volst_t s;
+    brt_loaded(&s, VS_LOAD_FOUND, 49);
+    vs_knob_arm(&s);
+    vs_knob_set(&s, 55);
+    assert(vs_swipe_end(&s, false) && vs_needs_save(&s) && s.user == 55 && vs_save_due(&s, 100000, 100000 - VOL_SAVE_MIN_MS, true));
+}
+
 int main(void)
 {
     test_s1_transient_never_stored();
@@ -277,6 +308,9 @@ int main(void)
     test_s9_range_load();
     test_s10_swipe_save_rules();
     test_s11_one_clock_for_both_keys();
+    test_s12_fresh_board_unchanged_swipe_stores_nothing();
+    test_s13_swipe_back_to_start_stores_nothing();
+    test_s14_swipe_change_is_stored();
     puts("ok");
     return 0;
 }

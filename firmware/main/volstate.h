@@ -35,6 +35,8 @@ int vs_knob_arm(volst_t *s);
 void vs_knob_set(volst_t *s, int v);
 /* Ends the knob; returns true when a commit changed the user volume. */
 bool vs_knob_end(volst_t *s, bool cancel);
+/* As vs_knob_end, but a commit at the value it armed with ends as a cancel, so it never marks a write. */
+bool vs_swipe_end(volst_t *s, bool cancel);
 /* Records that v was written to NVS; call only after a successful write. */
 void vs_saved(volst_t *s, int v);
 /* The committed user volume differs from the stored one and storage is on. */
