@@ -55,12 +55,37 @@ static void test_held_key_sends_once(void)
     assert(feed(&k, true, 100000) == 1);
 }
 
+static void test_failed_reads_do_not_rearm_a_held_key(void)
+{
+    keydeb_t k;
+    keydeb_init(&k);
+    int sends = 0;
+    for (int i = 0; i < N + 2; i++) {
+        sends += keydeb_poll_read(&k, true, true, N);
+    }
+    for (int i = 0; i < 10 * N; i++) {
+        sends += keydeb_poll_read(&k, false, false, N);
+    }
+    for (int i = 0; i < N + 2; i++) {
+        sends += keydeb_poll_read(&k, true, true, N);
+    }
+    assert(sends == 1);
+    for (int i = 0; i < N; i++) {
+        sends += keydeb_poll_read(&k, true, false, N);
+    }
+    for (int i = 0; i < N; i++) {
+        sends += keydeb_poll_read(&k, true, true, N);
+    }
+    assert(sends == 2);
+}
+
 int main(void)
 {
     test_one_press_sends_once();
     test_short_bounce_sends_nothing();
     test_release_bounce_sends_no_second_press();
     test_held_key_sends_once();
+    test_failed_reads_do_not_rearm_a_held_key();
     puts("keydebounce_test ok");
     return 0;
 }

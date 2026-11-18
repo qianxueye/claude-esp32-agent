@@ -366,7 +366,8 @@ static void button_task(void *arg)
         }
         uint32_t in = 0;
         bool pwr_down = false;
-        if (exp != NULL && esp_io_expander_get_level(exp, 0xFF, &in) == ESP_OK) {
+        bool pwr_ok = exp != NULL && esp_io_expander_get_level(exp, 0xFF, &in) == ESP_OK;
+        if (pwr_ok) {
             pwr_down = (in >> PWR_KEY_EXIO) & 1;
             uint32_t t = now_ms();
             if (!logged || (in != logged_byte && t - logged_ms >= PWR_LOG_MIN_MS)) {
@@ -378,7 +379,7 @@ static void button_task(void *arg)
         } else {
             s_pwr_read_errors++;
         }
-        if (keydeb_poll(&pwr, pwr_down, BOOT_BUTTON_DEBOUNCE_POLLS)) {
+        if (keydeb_poll_read(&pwr, pwr_ok, pwr_down, BOOT_BUTTON_DEBOUNCE_POLLS)) {
             key_press("pwr");
         }
     }
