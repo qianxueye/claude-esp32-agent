@@ -60,7 +60,7 @@ float motion_noise_sigma_w(const motion_noise_t *n)
     if (n->n_blocks < MOTION_NOISE_BLOCKS) {
         return 0.0f;
     }
-    float v[MOTION_NOISE_BLOCKS];
+    float v[MOTION_NOISE_BLOCKS] = {0};
     for (int i = 0; i < MOTION_NOISE_BLOCKS; i++) {
         float x = n->blocks[i];
         int k = i;
@@ -88,6 +88,17 @@ static float theta_off(const motion_t *m)
 {
     float t = m->cfg.use_noise ? motion_noise_theta(&m->noise) : 0.0f;
     return t > m->cfg.theta_off ? t : m->cfg.theta_off;
+}
+
+void motion_reset(motion_t *m)
+{
+    motion_t fresh = {.cfg = m->cfg, .noise = m->noise};
+    fresh.noise.in_mean = fresh.noise.n_means = 0;
+    fresh.noise.tainted = false;
+    for (int j = 0; j < 3; j++) {
+        fresh.noise.acc[j] = 0;
+    }
+    *m = fresh;
 }
 
 static void restart_settle(motion_t *m, const float g[3])

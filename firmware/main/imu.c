@@ -21,7 +21,7 @@ enum { REG_WHO_AM_I = 0x00, REG_CTRL1 = 0x02, REG_CTRL2 = 0x03, REG_CTRL5 = 0x06
 
 static i2c_master_dev_handle_t s_dev;
 static motion_t s_motion;
-static volatile int s_dump_left;
+static volatile int s_dump_req;
 static volatile uint32_t s_dump_gen;
 
 #define DUMP_BATCH 5
@@ -61,19 +61,21 @@ static float pick(const float a[3], int src, int sign)
 void imu_set_dump(int seconds)
 {
     seconds = seconds > DUMP_MAX_S ? DUMP_MAX_S : seconds;
-    s_dump_gen++;
-    s_dump_left = seconds > 0 ? seconds * 1000 / IMU_PERIOD_MS : 0;
+    __atomic_store_n(&s_dump_req, seconds > 0 ? seconds * 1000 / IMU_PERIOD_MS : 0, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&s_dump_gen, 1, __ATOMIC_RELEASE);
 }
 
 /* Logs raw counts five samples per line; a missing index in the sequence marks a lost line or a failed read. */
-static void dump_step(const uint8_t raw[6], bool ok, uint32_t *gen, int *idx, int *n, int *first, int16_t (*batch)[3])
+static void dump_step(const uint8_t raw[6], bool ok, uint32_t *gen, int *left, int *idx, int *n, int *first, int16_t (*batch)[3])
 {
-    if (*gen != s_dump_gen) {
-        *gen = s_dump_gen;
+    uint32_t g = __atomic_load_n(&s_dump_gen, __ATOMIC_ACQUIRE);
+    if (*gen != g) {
+        *gen = g;
+        *left = __atomic_load_n(&s_dump_req, __ATOMIC_RELAXED);
         *idx = 0;
         *n = 0;
     }
-    if (s_dump_left <= 0) {
+    if (*left <= 0) {
         return;
     }
     if (!ok) {
@@ -88,14 +90,14 @@ static void dump_step(const uint8_t raw[6], bool ok, uint32_t *gen, int *idx, in
         (*n)++;
     }
     (*idx)++;
-    s_dump_left--;
+    (*left)--;
     if (*n == DUMP_BATCH) {
         ESP_LOGI(TAG, "imu_dump i=%d %d,%d,%d;%d,%d,%d;%d,%d,%d;%d,%d,%d;%d,%d,%d", *first, batch[0][0], batch[0][1], batch[0][2], batch[1][0],
                  batch[1][1], batch[1][2], batch[2][0], batch[2][1], batch[2][2], batch[3][0], batch[3][1], batch[3][2], batch[4][0], batch[4][1],
                  batch[4][2]);
         *n = 0;
     }
-    if (s_dump_left == 0) {
+    if (*left == 0) {
         ESP_LOGI(TAG, "imu_dump done n=%d", *idx);
     }
 }
@@ -115,7 +117,7 @@ static bool configure(uint8_t *w)
 static void imu_task(void *arg)
 {
     uint32_t last = now_ms(), last_log = 0, dump_gen = 0;
-    int dump_idx = 0, dump_n = 0, dump_first = 0;
+    int dump_idx = 0, dump_n = 0, dump_first = 0, dump_left = 0;
     int16_t dump_batch[DUMP_BATCH][3];
     uint8_t prev[6] = {0};
     uint32_t ts_last_log = 0, same = 0;
@@ -124,7 +126,7 @@ static void imu_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(IMU_PERIOD_MS));
         uint8_t blk[SAMPLE_BLOCK_BYTES], *raw = blk + 5;
         bool ok = reg_read(REG_TIMESTAMP_L, blk, sizeof(blk)) == ESP_OK;
-        dump_step(raw, ok, &dump_gen, &dump_idx, &dump_n, &dump_first, dump_batch);
+        dump_step(raw, ok, &dump_gen, &dump_left, &dump_idx, &dump_n, &dump_first, dump_batch);
         if (!ok) {
             continue;
         }
@@ -141,7 +143,7 @@ static void imu_task(void *arg)
             ESP_LOGW(TAG, "imu frozen: data identical for %u samples, ts=%06x, reconfigured=%d", (unsigned)same, (unsigned)ts, (int)cfg);
             same = 0;
             warm = 0;
-            motion_init(&s_motion, NULL);
+            motion_reset(&s_motion);
             continue;
         }
         float a[3];

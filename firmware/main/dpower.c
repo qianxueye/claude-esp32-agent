@@ -199,7 +199,7 @@ dp_out_t dp_update(dpower_t *d, uint32_t now)
             d->ramping = false;
         }
     }
-    dp_cause_t cause = d->force >= 0 ? DP_CAUSE_FORCE : (st == DP_ACTIVE ? d->cause : (clamped ? DP_CAUSE_BUDGET : DP_CAUSE_TIMER));
+    dp_cause_t cause = d->force >= 0 ? DP_CAUSE_FORCE : (st == DP_ACTIVE ? d->cause : (clamped ? DP_CAUSE_BUDGET : (is_attention(d->state) ? DP_CAUSE_STATE : DP_CAUSE_TIMER)));
     return (dp_out_t){.stage = st, .level_pct = d->level, .panel_on = st != DP_OFF, .cause = cause};
 }
 
