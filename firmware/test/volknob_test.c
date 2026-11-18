@@ -103,8 +103,9 @@ static void test_k6_clockwise_and_unwrap(void)
     for (int a = 0; a < 360; a += 90) {
         drag_t d;
         drag_start(&d, 190, a, false, 30);
-        drag_turn(&d, 30, 1, 16);
-        assert((d.ev & VK_EV_ARM) && d.k.v == 35);
+        drag_turn(&d, 15, 1, 16);
+        drag_turn(&d, 31, 1, 16);
+        assert((d.ev & VK_EV_ARM) && d.k.v == 41);
     }
     drag_t d;
     drag_start(&d, 190, 160, false, 30);

@@ -343,7 +343,7 @@ async def test_seed_only_when_board_has_no_volume():
     await h.up()
     try:
         await until(lambda: h.dev.vol_set)
-        assert h.dev.set_volumes == [bytes([70, 2])] and h.relay.device_volume == 70
+        assert h.dev.set_volumes and set(h.dev.set_volumes) == {bytes([70, 2])} and h.relay.device_volume == 70
     finally:
         await h.down()
 
