@@ -1,4 +1,4 @@
-"""Wire protocol v2: frame encoding and a resynchronising decoder (docs/protocol.md)."""
+"""Wire protocol v3: frame encoding and a resynchronising decoder (docs/protocol.md)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ SYNC = b"\xc1\xad"
 MAX_PAYLOAD = 4096
 PARTIAL_TIMEOUT = 0.2
 SAMPLE_RATE = 16000
-PROTO_VERSION = 2
+PROTO_VERSION = 3
 WIFI_PORT = 47801
 PSK_IDENTITY_PREFIX = "clawd-"
 
@@ -20,6 +20,7 @@ class T(enum.IntEnum):
     MIC_AUDIO = 0x10
     INPUT = 0x20
     SPK_STATUS = 0x21
+    VOLUME = 0x22
     PONG = 0x30
     SELFTEST_RESULT = 0x31
     SNAP_BEGIN = 0x32
@@ -48,6 +49,12 @@ class State(enum.IntEnum):
     SPEAKING = 3
     ERROR = 4
     OFFLINE = 5
+
+
+class VolMode(enum.IntEnum):
+    TRANSIENT = 0
+    PERSIST = 1
+    SEED = 2
 
 
 class Input(enum.IntEnum):

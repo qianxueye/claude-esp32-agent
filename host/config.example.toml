@@ -6,7 +6,7 @@ effort = "low"
 tools = ["WebSearch", "WebFetch"]
 voice = "Tingting"
 rate = 0            # words per minute, 0 = voice default
-volume = 70
+volume = 70         # initial value for a board with no stored volume
 vad_min_speech_ms = 300
 vad_end_silence_ms = 800
 no_speech_timeout_s = 8.0

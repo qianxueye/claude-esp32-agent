@@ -12,7 +12,7 @@ from .agent import Agent
 from .audio import earcons
 from .config import Config
 from .link import Link
-from .protocol import Input, State, T
+from .protocol import Input, State, T, VolMode
 from .speaker import Speaker
 from .stt import Stt
 from .text import SentenceSplitter
@@ -36,6 +36,7 @@ class Relay:
         self.spoken: list[bytes] = []
         self._task: asyncio.Task | None = None
         self._mic: asyncio.Queue | None = None
+        self.device_volume: int | None = None
 
     # ---- link handler ----
     def current_state(self) -> int:
@@ -49,13 +50,17 @@ class Relay:
         self.state = State.IDLE
         asyncio.get_running_loop().create_task(self.agent.interrupt())
 
-    def on_hello(self, reason: str) -> None:
+    def on_hello(self, reason: str, info: dict) -> None:
         if reason == "boot":
             self.speaker.boot()
         else:
             self.speaker.request_sync()
-        if self.link:
-            self.link.send(T.SET_VOLUME, bytes([self.cfg.volume]))
+        vol = info.get("vol")
+        if isinstance(vol, int):
+            self.device_volume = vol
+            log.info("board volume %d, stored on the board: %s", vol, info.get("vol_set"))
+        if self.link and info.get("vol_set") is False:
+            self.link.send(T.SET_VOLUME, bytes([self.cfg.volume, VolMode.SEED]))
 
     def on_frame(self, ftype: int, payload: bytes) -> None:
         if ftype == T.MIC_AUDIO:
@@ -65,6 +70,9 @@ class Relay:
             self.speaker.on_status(payload)
         elif ftype == T.INPUT and payload:
             self._on_input(payload[0])
+        elif ftype == T.VOLUME and len(payload) == 1:
+            self.device_volume = payload[0]
+            log.info("board volume set to %d", payload[0])
         elif ftype == T.WIFI_STATUS:
             log.info("board Wi-Fi: %s", payload.decode(errors="replace"))
 

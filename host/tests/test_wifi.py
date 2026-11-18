@@ -90,7 +90,7 @@ async def test_handshake_fails_and_nothing_is_processed(identity, key, kw):
     async with server(rec) as srv:
         with pytest.raises((ssl.SSLError, ConnectionError, TransportClosed, TimeoutError)):
             t = await tls_connect(srv.port, identity, key, **kw)
-            t.write(encode(T.HELLO, b'{"proto":2}'))
+            t.write(encode(T.HELLO, b'{"proto":3}'))
             await t.read(1.0)
             await t.read(1.0)
         await asyncio.sleep(0.05)
@@ -155,7 +155,7 @@ class WifiHarness:
         d = FakeDevice(t, speed=self.h.speed, mic=self.h.mic, link="wifi", **kw)
         d.start()
         self.boards.append(d)
-        await until(lambda: d.volume is not None)
+        await until(lambda: T.SET_STATE in d.received)
         return d
 
     async def __aexit__(self, *exc):
@@ -179,7 +179,7 @@ async def test_full_turn_over_wifi():
 async def test_plain_tcp_frames_are_never_processed():
     async with WifiHarness() as w:
         _r, wr = await asyncio.open_connection("127.0.0.1", w.srv.port)
-        wr.write(encode(T.HELLO, b'{"proto":2,"reason":"boot"}') + encode(T.INPUT, bytes([Input.TAP])))
+        wr.write(encode(T.HELLO, b'{"proto":3,"reason":"boot"}') + encode(T.INPUT, bytes([Input.TAP])))
         await wr.drain()
         await asyncio.sleep(0.3)
         assert w.h.link.active_kind is None and w.h.relay.state == State.IDLE and not w.h.stt.calls
@@ -213,7 +213,7 @@ async def test_new_wifi_session_replaces_old():
 async def test_usb_present_refuses_wifi():
     async with WifiHarness() as w:
         w.h.allow_open = True
-        await until(lambda: w.h.devices and w.h.dev.volume is not None)
+        await until(lambda: w.h.devices and T.SET_STATE in w.h.dev.received)
         t = await tls_connect(w.srv.port, IDENTITY, KEY)
         d = FakeDevice(t, link="wifi")
         d.start()
@@ -228,7 +228,7 @@ async def test_usb_takes_over_from_wifi():
     async with WifiHarness() as w:
         d = await w.board()
         w.h.allow_open = True
-        await until(lambda: w.h.devices and w.h.dev.volume is not None)
+        await until(lambda: w.h.devices and T.SET_STATE in w.h.dev.received)
         assert w.h.link.active_kind == "usb"
         await until(lambda: d.t._closed or d.t._writer.is_closing())
         d.inject(Input.TAP)
@@ -241,7 +241,7 @@ async def test_usb_takes_over_from_wifi():
 async def test_tcp_keeps_partial_frame_beyond_200ms():
     async with WifiHarness(wifi_silence_timeout_s=5.0) as w:
         t = await tls_connect(w.srv.port, IDENTITY, KEY)
-        t.write(encode(T.HELLO, b'{"proto":2,"reason":"reply","link":"wifi"}'))
+        t.write(encode(T.HELLO, b'{"proto":3,"reason":"reply","link":"wifi"}'))
         await until(lambda: w.h.link.connected)
         frame = encode(T.SPK_STATUS, struct.pack("<IBI", 0, 0, 1234))
         t.write(frame[:3])
@@ -372,7 +372,7 @@ def _resume_twice(port):
             with ctx.wrap_socket(raw, server_hostname=None, session=session) as tls:
                 reused.append(tls.session_reused)
                 session = tls.session
-                tls.sendall(encode(T.HELLO, b'{"proto":2}'))
+                tls.sendall(encode(T.HELLO, b'{"proto":3}'))
                 with contextlib.suppress(OSError):
                     tls.recv(16)
     return reused
