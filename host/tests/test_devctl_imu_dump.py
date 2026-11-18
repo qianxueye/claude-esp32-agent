@@ -23,6 +23,11 @@ def test_missing_line_is_a_gap():
     assert gaps == 1
 
 
+def test_missing_first_line_is_a_gap():
+    _, gaps = devctl.parse_imu_dump([line(5), line(10), b"imu_dump done n=15"])
+    assert gaps == 1
+
+
 def test_lost_tail_is_a_gap():
     _, gaps = devctl.parse_imu_dump([line(0), line(5), b"imu_dump done n=30"])
     assert gaps == 1
