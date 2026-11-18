@@ -1,0 +1,824 @@
+#include "ui.h"
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include "app_config.h"
+#include "audio.h"
+#include "bsp/esp-bsp.h"
+#include "bsp/touch.h"
+#include "esp_heap_caps.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "core/lv_refr_private.h"
+#include "orient.h"
+#include "proto.h"
+#include "rotblit.h"
+#include "transport.h"
+
+LV_FONT_DECLARE(clawd_font_48);
+
+static const char *TAG = "ui";
+
+#define U BUBBLE_UNIT_PX
+#define C MASCOT_CELL_PX
+#define SCENE SCENE_SIZE_PX
+#define TEXT_ROWS_PX 48
+#define CANVAS_OFF ((LCD_SIZE - SCENE_OUT_PX) / 2)
+
+typedef struct {
+    int state, dx, dy, gx, gy, shift;
+    int eye_mode, eye_dx, eye_row, eye_h;
+    int claw_l, claw_r, legs_up, dim;
+    int pop, bub, dot_phase, spin;
+} scene_t;
+
+enum { EYES_OPEN, EYES_CLOSED, EYES_CROSS };
+enum { PAL_BG, PAL_MASCOT, PAL_FILL, PAL_INK, PAL_ERROR, PAL_OFFLINE_FILL, PAL_N };
+
+typedef struct {
+    const char *text;
+    int glyphs;
+    bool thought, dots, spinner;
+    uint8_t text_color, fill;
+} bubble_def_t;
+
+static const bubble_def_t BUBBLES[ST_COUNT] = {
+    [ST_LISTENING] = {"在听", 2, false, true, false, PAL_INK, PAL_FILL},
+    [ST_THINKING] = {"在想", 2, true, false, true, PAL_INK, PAL_FILL},
+    [ST_SPEAKING] = {"在说", 2, false, true, false, PAL_INK, PAL_FILL},
+    [ST_ERROR] = {"出错了", 3, false, false, false, PAL_ERROR, PAL_FILL},
+    [ST_OFFLINE] = {"离线", 2, false, false, false, PAL_INK, PAL_OFFLINE_FILL},
+};
+
+#define SPINNER_N 6
+#define SPINNER_PX 7
+static const char *const SPINNER[SPINNER_N][SPINNER_PX] = {
+    {".......", ".......", ".......", "...#...", ".......", ".......", "......."},
+    {"...#...", "...#...", "...#...", "###.###", "...#...", "...#...", "...#..."},
+    {"#..#..#", ".#.#.#.", "..###..", "###.###", "..###..", ".#.#.#.", "#..#..#"},
+    {"...#...", "..###..", ".#####.", "###.###", ".#####.", "..###..", "...#..."},
+    {"..#.#..", "#.###.#", ".#####.", "###.###", ".#####.", "#.###.#", "..#.#.."},
+    {"#..#..#", ".#.#.#.", "..###..", "#######", "..###..", ".#.#.#.", "#..#..#"},
+};
+static const int SPINNER_PINGPONG[] = {0, 1, 2, 3, 4, 5, 4, 3, 2, 1};
+
+static const int8_t DRIFT[8][2] = {{0, 0}, {2, 0}, {3, 2}, {2, 3}, {0, 3}, {-2, 2}, {-3, 0}, {-2, -2}};
+
+static const int LEG_COL[4] = {3, 5, 10, 12};
+
+static lv_obj_t *s_canvas;
+static lv_area_t s_inval[INVAL_LOG_MAX];
+static int s_inval_n;
+static SemaphoreHandle_t s_te_sem;
+static volatile uint32_t s_te_edges;
+static uint8_t *s_model;
+static uint16_t s_pal[PAL_N];
+static lv_draw_buf_t *s_out;
+static uint8_t *s_mask[ST_COUNT];
+static irect_t s_bb, s_prev_bb;
+static bool s_model_dirty;
+static uint32_t s_redraw_us, s_blit_us, s_redraw_n, s_blit_n, s_blit_px;
+static dev_state_t s_state = ST_IDLE;
+static uint32_t s_state_since, s_last_tick, s_pop_at;
+static int s_pop, s_pop_target, s_bub_state;
+static scene_t s_drawn;
+static bool s_pressed, s_long_sent;
+static int s_bench, s_ring_width, s_ring_opa;
+static char s_miss[150];
+static uint32_t s_te_missed, s_cover_frames, s_cover_viol;
+static uint32_t s_press_tick;
+static float s_bench_angle;
+static int s_shown_rot = -1;
+static volatile uint32_t s_refr_count, s_refr_worst_ms, s_refr_start, s_refr_sum_ms;
+
+static uint16_t rgb565(uint32_t hex)
+{
+    return (uint16_t)(((hex >> 8) & 0xF800) | ((hex >> 5) & 0x07E0) | ((hex >> 3) & 0x1F));
+}
+
+static uint32_t scale_hex(uint32_t hex, int percent)
+{
+    uint32_t r = ((hex >> 16) & 0xFF) * percent / 100, g = ((hex >> 8) & 0xFF) * percent / 100, b = (hex & 0xFF) * percent / 100;
+    return (r << 16) | (g << 8) | b;
+}
+
+static void grow_bb(int x0, int y0, int x1, int y1)
+{
+    s_bb.x0 = x0 < s_bb.x0 ? x0 : s_bb.x0;
+    s_bb.y0 = y0 < s_bb.y0 ? y0 : s_bb.y0;
+    s_bb.x1 = x1 > s_bb.x1 ? x1 : s_bb.x1;
+    s_bb.y1 = y1 > s_bb.y1 ? y1 : s_bb.y1;
+}
+
+static void fill(int x, int y, int w, int h, uint8_t color)
+{
+    int x1 = x + w, y1 = y + h;
+    x = x < 0 ? 0 : x;
+    y = y < 0 ? 0 : y;
+    x1 = x1 > SCENE ? SCENE : x1;
+    y1 = y1 > SCENE ? SCENE : y1;
+    if (x >= x1 || y >= y1) {
+        return;
+    }
+    grow_bb(x, y, x1, y1);
+    for (int j = y; j < y1; j++) {
+        memset(s_model + (size_t)j * SCENE + x, color, (size_t)(x1 - x));
+    }
+}
+
+static void fill_u(int ux, int uy, int uw, int uh, uint8_t color)
+{
+    fill(ux * U, uy * U, uw * U, uh * U, color);
+}
+
+static int pingpong(uint32_t t, uint32_t step, int count)
+{
+    return (int)((t / step) % (uint32_t)count);
+}
+
+static void draw_eyes(const scene_t *s, int ox, int oy, uint8_t black)
+{
+    const int cols[2] = {4, 11};
+    for (int i = 0; i < 2; i++) {
+        int x = ox + (cols[i] + s->eye_dx) * C;
+        if (s->eye_mode == EYES_OPEN) {
+            fill(x, oy + s->eye_row * C, C, s->eye_h * C, black);
+        } else if (s->eye_mode == EYES_CLOSED) {
+            fill(x, oy + 3 * C, C, C, black);
+        } else {
+            int top = oy + 2 * C + 2 * U;
+            for (int k = 0; k < 4; k++) {
+                fill(x + k * U, top + k * U, U, U, black);
+                fill(x + (3 - k) * U, top + k * U, U, U, black);
+            }
+        }
+    }
+}
+
+static void draw_mascot(const scene_t *s)
+{
+    int ox = SCENE / 2 - 8 * C + s->gx + s->dx, oy = SCENE / 2 - 5 * C + s->gy + s->shift + s->dy;
+    const uint8_t col = PAL_MASCOT;
+    s_pal[PAL_MASCOT] = rgb565(scale_hex(MASCOT_COLOR, s->dim));
+    fill(ox + 2 * C, oy, 12 * C, 8 * C, col);
+    fill(ox, oy + (4 + s->claw_l) * C, 2 * C, 2 * C, col);
+    fill(ox + 14 * C, oy + (4 + s->claw_r) * C, 2 * C, 2 * C, col);
+    for (int i = 0; i < 4; i++) {
+        fill(ox + LEG_COL[i] * C, oy + 8 * C, C, ((s->legs_up >> i) & 1) ? C : 2 * C, col);
+    }
+    draw_eyes(s, ox, oy, PAL_BG);
+}
+
+static void draw_sprite(int ux, int uy, const char *const rows[SPINNER_PX], uint8_t color)
+{
+    for (int r = 0; r < SPINNER_PX; r++) {
+        for (int c = 0; c < SPINNER_PX; c++) {
+            if (rows[r][c] == '#') {
+                fill_u(ux + c, uy + r, 1, 1, color);
+            }
+        }
+    }
+}
+
+static int even_up(int v)
+{
+    return (v + 1) & ~1;
+}
+
+static void bubble_size_units(const bubble_def_t *b, int *w, int *content)
+{
+    *content = (b->spinner ? SPINNER_PX + 2 : 0) + 12 * b->glyphs + (b->dots ? 10 : 0);
+    *w = even_up(*content + 2 * BUBBLE_PAD_UNITS + 2);
+}
+
+static void draw_bubble_frame(int x0, int y0, int w, int h, uint8_t ink, uint8_t fill_c)
+{
+    fill_u(x0 + 1, y0, w - 2, h, ink);
+    fill_u(x0, y0 + 1, w, h - 2, ink);
+    fill_u(x0 + 2, y0 + 1, w - 4, h - 2, fill_c);
+    fill_u(x0 + 1, y0 + 2, w - 2, h - 4, fill_c);
+}
+
+static void draw_bubble(const scene_t *s)
+{
+    const bubble_def_t *b = &BUBBLES[s->bub];
+    if (s->pop == 0 || !b->text) {
+        return;
+    }
+    int w, content;
+    bubble_size_units(b, &w, &content);
+    const int h = 18;
+    int ws = s->pop == 3 ? w : even_up(w * s->pop / 3), hs = s->pop == 3 ? h : even_up(h * s->pop / 3);
+    int below = b->thought ? 8 : 2;
+    int anchor_top = SCENE / 2 - 5 * C + BUBBLE_SHIFT_UNITS * U + s->gy;
+    int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * U) / U - below;
+    int cx = (SCENE / 2 + s->gx) / U;
+    int x0 = cx - ws / 2, y0 = bottom_u - hs;
+    const uint8_t ink = PAL_INK, fillc = b->fill;
+    draw_bubble_frame(x0, y0, ws, hs, ink, fillc);
+    if (s->pop < 3) {
+        return;
+    }
+    if (b->thought) {
+        fill_u(cx - 2, bottom_u + 1, 4, 4, fillc);
+        fill_u(cx - 1, bottom_u + 6, 2, 2, fillc);
+    } else {
+        fill_u(cx - 2, bottom_u - 1, 4, 1, fillc);
+        fill_u(cx - 2, bottom_u, 4, 1, ink);
+        fill_u(cx - 1, bottom_u, 2, 1, fillc);
+        fill_u(cx - 1, bottom_u + 1, 2, 1, ink);
+    }
+    int left = x0 + 1 + BUBBLE_PAD_UNITS + (w - 2 - 2 * BUBBLE_PAD_UNITS - content) / 2;
+    int text_y = y0 + 3;
+    int tx = left;
+    if (b->spinner) {
+        draw_sprite(left, text_y + 2, SPINNER[s->spin], ink);
+        tx += SPINNER_PX + 2;
+    }
+    if (b->dots) {
+        int dx = tx + 12 * b->glyphs + 2;
+        for (int i = 0; i < 3; i++) {
+            int size = i == s->dot_phase ? 2 : 1;
+            fill_u(dx + i * 3, text_y + 11 - size, size, size, ink);
+        }
+    }
+    const uint8_t *mask = s_mask[s->bub];
+    const int mw = 12 * b->glyphs * U, ox = tx * U, oy = text_y * U;
+    for (int j = 0; j < TEXT_ROWS_PX; j++) {
+        for (int i = 0; i < mw; i++) {
+            if (mask[j * mw + i]) {
+                s_model[(size_t)(oy + j) * SCENE + ox + i] = b->text_color;
+            }
+        }
+    }
+    grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
+}
+
+static void render_masks(lv_obj_t *scr)
+{
+    for (int st = 0; st < ST_COUNT; st++) {
+        const bubble_def_t *b = &BUBBLES[st];
+        if (!b->text) {
+            continue;
+        }
+        const int w = 12 * b->glyphs * U;
+        lv_draw_buf_t *tmp = lv_draw_buf_create(w, TEXT_ROWS_PX, LV_COLOR_FORMAT_RGB565, 0);
+        ESP_ERROR_CHECK(tmp ? ESP_OK : ESP_ERR_NO_MEM);
+        lv_draw_buf_clear(tmp, NULL);
+        lv_obj_t *cv = lv_canvas_create(scr);
+        lv_canvas_set_draw_buf(cv, tmp);
+        lv_layer_t layer;
+        lv_canvas_init_layer(cv, &layer);
+        lv_draw_label_dsc_t dsc;
+        lv_draw_label_dsc_init(&dsc);
+        dsc.font = &clawd_font_48;
+        dsc.color = lv_color_white();
+        dsc.text = b->text;
+        dsc.text_static = true;
+        lv_area_t a = {0, 0, w - 1, TEXT_ROWS_PX - 1};
+        lv_draw_label(&layer, &dsc, &a);
+        lv_canvas_finish_layer(cv, &layer);
+        s_mask[st] = heap_caps_malloc((size_t)w * TEXT_ROWS_PX, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        ESP_ERROR_CHECK(s_mask[st] ? ESP_OK : ESP_ERR_NO_MEM);
+        for (int j = 0; j < TEXT_ROWS_PX; j++) {
+            const uint16_t *row = (const uint16_t *)((const uint8_t *)tmp->data + (size_t)j * tmp->header.stride);
+            for (int i = 0; i < w; i++) {
+                s_mask[st][j * w + i] = row[i] != 0;
+            }
+        }
+        lv_obj_delete(cv);
+        lv_draw_buf_destroy(tmp);
+    }
+}
+
+static void compute_scene(scene_t *s, uint32_t now)
+{
+    memset(s, 0, sizeof(*s));
+    uint32_t t = now - s_state_since;
+    s->state = s_state;
+    s->eye_row = 2;
+    s->eye_h = 2;
+    s->dim = 100;
+    s->bub = s_bub_state;
+    s->pop = s_pop;
+    s->shift = (BUBBLE_SHIFT_UNITS * s_pop / 3) * U;
+    if (s_pop == 3 && BUBBLES[s_bub_state].dots) {
+        s->dot_phase = (int)((t / BUBBLE_DOT_PULSE_MS) % 3);
+    }
+    if (s_pop == 3 && BUBBLES[s_bub_state].spinner) {
+        s->spin = SPINNER_PINGPONG[pingpong(t, SPINNER_STEP_MS, 10)];
+    }
+    int drift = (int)((now / DRIFT_STEP_MS) % 8);
+    s->gx = DRIFT[drift][0] * U;
+    s->gy = DRIFT[drift][1] * U;
+    switch (s_state) {
+    case ST_IDLE: {
+        s->dy += (t % IDLE_BOB_PERIOD_MS) >= IDLE_BOB_PERIOD_MS / 2 ? U : 0;
+        if (t % IDLE_BLINK_PERIOD_MS >= IDLE_BLINK_PERIOD_MS - IDLE_BLINK_MS) {
+            s->eye_mode = EYES_CLOSED;
+        }
+        uint32_t gp = t % IDLE_GLANCE_PERIOD_MS;
+        if (gp >= IDLE_GLANCE_PERIOD_MS - IDLE_GLANCE_MS) {
+            s->eye_dx = ((t / IDLE_GLANCE_PERIOD_MS) & 1) ? 1 : -1;
+        }
+        const uint32_t total = 2 * SCUTTLE_DISTANCE_UNITS * SCUTTLE_STEP_MS + SCUTTLE_HOLD_MS;
+        uint32_t sp = t % IDLE_SCUTTLE_PERIOD_MS;
+        if (sp >= IDLE_SCUTTLE_PERIOD_MS - total) {
+            uint32_t k = sp - (IDLE_SCUTTLE_PERIOD_MS - total);
+            int out = SCUTTLE_DISTANCE_UNITS * SCUTTLE_STEP_MS, steps;
+            if (k < (uint32_t)out) {
+                steps = (int)(k / SCUTTLE_STEP_MS) + 1;
+            } else if (k < (uint32_t)out + SCUTTLE_HOLD_MS) {
+                steps = SCUTTLE_DISTANCE_UNITS;
+            } else {
+                steps = SCUTTLE_DISTANCE_UNITS - (int)((k - out - SCUTTLE_HOLD_MS) / SCUTTLE_STEP_MS) - 1;
+            }
+            bool moving = k < (uint32_t)out || k >= (uint32_t)out + SCUTTLE_HOLD_MS;
+            int dir = ((t / IDLE_SCUTTLE_PERIOD_MS) & 1) ? -1 : 1;
+            s->dx += dir * steps * U;
+            if (moving) {
+                s->legs_up = (steps & 1) ? 0x6 : 0x9;
+            }
+        }
+        if (t >= IDLE_DIM_AFTER_MS) {
+            s->dim = IDLE_DIM_PERCENT;
+        }
+        break;
+    }
+    case ST_LISTENING:
+        s->claw_l = s->claw_r = -1;
+        s->eye_row = 1;
+        s->eye_h = 3;
+        break;
+    case ST_THINKING:
+        s->eye_row = 1;
+        s->legs_up = ((t / THINK_LEG_STEP_MS) & 1) ? 0x6 : 0x9;
+        break;
+    case ST_SPEAKING: {
+        int lvl = audio_spk_level();
+        s->dy -= (lvl * SPEAK_BOUNCE_MAX_UNITS / 1000) * U;
+        if (lvl >= SPEAK_CLAW_LEVEL_MIN) {
+            bool left = (t / SPEAK_CLAW_STEP_MS) & 1;
+            s->claw_l = left ? -1 : 0;
+            s->claw_r = left ? 0 : -1;
+        }
+        break;
+    }
+    case ST_ERROR:
+        s->claw_l = s->claw_r = 1;
+        if (t < ERROR_CROSS_MS) {
+            s->eye_mode = EYES_CROSS;
+        }
+        if (t < ERROR_SHAKE_MS) {
+            s->dx += ((t / ERROR_SHAKE_STEP_MS) & 1) ? U : -U;
+        }
+        break;
+    case ST_OFFLINE:
+        s->dim = MASCOT_DIM_PERCENT;
+        s->eye_mode = EYES_CLOSED;
+        s->dy += (t % (2 * IDLE_BOB_PERIOD_MS)) >= IDLE_BOB_PERIOD_MS ? U : 0;
+        break;
+    default:
+        break;
+    }
+}
+
+static void redraw(const scene_t *s)
+{
+    int64_t t0 = esp_timer_get_time();
+    if (s_prev_bb.x1 > s_prev_bb.x0) {
+        fill(s_prev_bb.x0, s_prev_bb.y0, s_prev_bb.x1 - s_prev_bb.x0, s_prev_bb.y1 - s_prev_bb.y0, 0);
+    }
+    s_bb = (irect_t){SCENE, SCENE, 0, 0};
+    draw_mascot(s);
+    draw_bubble(s);
+    s_prev_bb = s_bb;
+    s_model_dirty = true;
+    s_redraw_us += (uint32_t)(esp_timer_get_time() - t0);
+    s_redraw_n++;
+}
+
+typedef struct {
+    int tenths, y0, y1;
+} blit_job_t;
+
+static blit_job_t s_job;
+static TaskHandle_t s_blit_task;
+static SemaphoreHandle_t s_blit_done;
+static xspan_t s_span_new[SCENE_OUT_PX], s_span_prev[SCENE_OUT_PX], s_span_clear[SCENE_OUT_PX];
+
+static void run_blit(int tenths, int y0, int y1)
+{
+    rotblit(s_model, SCENE, s_pal, (uint16_t *)s_out->data, s_out->header.stride / 2, SCENE_OUT_PX, tenths, s_span_new,
+            s_span_clear, y0, y1);
+}
+
+static void blit_worker(void *arg)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        run_blit(s_job.tenths, s_job.y0, s_job.y1);
+        xSemaphoreGive(s_blit_done);
+    }
+}
+
+static bool span_empty(xspan_t s)
+{
+    return s.x0 >= s.x1;
+}
+
+static void present(int tenths)
+{
+    int64_t t0 = esp_timer_get_time();
+    irect_t margin = {s_bb.x0 - 1, s_bb.y0 - 1, s_bb.x1 + 1, s_bb.y1 + 1};
+    margin.x0 = margin.x0 < 0 ? 0 : margin.x0;
+    margin.y0 = margin.y0 < 0 ? 0 : margin.y0;
+    margin.x1 = margin.x1 > SCENE ? SCENE : margin.x1;
+    margin.y1 = margin.y1 > SCENE ? SCENE : margin.y1;
+    rotblit_spans(&margin, SCENE, SCENE_OUT_PX, tenths, s_span_new);
+    int ymin = SCENE_OUT_PX, ymax = 0;
+    for (int y = 0; y < SCENE_OUT_PX; y++) {
+        xspan_t n = s_span_new[y], p = s_span_prev[y];
+        xspan_t u = span_empty(n) ? p : span_empty(p) ? n : (xspan_t){n.x0 < p.x0 ? n.x0 : p.x0, n.x1 > p.x1 ? n.x1 : p.x1};
+        s_span_clear[y] = u;
+        if (!span_empty(u)) {
+            ymin = y < ymin ? y : ymin;
+            ymax = y + 1;
+        }
+    }
+    if (ymin < ymax) {
+        int mid = (ymin + ymax) / 2;
+        s_job = (blit_job_t){tenths, mid, ymax};
+        xTaskNotifyGive(s_blit_task);
+        run_blit(tenths, ymin, mid);
+        xSemaphoreTake(s_blit_done, portMAX_DELAY);
+    }
+    uint32_t px = 0;
+    s_inval_n = 0;
+    const int shrink = s_bench == UI_BENCH_SHRINK ? 8 : 0;
+    for (int y0 = ymin; y0 < ymax; y0 += DIRTY_BAND_ROWS) {
+        int y1 = y0 + DIRTY_BAND_ROWS < ymax ? y0 + DIRTY_BAND_ROWS : ymax, xa = SCENE_OUT_PX, xb = 0;
+        for (int y = y0; y < y1; y++) {
+            if (!span_empty(s_span_clear[y])) {
+                xa = s_span_clear[y].x0 < xa ? s_span_clear[y].x0 : xa;
+                xb = s_span_clear[y].x1 > xb ? s_span_clear[y].x1 : xb;
+            }
+        }
+        if (xa < xb) {
+            lv_area_t inv = {xa + shrink + CANVAS_OFF, y0 + CANVAS_OFF, xb - 1 - shrink + CANVAS_OFF, y1 - 1 + CANVAS_OFF};
+            lv_inv_area(lv_obj_get_display(s_canvas), &inv);
+            px += (uint32_t)((xb - xa) * (y1 - y0));
+        }
+    }
+    const int off = CANVAS_OFF;
+    s_cover_frames++;
+    for (int y = ymin; y < ymax; y++) {
+        xspan_t sp = s_span_clear[y];
+        if (span_empty(sp)) {
+            continue;
+        }
+        bool covered = false;
+        for (int i = 0; i < s_inval_n && !covered; i++) {
+            covered = s_inval[i].y1 <= y + off && s_inval[i].y2 >= y + off && s_inval[i].x1 <= sp.x0 + off &&
+                      s_inval[i].x2 >= sp.x1 - 1 + off;
+        }
+        if (!covered) {
+            int len = snprintf(s_miss, sizeof(s_miss), "r%d s%d-%d:", y, sp.x0, sp.x1);
+            for (int i = 0; i < s_inval_n && len < (int)sizeof(s_miss) - 24; i++) {
+                {
+                    len += snprintf(s_miss + len, sizeof(s_miss) - len, "%d,%d,%d,%d;", (int)s_inval[i].x1, (int)s_inval[i].y1,
+                                    (int)s_inval[i].x2, (int)s_inval[i].y2);
+                }
+            }
+            s_cover_viol++;
+            break;
+        }
+    }
+    memcpy(s_span_prev, s_span_new, sizeof(s_span_new));
+    s_blit_us += (uint32_t)(esp_timer_get_time() - t0);
+    s_blit_n++;
+    s_blit_px += px;
+}
+
+static void apply_rotation(float deg)
+{
+    int tenths = ((int)lroundf(deg * 10.0f)) % 3600;
+    if (tenths == s_shown_rot && !s_model_dirty) {
+        return;
+    }
+    s_shown_rot = tenths;
+    s_model_dirty = false;
+    present(tenths);
+}
+
+static void ui_set_state_locked(dev_state_t s)
+{
+    s_state = s;
+    s_state_since = lv_tick_get();
+    if (BUBBLES[s].text) {
+        s_bub_state = s;
+        s_pop_target = 3;
+    } else {
+        s_pop_target = 0;
+    }
+}
+
+static void send_input(uint8_t code)
+{
+    transport_send(T_INPUT, &code, 1);
+}
+
+static void touch_cb(lv_event_t *e)
+{
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_PRESSED:
+        s_pressed = true;
+        s_long_sent = false;
+        s_press_tick = lv_tick_get();
+        break;
+    case LV_EVENT_RELEASED:
+        if (s_pressed && !s_long_sent && lv_tick_elaps(s_press_tick) < TAP_MAX_MS) {
+            send_input(1);
+        }
+        s_pressed = false;
+        break;
+    case LV_EVENT_PRESS_LOST:
+        s_pressed = false;
+        break;
+    default:
+        break;
+    }
+}
+
+static void refr_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_REFR_START) {
+        xSemaphoreTake(s_te_sem, 0);
+        if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(DISPLAY_TE_WAIT_MS)) != pdTRUE) {
+            s_te_missed++;
+        }
+        s_refr_start = lv_tick_get();
+    } else {
+        uint32_t d = lv_tick_elaps(s_refr_start);
+        s_refr_count++;
+        s_refr_sum_ms += d;
+        if (d > s_refr_worst_ms) {
+            s_refr_worst_ms = d;
+        }
+    }
+}
+
+static void draw_ring(int width, int opa)
+{
+    const int c = LCD_SIZE / 2, r_out = LISTEN_RING_DIAMETER / 2, r_clear = r_out - LISTEN_RING_MAX_WIDTH_PX - 1;
+    const float r_in = (float)(r_out - width);
+    uint16_t *base = (uint16_t *)s_out->data;
+    const size_t stride = s_out->header.stride / 2;
+    for (int y = c - r_out - 1; y <= c + r_out; y++) {
+        for (int x = c - r_out - 1; x <= c + r_out; x++) {
+            float dx = x + 0.5f - c, dy = y + 0.5f - c, d2 = dx * dx + dy * dy;
+            if (d2 < (float)(r_clear * r_clear) || d2 > (float)((r_out + 1) * (r_out + 1))) {
+                continue;
+            }
+            float d = sqrtf(d2);
+            float cov = fminf(fmaxf((float)r_out - d + 0.5f, 0.0f), 1.0f) - fminf(fmaxf(r_in - d + 0.5f, 0.0f), 1.0f);
+            int scale = width > 0 && cov > 0 ? (int)(cov * (float)opa * 100.0f / 255.0f) : 0;
+            base[(size_t)y * stride + x] = rgb565(scale_hex(MASCOT_COLOR, scale));
+        }
+    }
+}
+
+/* Invalidates the ring band as strips so a ring change repaints about ten thousand pixels, not the screen. */
+static void invalidate_ring(void)
+{
+    const int r_out = LISTEN_RING_DIAMETER / 2 + 1, r_in = r_out - LISTEN_RING_MAX_WIDTH_PX - 2, c = LCD_SIZE / 2;
+    for (int y0 = c - r_out; y0 < c + r_out; y0 += DIRTY_BAND_ROWS) {
+        int y1 = y0 + DIRTY_BAND_ROWS > c + r_out ? c + r_out : y0 + DIRTY_BAND_ROWS;
+        int da = abs(y0 - c), db = abs(y1 - 1 - c);
+        int dn = (y0 <= c && y1 - 1 >= c) ? 0 : (da < db ? da : db), df = da > db ? da : db;
+        int xo = (int)ceilf(sqrtf((float)(r_out * r_out - dn * dn))) + 1;
+        int xi = df >= r_in ? 0 : (int)floorf(sqrtf((float)(r_in * r_in - df * df))) - 1;
+        lv_display_t *disp = lv_obj_get_display(s_canvas);
+        if (xi <= 0) {
+            lv_area_t all = {c - xo, y0, c + xo, y1 - 1};
+            lv_inv_area(disp, &all);
+        } else {
+            lv_area_t l = {c - xo, y0, c - xi, y1 - 1}, r = {c + xi, y0, c + xo, y1 - 1};
+            lv_inv_area(disp, &l);
+            lv_inv_area(disp, &r);
+        }
+    }
+}
+
+static void update_ring(void)
+{
+    int w = 0, opa = 0;
+    if (s_state == ST_LISTENING) {
+        int lvl = audio_mic_level() * LISTEN_RING_STEPS / 1001 * 1000 / (LISTEN_RING_STEPS - 1);
+        opa = LISTEN_RING_MIN_OPA + lvl * (255 - LISTEN_RING_MIN_OPA) / 1000;
+        w = LISTEN_RING_MIN_WIDTH_PX + lvl * (LISTEN_RING_MAX_WIDTH_PX - LISTEN_RING_MIN_WIDTH_PX) / 1000;
+    }
+    if (w != s_ring_width || opa != s_ring_opa) {
+        s_ring_width = w;
+        s_ring_opa = opa;
+        draw_ring(w, opa);
+        invalidate_ring();
+    }
+}
+
+static void tick_cb(lv_timer_t *t)
+{
+    uint32_t now = lv_tick_get();
+    uint32_t dt = now - s_last_tick;
+    s_last_tick = now;
+    if (s_pressed && !s_long_sent && lv_tick_elaps(s_press_tick) >= LONG_PRESS_MS) {
+        s_long_sent = true;
+        send_input(2);
+    }
+    if (s_pop != s_pop_target && now - s_pop_at >= BUBBLE_POP_STEP_MS) {
+        s_pop += s_pop < s_pop_target ? 1 : -1;
+        s_pop_at = now;
+    }
+    scene_t sc;
+    compute_scene(&sc, now);
+    if (memcmp(&sc, &s_drawn, sizeof(sc)) != 0 || s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK || s_bench == UI_BENCH_REDRAW) {
+        s_drawn = sc;
+        redraw(&sc);
+    }
+    if (s_bench == UI_BENCH_CANVAS) {
+        lv_obj_invalidate(s_canvas);
+    } else if (s_bench == UI_BENCH_SCREEN) {
+        lv_obj_invalidate(lv_screen_active());
+    }
+    update_ring();
+    if ((s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK)) {
+        s_bench_angle = fmodf(s_bench_angle + 0.18f * (float)dt, 360.0f);
+        apply_rotation(s_bench_angle);
+    } else {
+        apply_rotation(orient_step(dt));
+    }
+    static uint32_t last_log;
+    if (now - last_log >= UI_FPS_LOG_PERIOD_MS) {
+        uint32_t n = s_refr_count, worst = s_refr_worst_ms, sum = s_refr_sum_ms;
+        s_refr_count = s_refr_worst_ms = s_refr_sum_ms = 0;
+        if (last_log) {
+            ESP_LOGI(TAG, "fps=%u refr=%u/%u ang=%d b=%d blit=%u px=%u cover=%u/%u te=%u edges=%u [%s]",
+                     (unsigned)(n * 1000 / (now - last_log)), (unsigned)(n ? sum / n : 0), (unsigned)worst, s_shown_rot, s_bench,
+                     (unsigned)(s_blit_n ? s_blit_us / s_blit_n : 0),
+                     (unsigned)(s_blit_n ? s_blit_px / s_blit_n : 0), (unsigned)s_cover_frames, (unsigned)s_cover_viol, (unsigned)s_te_missed, (unsigned)s_te_edges, s_miss);
+            s_te_edges = 0;
+            s_miss[0] = 0;
+            s_redraw_us = s_blit_us = s_redraw_n = s_blit_n = s_blit_px = 0;
+        }
+        last_log = now;
+    }
+}
+
+static void IRAM_ATTR te_isr(void *arg)
+{
+    s_te_edges++;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_te_sem, &woken);
+    portYIELD_FROM_ISR(woken);
+}
+
+static void te_init(void)
+{
+    s_te_sem = xSemaphoreCreateBinary();
+    gpio_config_t io = {.pin_bit_mask = 1ULL << DISPLAY_TE_GPIO, .mode = GPIO_MODE_INPUT, .intr_type = GPIO_INTR_NEGEDGE};
+    gpio_config(&io);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(DISPLAY_TE_GPIO, te_isr, NULL);
+}
+
+static void round_area_cb(lv_event_t *e)
+{
+    lv_area_t *a = lv_event_get_param(e);
+    a->x1 &= ~1;
+    a->y1 &= ~1;
+    a->x2 |= 1;
+    a->y2 |= 1;
+    if (s_inval_n < INVAL_LOG_MAX) {
+        s_inval[s_inval_n++] = *a;
+    }
+}
+
+static lv_display_t *display_start(void)
+{
+    bsp_display_cfg_t cfg = {
+        .lv_adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
+        .rotation = ESP_LV_ADAPTER_ROTATE_0,
+        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
+        .touch_flags = {.swap_xy = 0, .mirror_x = 1, .mirror_y = 1},
+    };
+    ESP_ERROR_CHECK(esp_lv_adapter_init(&cfg.lv_adapter_cfg));
+    const bsp_display_config_t dc = {.max_transfer_sz = LCD_SIZE * LCD_SIZE * 2};
+    esp_lcd_panel_handle_t panel;
+    esp_lcd_panel_io_handle_t io;
+    ESP_ERROR_CHECK(bsp_display_new(&dc, &panel, &io));
+    esp_lv_adapter_display_config_t dcfg = {
+        .panel = panel,
+        .panel_io = io,
+        .profile = {
+            .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
+            .rotation = cfg.rotation,
+            .hor_res = LCD_SIZE,
+            .ver_res = LCD_SIZE,
+            .buffer_height = DISPLAY_BUFFER_ROWS,
+            .use_psram = DISPLAY_BUFFER_IN_PSRAM,
+            .enable_ppa_accel = false,
+            .require_double_buffer = true,
+        },
+        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
+    };
+    lv_display_t *disp = esp_lv_adapter_register_display(&dcfg);
+    ESP_ERROR_CHECK(disp ? ESP_OK : ESP_FAIL);
+    te_init();
+    lv_display_add_event_cb(disp, round_area_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+    esp_lcd_touch_handle_t tp;
+    ESP_ERROR_CHECK(bsp_touch_new(&cfg, &tp));
+    const esp_lv_adapter_touch_config_t tc = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, tp);
+    ESP_ERROR_CHECK(esp_lv_adapter_register_touch(&tc) ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(bsp_display_brightness_init());
+    ESP_ERROR_CHECK(esp_lv_adapter_start());
+    return disp;
+}
+
+void ui_start(void)
+{
+    lv_display_t *disp = display_start();
+    bsp_display_lock(-1);
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_remove_style_all(scr);
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
+
+    s_model = heap_caps_calloc(SCENE * SCENE, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_out = lv_draw_buf_create(SCENE_OUT_PX, SCENE_OUT_PX, LV_COLOR_FORMAT_RGB565, 0);
+    ESP_ERROR_CHECK(s_model && s_out ? ESP_OK : ESP_ERR_NO_MEM);
+    lv_draw_buf_clear(s_out, NULL);
+    s_pal[PAL_FILL] = rgb565(BUBBLE_FILL_COLOR);
+    s_pal[PAL_INK] = rgb565(BUBBLE_INK_COLOR);
+    s_pal[PAL_ERROR] = rgb565(BUBBLE_ERROR_COLOR);
+    s_pal[PAL_OFFLINE_FILL] = rgb565(BUBBLE_OFFLINE_FILL_COLOR);
+    render_masks(scr);
+    s_blit_done = xSemaphoreCreateBinary();
+    xTaskCreate(blit_worker, "blit", STACK_BLIT, NULL, PRIO_BLIT, &s_blit_task);
+    s_canvas = lv_canvas_create(scr);
+    lv_canvas_set_draw_buf(s_canvas, s_out);
+    lv_obj_set_pos(s_canvas, (LCD_SIZE - SCENE_OUT_PX) / 2, (LCD_SIZE - SCENE_OUT_PX) / 2);
+    lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_add_event_cb(scr, touch_cb, LV_EVENT_ALL, NULL);
+    lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_START, NULL);
+    lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_READY, NULL);
+    s_last_tick = lv_tick_get();
+    ui_set_state_locked(ST_IDLE);
+    scene_t sc;
+    compute_scene(&sc, s_last_tick);
+    s_drawn = sc;
+    redraw(&sc);
+    lv_timer_create(tick_cb, UI_LEVEL_TIMER_MS, NULL);
+    bsp_display_unlock();
+    ESP_LOGI(TAG, "ui up");
+}
+
+void ui_set_state(dev_state_t s)
+{
+    bsp_display_lock(-1);
+    ui_set_state_locked(s);
+    bsp_display_unlock();
+}
+
+void ui_set_angle_override(bool on, float deg)
+{
+    orient_override(on, deg);
+}
+
+void ui_set_bench(int mode)
+{
+    bsp_display_lock(-1);
+    s_bench = mode;
+    bsp_display_unlock();
+}
+
+lv_draw_buf_t *ui_snapshot_take(void)
+{
+    bsp_display_lock(-1);
+    lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
+    bsp_display_unlock();
+    return buf;
+}
+
+void ui_snapshot_free(lv_draw_buf_t *buf)
+{
+    bsp_display_lock(-1);
+    lv_draw_buf_destroy(buf);
+    bsp_display_unlock();
+}

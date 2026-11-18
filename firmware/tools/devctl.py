@@ -1,0 +1,637 @@
+#!/usr/bin/env python3
+"""Test client for the Clawd terminal firmware (docs/protocol.md). Run with .venv/bin/python."""
+import argparse
+import json
+import os
+import struct
+import sys
+import time
+import wave
+import zlib
+
+import serial
+from serial.tools import list_ports
+
+USB_VID, USB_PID = 0x303A, 0x1001
+PROTO = 2
+SYNC = b"\xC1\xAD"
+MAX_PAYLOAD = 4096
+PARTIAL_TIMEOUT = 0.2
+
+T_HELLO, T_LOG, T_MIC, T_INPUT, T_SPK_STATUS = 0x01, 0x02, 0x10, 0x20, 0x21
+T_PONG, T_SELFTEST_RESULT, T_SNAP_BEGIN, T_SNAP_DATA, T_SNAP_END = 0x30, 0x31, 0x32, 0x33, 0x34
+T_HOST_HELLO, T_SET_STATE, T_SET_VOLUME = 0x81, 0x82, 0x83
+T_SPK_AUDIO, T_SPK_FLUSH, T_SPK_END = 0x90, 0x91, 0x92
+T_PING, T_SELFTEST, T_SNAPSHOT = 0xA0, 0xA2, 0xA3
+T_PAIR_RESULT, T_WIFI_STATUS, T_FORGET_RESULT, T_PAIR, T_FORGET, T_DEBUG = 0x35, 0x36, 0x37, 0x84, 0x85, 0xF0
+STATES = {"idle": 0, "listening": 1, "thinking": 2, "speaking": 3, "error": 4, "offline": 5}
+OUTSTANDING_LIMIT = 64000
+CHUNK = 4096
+
+
+def crc16(data, crc=0xFFFF):
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def encode(ftype, payload=b""):
+    body = bytes([ftype]) + struct.pack("<H", len(payload)) + payload
+    return SYNC + body + struct.pack("<H", crc16(body))
+
+
+def find_port(serial_number=None):
+    """Return the port of the single USB-Serial-JTAG board, or the one with the given serial number."""
+    serial_number = serial_number or os.environ.get("CLAWD_SERIAL")
+    found = [p for p in list_ports.comports() if p.vid == USB_VID and p.pid == USB_PID
+             and (not serial_number or p.serial_number == serial_number)]
+    if not found:
+        sys.exit("no board found (VID 0x%04X PID 0x%04X%s)" % (USB_VID, USB_PID, ", serial " + serial_number if serial_number else ""))
+    if len(found) > 1:
+        sys.exit("several boards found, pin one with --serial or CLAWD_SERIAL: " + ", ".join(str(p.serial_number) for p in found))
+    return found[0].device
+
+
+class Link:
+    def __init__(self, port=None, serial_number=None):
+        self.port = port or find_port(serial_number)
+        self.ser = serial.Serial()
+        self.ser.port = self.port
+        self.ser.baudrate = 115200
+        self.ser.timeout = 0.002
+        self.ser.dtr = False
+        self.ser.rts = False
+        self.ser.open()
+        self.ser.dtr = False
+        self.ser.rts = False
+        self.buf = bytearray()
+        self.wait_since = None
+        self.crc_errors = 0
+        self.rx_bytes = 0
+        self.tx_bytes = 0
+        self.spk_queued = 0
+        self.spk_flags = 0
+        self.spk_consumed = 0
+        self.spk_base = None
+        self.spk_sent = 0
+        self.hellos = []
+        self.spk_status_time = 0.0
+        self.pushback = []
+
+    def connect(self, timeout=8.0):
+        """Send HOST_HELLO until HELLO arrives; opening the port may reset the board."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            self.send(T_HOST_HELLO, b'{"proto":%d}' % PROTO)
+            if self.wait_for(T_HELLO, 1.0, show=False) is not None:
+                self.send(T_SPK_FLUSH)
+                self.wait_for(T_SPK_STATUS, 1.0, show=False)
+                self.spk_base, self.spk_sent = self.spk_consumed, 0
+                return True
+        print("no HELLO from device")
+        return False
+
+    def outstanding(self):
+        """Bytes sent since connect that the device has not consumed yet."""
+        return (self.spk_sent - (self.spk_consumed - self.spk_base)) & 0xFFFFFFFF
+
+    def send_audio(self, chunk):
+        self.send(T_SPK_AUDIO, chunk)
+        self.spk_sent += len(chunk)
+
+    def send(self, ftype, payload=b""):
+        frame = encode(ftype, payload)
+        self.ser.write(frame)
+        self.tx_bytes += len(frame)
+
+    def _parse(self):
+        while True:
+            i = self.buf.find(SYNC)
+            if i < 0:
+                keep = 1 if self.buf[-1:] == SYNC[:1] else 0
+                del self.buf[: len(self.buf) - keep]
+                self.wait_since = None
+                return None
+            if i:
+                del self.buf[:i]
+            if len(self.buf) < 5:
+                return self._incomplete()
+            n = struct.unpack_from("<H", self.buf, 3)[0]
+            if n > MAX_PAYLOAD:
+                del self.buf[:1]
+                continue
+            if len(self.buf) < 7 + n:
+                r = self._incomplete()
+                if r is False:
+                    continue
+                return None
+            if crc16(bytes(self.buf[2 : 5 + n])) != struct.unpack_from("<H", self.buf, 5 + n)[0]:
+                self.crc_errors += 1
+                del self.buf[:1]
+                continue
+            frame = (self.buf[2], bytes(self.buf[5 : 5 + n]))
+            del self.buf[: 7 + n]
+            self.wait_since = None
+            return frame
+
+    def _incomplete(self):
+        now = time.monotonic()
+        if self.wait_since is None:
+            self.wait_since = now
+            return None
+        if now - self.wait_since > PARTIAL_TIMEOUT:
+            del self.buf[:1]
+            self.wait_since = None
+            return False
+        return None
+
+    def poll(self):
+        """Read available bytes and return decoded frames as (type, payload)."""
+        data = self.ser.read(8192)
+        if data:
+            self.rx_bytes += len(data)
+            self.buf += data
+        out, self.pushback = self.pushback, []
+        while True:
+            f = self._parse()
+            if f is None:
+                break
+            if f[0] == T_SPK_STATUS and len(f[1]) >= 9:
+                self.spk_queued, self.spk_flags, self.spk_consumed = struct.unpack("<IBI", f[1][:9])
+                self.spk_status_time = time.monotonic()
+            elif f[0] == T_HELLO:
+                self.hellos.append(json.loads(f[1]))
+            out.append(f)
+        return out
+
+    def wait_for(self, ftype, timeout, show=True, pred=None):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            frames = self.poll()
+            for i, (t, p) in enumerate(frames):
+                if show:
+                    show_frame(t, p)
+                if t == ftype and (pred is None or pred(p)):
+                    self.pushback = frames[i + 1 :]
+                    return p
+        return None
+
+
+def show_frame(t, p):
+    if t == T_LOG:
+        print("LOG   ", p.decode("utf-8", "replace"))
+    elif t == T_HELLO:
+        print("HELLO ", p.decode("utf-8", "replace"))
+    elif t == T_INPUT:
+        print("INPUT ", {1: "TAP", 2: "LONG_PRESS", 3: "BOOT"}.get(p[0], p[0]))
+    elif t == T_PONG:
+        print("PONG  ", struct.unpack("<I", p)[0])
+    elif t == T_SELFTEST_RESULT:
+        print("SELFTEST", p.decode())
+    elif t == T_SPK_STATUS:
+        print("SPK   ", struct.unpack("<IBI", p[:9]))
+    elif t in (T_PAIR_RESULT, T_WIFI_STATUS, T_FORGET_RESULT):
+        print({T_PAIR_RESULT: "PAIR_RESULT", T_FORGET_RESULT: "FORGET_RESULT"}.get(t, "WIFI  "), p.decode())
+    elif t not in (T_MIC, T_SNAP_DATA):
+        print("FRAME %02x" % t, p[:40].hex())
+
+
+def write_png(path, w, h, rgb):
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + rgb[y * w * 3 : (y + 1) * w * 3] for y in range(h))
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+    open(path, "wb").write(png)
+
+
+def rgb565_to_rgb(data):
+    out = bytearray(len(data) // 2 * 3)
+    for i in range(0, len(data) - 1, 2):
+        v = data[i] | (data[i + 1] << 8)
+        r, g, b = (v >> 11) & 31, (v >> 5) & 63, v & 31
+        j = i // 2 * 3
+        out[j] = (r << 3) | (r >> 2)
+        out[j + 1] = (g << 2) | (g >> 4)
+        out[j + 2] = (b << 3) | (b >> 2)
+    return bytes(out)
+
+
+def max_radius(rgb, w, h):
+    """Largest distance from the screen centre of any non-black pixel."""
+    best = 0.0
+    cx, cy = w / 2.0, h / 2.0
+    for y in range(h):
+        row = rgb[y * w * 3 : (y + 1) * w * 3]
+        if not any(row):
+            continue
+        xs = [x for x in range(w) if row[3 * x] or row[3 * x + 1] or row[3 * x + 2]]
+        for x in (xs[0], xs[-1]):
+            best = max(best, ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2) ** 0.5)
+    return best
+
+
+def cmd_listen(link, args):
+    end = time.monotonic() + args.seconds
+    while time.monotonic() < end:
+        for t, p in link.poll():
+            show_frame(t, p)
+
+
+def cmd_ping(link, args):
+    rtts = []
+    for i in range(args.count):
+        t0 = time.monotonic()
+        link.send(T_PING, struct.pack("<I", i + 1))
+        p = link.wait_for(T_PONG, 1.0, show=False, pred=lambda p, i=i: struct.unpack("<I", p)[0] == i + 1)
+        if p is None:
+            print("ping %d: timeout" % i)
+        else:
+            rtts.append((time.monotonic() - t0) * 1000)
+    if rtts:
+        print("PONG %d/%d rtt ms min %.1f avg %.1f max %.1f" % (len(rtts), args.count, min(rtts), sum(rtts) / len(rtts), max(rtts)))
+
+
+def cmd_hello(link, args):
+    link.send(T_HOST_HELLO, b'{"proto":%d}' % args.proto)
+    link.wait_for(T_HELLO, 2.0)
+    link.wait_for(T_WIFI_STATUS, 0.5)
+
+
+def cmd_state(link, args):
+    link.send(T_SET_STATE, bytes([STATES.get(args.state, None) if args.state in STATES else int(args.state)]))
+
+
+def cmd_volume(link, args):
+    link.send(T_SET_VOLUME, bytes([args.value]))
+
+
+def cmd_selftest(link, args):
+    link.send(T_SET_VOLUME, bytes([args.volume]))
+    link.send(T_SELFTEST)
+    p = link.wait_for(T_SELFTEST_RESULT, 6.0)
+    print("result:", p.decode() if p else "timeout")
+
+
+def snapshot(link, path, timeout=8.0, attempts=3):
+    for _ in range(attempts):
+        if snapshot_once(link, path, timeout):
+            return True
+    return False
+
+
+def snapshot_once(link, path, timeout=8.0):
+    link.send(T_PING, b"\0\0\0\0")
+    link.send(T_SNAPSHOT)
+    begin = link.wait_for(T_SNAP_BEGIN, 5.0, show=False)
+    if begin is None:
+        print("snapshot: no SNAP_BEGIN")
+        return False
+    info = json.loads(begin)
+    data = bytearray()
+    end = time.monotonic() + timeout
+    total = None
+    while time.monotonic() < end and total is None:
+        for t, p in link.poll():
+            if t == T_SNAP_DATA:
+                data += p
+            elif t == T_SNAP_END:
+                total = struct.unpack("<I", p)[0]
+            elif t == T_LOG:
+                show_frame(t, p)
+    if total is None or total != len(data) or total != info["w"] * info["h"] * 2:
+        print("snapshot: incomplete (%d bytes, end=%s, crc errors %d)" % (len(data), total, link.crc_errors))
+        return False
+    rgb = rgb565_to_rgb(bytes(data))
+    write_png(path, info["w"], info["h"], rgb)
+    print("snapshot saved", path, total, "bytes, max content radius %.1f px" % max_radius(rgb, info["w"], info["h"]))
+    return True
+
+
+def cmd_snapshot(link, args):
+    snapshot(link, args.out)
+
+
+def cmd_snapshots(link, args):
+    for name, val in STATES.items():
+        link.send(T_SET_STATE, bytes([val]))
+        time.sleep(0.5)
+        link.poll()
+        snapshot(link, "%s/state%d-%s.png" % (args.outdir, val, name))
+        link.send(T_PING, b"\0\0\0\0")
+
+
+def cmd_play(link, args):
+    w = wave.open(args.wav, "rb")
+    assert w.getframerate() == 16000 and w.getnchannels() == 1 and w.getsampwidth() == 2, "need 16 kHz mono s16"
+    pcm = w.readframes(w.getnframes())
+    stream_pcm(link, pcm)
+
+
+def stream_pcm(link, pcm, record=None, tail=1.0):
+    """Stream PCM with the 64000-byte outstanding limit; optionally collect MIC_AUDIO into record (list)."""
+    sent = 0
+    t0 = time.monotonic()
+    drain_at = None
+    while True:
+        frames = link.poll()
+        if record is not None:
+            for t, p in frames:
+                if t == T_MIC:
+                    record.append(p)
+        while sent < len(pcm) and link.outstanding() + CHUNK <= OUTSTANDING_LIMIT:
+            chunk = pcm[sent : sent + CHUNK]
+            link.send_audio(chunk)
+            sent += len(chunk)
+        if sent >= len(pcm) and drain_at is None:
+            link.send(T_SPK_END)
+            drain_at = time.monotonic()
+        if drain_at is not None and (link.spk_flags & 2):
+            break
+        if drain_at is not None and time.monotonic() - drain_at > 30:
+            print("drain timeout")
+            break
+    t_play = time.monotonic() - t0
+    end = time.monotonic() + tail
+    while time.monotonic() < end:
+        for t, p in link.poll():
+            if record is not None and t == T_MIC:
+                record.append(p)
+    print("played %d bytes in %.2fs (audio %.2fs)" % (len(pcm), t_play, len(pcm) / 32000))
+
+
+def save_wav(path, pcm):
+    w = wave.open(path, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(16000)
+    w.writeframes(pcm)
+    w.close()
+
+
+def cmd_record(link, args):
+    link.send(T_SET_STATE, bytes([1]))
+    chunks = []
+    end = time.monotonic() + args.seconds
+    while time.monotonic() < end:
+        for t, p in link.poll():
+            if t == T_MIC:
+                chunks.append(p)
+    link.send(T_SET_STATE, bytes([0]))
+    save_wav(args.out, b"".join(chunks))
+    print("recorded %d frames (%.2fs) to %s" % (len(chunks), len(chunks) * 0.02, args.out))
+
+
+def cmd_loopback(link, args):
+    w = wave.open(args.wav, "rb")
+    assert w.getframerate() == 16000 and w.getnchannels() == 1 and w.getsampwidth() == 2
+    pcm = w.readframes(w.getnframes())
+    link.send(T_SET_VOLUME, bytes([args.volume]))
+    link.send(T_SET_STATE, bytes([1]))
+    time.sleep(0.5)
+    chunks = []
+    stream_pcm(link, pcm, record=chunks, tail=args.tail)
+    link.send(T_SET_STATE, bytes([0]))
+    save_wav(args.out, b"".join(chunks))
+    print("recorded %d frames (%.2fs) to %s" % (len(chunks), len(chunks) * 0.02, args.out))
+
+
+def cmd_stress(link, args):
+    """Mic stream in plus SPK_AUDIO/PING traffic out for N seconds; reports throughput and CRC errors."""
+    link.send(T_SET_STATE, bytes([1]))
+    mic_bytes = 0
+    pings = pongs = 0
+    sent = 0
+    last_stats = ""
+    tone = bytes(CHUNK)  # silence: throughput needs no audible audio
+    link.send(T_SET_VOLUME, bytes([0]))
+    link.crc_errors = 0
+    rx0, tx0 = link.rx_bytes, link.tx_bytes
+    t0 = time.monotonic()
+    next_ping = t0
+    while time.monotonic() - t0 < args.seconds:
+        for t, p in link.poll():
+            if t == T_MIC:
+                mic_bytes += len(p)
+            elif t == T_PONG:
+                pongs += 1
+            elif t == T_LOG and b"stats" in p:
+                last_stats = p.decode()
+        if link.outstanding() + CHUNK <= OUTSTANDING_LIMIT:
+            link.send_audio(tone)
+            sent += CHUNK
+        if time.monotonic() >= next_ping:
+            link.send(T_PING, struct.pack("<I", pings))
+            pings += 1
+            next_ping += 0.02
+    dt = time.monotonic() - t0
+    link.send(T_SPK_FLUSH)
+    link.send(T_SET_STATE, bytes([0]))
+    print("device:", last_stats)
+    print("stress %.1fs: rx %d B/s (mic payload %d B/s), tx %d B/s (spk payload %d B/s), crc errors %d, pings %d pongs %d"
+          % (dt, (link.rx_bytes - rx0) / dt, mic_bytes / dt, (link.tx_bytes - tx0) / dt, sent / dt, link.crc_errors, pings, pongs))
+
+
+def cmd_perf(link, args):
+    """Silent mic plus speaker traffic while the UI runs a bench mode at a fixed angle; prints fps and audio counters."""
+    link.send(T_SET_VOLUME, bytes([0]))
+    link.send(T_SET_STATE, bytes([STATES[args.state]]))
+    angle = "null" if args.angle is None else repr(float(args.angle))
+    link.send(T_DEBUG, ('{"angle_override":%s,"bench":%d}' % (angle, args.mode)).encode())
+    tone = bytes(CHUNK)
+    fps, stats = [], ""
+    mic_frames = 0
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < args.seconds:
+        for t, p in link.poll():
+            if t == T_MIC:
+                mic_frames += 1
+            elif t == T_LOG and b"fps=" in p:
+                fps.append(p.decode())
+            elif t == T_LOG and b"stats" in p:
+                stats = p.decode()
+            elif t == T_LOG and b"cover miss" in p:
+                print(p.decode())
+        if link.outstanding() + CHUNK <= OUTSTANDING_LIMIT:
+            link.send_audio(tone)
+    dt = time.monotonic() - t0
+    link.send(T_SPK_FLUSH)
+    link.send(T_DEBUG, b'{"angle_override":null,"bench":0}')
+    link.send(T_SET_STATE, bytes([0]))
+    for line in fps[-3:]:
+        print(line)
+    print(stats)
+    print("mic frames %d in %.1fs (expected %d), crc errors %d" % (mic_frames, dt, int(dt / 0.02), link.crc_errors))
+
+
+def cmd_spkdrain(link, args):
+    """Queue 2 s of tone and report SPK_STATUS samples to show the real-time drain."""
+    tone = bytes(CHUNK)
+    link.send(T_SET_VOLUME, bytes([0]))
+    link.send(T_SPK_FLUSH)
+    time.sleep(0.2)
+    link.poll()
+    t0 = time.monotonic()
+    for _ in range(args.bytes // CHUNK):
+        link.send_audio(tone)
+    link.send(T_SPK_END)
+    samples = []
+    while time.monotonic() - t0 < args.bytes / 32000 + 2:
+        for t, p in link.poll():
+            if t == T_SPK_STATUS:
+                q, fl, _c = struct.unpack("<IBI", p[:9])
+                samples.append((time.monotonic() - t0, q, fl))
+                if fl & 2:
+                    break
+        else:
+            continue
+        break
+    for s in samples:
+        print("t=%.2fs queued=%d flags=%d" % s)
+    if len(samples) > 3:
+        a, b = samples[1], samples[-2]
+        if b[0] > a[0]:
+            print("drain rate %.0f B/s (real time = 32000)" % ((a[1] - b[1]) / (b[0] - a[0])))
+
+
+def cmd_angle(link, args):
+    val = "null" if args.deg == "null" else repr(float(args.deg))
+    link.send(T_DEBUG, ('{"angle_override":%s}' % val).encode())
+
+
+def cmd_bench(link, args):
+    """Run a UI frame-rate bench mode (1 spin, 2 redraw, 3 canvas, 4 screen) and print the device fps log lines."""
+    link.send(T_SET_STATE, bytes([STATES.get(args.state, 0)]))
+    link.send(T_DEBUG, b'{"bench":%d}' % args.mode)
+    end = time.monotonic() + args.seconds
+    while time.monotonic() < end:
+        for t, p in link.poll():
+            if t == T_LOG and (b"fps=" in p or b"stats" in p):
+                print(p.decode())
+    link.send(T_DEBUG, b'{"bench":0}')
+
+
+def cmd_snapburst(link, args):
+    """Send N SNAPSHOT requests spaced by the interval, then collect the images in order."""
+    frames = []
+    for i in range(args.count):
+        link.send(T_SNAPSHOT)
+        t_end = time.monotonic() + args.interval
+        while time.monotonic() < t_end:
+            frames += link.poll()
+    got = 0
+    data = bytearray()
+    info = None
+    end = time.monotonic() + 8.0 + args.count * 3.0
+    while got < args.count and time.monotonic() < end:
+        for t, p in frames:
+            if t == T_SNAP_BEGIN:
+                data = bytearray()
+                info = json.loads(p)
+            elif t == T_SNAP_DATA:
+                data += p
+            elif t == T_SNAP_END and info and len(data) == info["w"] * info["h"] * 2:
+                write_png("%s-%d.png" % (args.prefix, got), info["w"], info["h"], rgb565_to_rgb(bytes(data)))
+                got += 1
+        frames = link.poll()
+    print("snapburst: %d/%d images (crc errors %d)" % (got, args.count, link.crc_errors))
+
+
+def expect(name, ok, detail=""):
+    print("%s %s %s" % ("PASS" if ok else "FAIL", name, detail))
+    return ok
+
+
+def cmd_v2check(link, args):
+    """Silent protocol v2 checks: HELLO fields, consumed counter, flush, resume, proto refusal, PAIR stub."""
+    ok = True
+    h = link.hellos[-1] if link.hellos else {}
+    ok &= expect("hello fields", h.get("proto") == PROTO and h.get("link") == "usb" and h.get("paired") is False
+                 and h.get("reason") in ("boot", "reply"), json.dumps(h))
+    link.send(T_SET_VOLUME, bytes([0]))
+    pcm = bytes(64000)
+    stream_pcm(link, pcm, tail=0.2)
+    ok &= expect("consumed == sent after playback", (link.spk_consumed - link.spk_base) & 0xFFFFFFFF == link.spk_sent,
+                 "sent %d consumed %d" % (link.spk_sent, (link.spk_consumed - link.spk_base) & 0xFFFFFFFF))
+    for _ in range(12):
+        link.send_audio(bytes(CHUNK))
+    link.send(T_SPK_END)
+    time.sleep(0.15)
+    link.poll()
+    link.hellos.clear()
+    link.spk_flags = 0xFF
+    link.send(T_SPK_FLUSH)
+    p = link.wait_for(T_SPK_STATUS, 0.5, show=False)
+    ok &= expect("flush status immediate", p is not None and link.spk_queued == 0 and link.spk_flags == 0,
+                 "queued %d flags %d" % (link.spk_queued, link.spk_flags))
+    time.sleep(0.3)
+    ok &= expect("consumed == sent after flush", (link.spk_consumed - link.spk_base) & 0xFFFFFFFF == link.spk_sent,
+                 "sent %d consumed %d" % (link.spk_sent, (link.spk_consumed - link.spk_base) & 0xFFFFFFFF))
+    drained = False
+    end = time.monotonic() + 1.0
+    while time.monotonic() < end:
+        for t, p in link.poll():
+            drained |= t == T_SPK_STATUS and bool(p[4] & 2)
+    ok &= expect("flush cancels pending SPK_END", not drained)
+    link.send(T_HOST_HELLO, b'{"proto":%d}' % PROTO)
+    ok &= expect("HELLO reply + WIFI_STATUS", link.wait_for(T_HELLO, 1.0, show=False) is not None
+                 and link.wait_for(T_WIFI_STATUS, 1.0, show=False) == b'{"wifi":"off","relay":"none"}'
+                 and link.hellos[-1]["reason"] == "reply", json.dumps(link.hellos[-1:]))
+    link.send(T_SET_STATE, bytes([5]))
+    time.sleep(0.2)
+    link.hellos.clear()
+    link.send(T_SNAPSHOT)
+    snap_done = link.wait_for(T_SNAP_END, 10.0, show=False) is not None
+    ok &= expect("SNAPSHOT does not leave OFFLINE", snap_done and not link.hellos)
+    link.send(T_PING, b"\0\0\0\0")
+    link.wait_for(T_HELLO, 1.0, show=False)
+    ok &= expect("resume HELLO", bool(link.hellos) and link.hellos[-1]["reason"] == "resume", json.dumps(link.hellos[-1:]))
+    link.hellos.clear()
+    link.send(T_HOST_HELLO, b'{"proto":1}')
+    ok &= expect("proto mismatch ignored", link.wait_for(T_HELLO, 1.0, show=False) is None)
+    link.send(T_PAIR, b"{}")
+    ok &= expect("PAIR stub", link.wait_for(T_PAIR_RESULT, 1.0, show=False) == b'{"ok":false,"error":"not implemented"}')
+    link.send(T_FORGET)
+    ok &= expect("FORGET stub", link.wait_for(T_FORGET_RESULT, 1.0, show=False) == b'{"ok":false,"error":"not implemented"}')
+    print("v2check", "PASS" if ok else "FAIL")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port")
+    ap.add_argument("--serial", help="USB serial number; default env CLAWD_SERIAL or the single connected board")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("listen"); s.add_argument("seconds", type=float, nargs="?", default=5); s.set_defaults(fn=cmd_listen)
+    s = sub.add_parser("ping"); s.add_argument("count", type=int, nargs="?", default=20); s.set_defaults(fn=cmd_ping)
+    s = sub.add_parser("hello"); s.add_argument("--proto", type=int, default=PROTO); s.set_defaults(fn=cmd_hello)
+    s = sub.add_parser("state"); s.add_argument("state"); s.set_defaults(fn=cmd_state)
+    s = sub.add_parser("volume"); s.add_argument("value", type=int); s.set_defaults(fn=cmd_volume)
+    s = sub.add_parser("selftest"); s.add_argument("--volume", type=int, default=0); s.set_defaults(fn=cmd_selftest)
+    s = sub.add_parser("snapshot"); s.add_argument("out"); s.set_defaults(fn=cmd_snapshot)
+    s = sub.add_parser("snapshots"); s.add_argument("outdir"); s.set_defaults(fn=cmd_snapshots)
+    s = sub.add_parser("play"); s.add_argument("wav"); s.set_defaults(fn=cmd_play)
+    s = sub.add_parser("record"); s.add_argument("out"); s.add_argument("seconds", type=float); s.set_defaults(fn=cmd_record)
+    s = sub.add_parser("loopback"); s.add_argument("wav"); s.add_argument("out"); s.add_argument("--tail", type=float, default=1.0); s.add_argument("--volume", type=int, default=30); s.set_defaults(fn=cmd_loopback)
+    s = sub.add_parser("stress"); s.add_argument("seconds", type=float, nargs="?", default=30); s.set_defaults(fn=cmd_stress)
+    s = sub.add_parser("spkdrain"); s.add_argument("bytes", type=int, nargs="?", default=64000); s.set_defaults(fn=cmd_spkdrain)
+    s = sub.add_parser("angle"); s.add_argument("deg"); s.set_defaults(fn=cmd_angle)
+    s = sub.add_parser("snapburst"); s.add_argument("prefix"); s.add_argument("count", type=int); s.add_argument("interval", type=float); s.set_defaults(fn=cmd_snapburst)
+    s = sub.add_parser("bench"); s.add_argument("mode", type=int); s.add_argument("state", nargs="?", default="idle"); s.add_argument("seconds", type=float, nargs="?", default=8); s.set_defaults(fn=cmd_bench)
+    s = sub.add_parser("perf"); s.add_argument("state"); s.add_argument("mode", type=int); s.add_argument("--angle", type=float); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_perf)
+    s = sub.add_parser("v2check"); s.set_defaults(fn=cmd_v2check)
+    args = ap.parse_args()
+    link = Link(args.port, args.serial)
+    try:
+        if args.cmd != "listen":
+            link.connect()
+        args.fn(link, args)
+    finally:
+        link.ser.close()
+
+
+if __name__ == "__main__":
+    main()

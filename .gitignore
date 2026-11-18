@@ -1,0 +1,14 @@
+backup/
+.venv/
+_buildtest/
+firmware/test-output/
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig.old
+firmware/sdkconfig
+.claude/
+host/test-output/
+host/logs/
+host/.venv/
+host/**/__pycache__/
+host/.pytest_cache/

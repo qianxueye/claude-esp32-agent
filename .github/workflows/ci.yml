@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: host
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: astral-sh/setup-uv@v6.8.0
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run pytest -q
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.4
+    defaults:
+      run:
+        shell: bash
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v4.2.2
+      # Job containers skip the image entrypoint, so load the IDF environment here.
+      - run: . "$IDF_PATH/export.sh" && idf.py build

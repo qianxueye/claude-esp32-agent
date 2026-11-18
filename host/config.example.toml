@@ -1,0 +1,14 @@
+# Copy to config.toml; every key is optional (defaults live in src/claude_voice/config.py).
+# device_serial = "AA:BB:CC:DD:EE:FF"   # only when several boards are connected
+whisper_model = "/path/to/ggml-medium.bin"   # required
+model = "claude-opus-5-5"
+effort = "low"
+tools = ["WebSearch", "WebFetch"]
+voice = "Tingting"
+rate = 0            # words per minute, 0 = voice default
+volume = 70
+vad_min_speech_ms = 300
+vad_end_silence_ms = 800
+no_speech_timeout_s = 8.0
+max_listen_s = 30.0
+conversation_idle_reset_s = 600.0
