@@ -6,20 +6,22 @@
 /* Volume bookkeeping without hardware: user volume, transient override, saved value. Rules in docs/protocol.md "Volume". */
 
 enum { VOL_MODE_TRANSIENT = 0, VOL_MODE_PERSIST = 1, VOL_MODE_SEED = 2 };
+/* Outcome of reading the stored volume at boot; VS_LOAD_ERROR means the stored value is unknown. */
+enum { VS_LOAD_ABSENT, VS_LOAD_FOUND, VS_LOAD_ERROR };
 
 typedef struct {
-    int user; /* the volume the user chose */
-    int stored; /* value in NVS, -1 when none */
+    int user; /* the volume the user chose; the tentative value while the knob is armed */
+    int stored; /* last value known to be in NVS, -1 when none */
     int ovr; /* transient override, -1 when none */
     int base; /* user volume when the knob armed */
     bool set; /* a user volume exists */
-    bool dirty; /* user differs from stored */
+    bool ram; /* storage is off for this boot: never write */
     bool knob;
 } volst_t;
 
 int vs_effective(const volst_t *s);
-/* Applies the stored value; returns true when it was valid. */
-bool vs_load(volst_t *s, bool found, uint32_t raw);
+/* Applies the load outcome; returns true when a valid stored value was found. */
+bool vs_load(volst_t *s, int result, uint32_t raw);
 /* Applies a SET_VOLUME payload; returns true when the user volume was set. */
 bool vs_host_set(volst_t *s, const uint8_t *payload, int len);
 /* A valid HOST_HELLO or entry to OFFLINE ends a transient override. */
@@ -28,5 +30,8 @@ void vs_knob_arm(volst_t *s);
 void vs_knob_set(volst_t *s, int v);
 /* Ends the knob; returns true when a commit changed the user volume. */
 bool vs_knob_end(volst_t *s, bool cancel);
+/* Records that v was written to NVS; call only after a successful write. */
 void vs_saved(volst_t *s, int v);
+/* The committed user volume differs from the stored one and storage is on. */
+bool vs_needs_save(const volst_t *s);
 bool vs_save_due(const volst_t *s, uint32_t now, uint32_t last_write, bool quiet);
