@@ -10,11 +10,11 @@ enum { VK_IDLE, VK_DEAD, VK_CENTRE, VK_EDGE, VK_ARMED };
 enum { VK_WHY_NONE, VK_WHY_DARK, VK_WHY_MOVED, VK_WHY_ZONE, VK_WHY_JUMP };
 
 typedef struct {
-    int state, why;
+    int state, why, cls;
     int x0, y0, lx, ly;
     uint32_t t0, last_t;
     double theta_last, travel, acc, r0, max_disp, rmin, rmax;
-    bool moved, long_sent, reseed;
+    bool moved, long_sent, reseed, armed_ever;
     int v, v0;
 } volknob_t;
 
