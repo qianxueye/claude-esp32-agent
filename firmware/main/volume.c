@@ -4,8 +4,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "nvs.h"
-#include "nvs_flash.h"
+#include "nvstore.h"
 #include "proto.h"
 #include "transport.h"
 #include "volstate.h"
@@ -14,7 +13,7 @@ static const char *TAG = "volume";
 
 static SemaphoreHandle_t s_mtx;
 static volst_t s_st;
-static uint32_t s_last_write, s_arms, s_cancels, s_edge, s_saves;
+static uint32_t s_arms, s_cancels, s_edge, s_saves;
 
 static void apply_locked(void)
 {
@@ -27,42 +26,12 @@ static void report(int v)
     transport_send(T_VOLUME, &b, 1);
 }
 
-static bool nvs_start(void)
-{
-    esp_err_t e = nvs_flash_init();
-    if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "nvs init %s: erasing the partition once", esp_err_to_name(e));
-        e = nvs_flash_erase();
-        if (e == ESP_OK) {
-            e = nvs_flash_init();
-        }
-    }
-    if (e != ESP_OK) {
-        ESP_LOGW(TAG, "nvs unusable (%s): volume kept in RAM", esp_err_to_name(e));
-        return false;
-    }
-    return true;
-}
-
 void volume_init(void)
 {
     s_mtx = xSemaphoreCreateMutex();
-    int result = VS_LOAD_ERROR;
     uint8_t raw = 0;
-    if (nvs_start()) {
-        nvs_handle_t h;
-        esp_err_t e = nvs_open(VOL_NVS_NAMESPACE, NVS_READONLY, &h);
-        if (e == ESP_OK) {
-            e = nvs_get_u8(h, VOL_NVS_KEY, &raw);
-            nvs_close(h);
-        }
-        result = e == ESP_OK ? VS_LOAD_FOUND : e == ESP_ERR_NVS_NOT_FOUND ? VS_LOAD_ABSENT : VS_LOAD_ERROR;
-        if (result == VS_LOAD_ERROR) {
-            ESP_LOGW(TAG, "nvs read failed (%s): volume kept in RAM", esp_err_to_name(e));
-        }
-    }
+    int result = nvstore_load_u8(VOL_NVS_KEY, &raw);
     bool ok = vs_load(&s_st, result, raw);
-    s_last_write = now_ms() - VOL_SAVE_MIN_MS;
     ESP_LOGI(TAG, "volume %d %s", s_st.user, ok ? "loaded" : s_st.ram ? "default, storage off" : "default, none stored");
     apply_locked();
 }
@@ -134,21 +103,13 @@ void volume_count_edge(void)
 bool volume_poll(uint32_t now_ms, bool quiet)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
-    bool due = vs_save_due(&s_st, now_ms, s_last_write, quiet);
+    bool due = vs_save_due(&s_st, now_ms, nvstore_last_write(), quiet);
     int v = s_st.user;
     xSemaphoreGive(s_mtx);
     if (!due) {
         return false;
     }
-    nvs_handle_t h;
-    esp_err_t e = nvs_open(VOL_NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (e == ESP_OK) {
-        e = nvs_set_u8(h, VOL_NVS_KEY, (uint8_t)v);
-        if (e == ESP_OK) {
-            e = nvs_commit(h);
-        }
-        nvs_close(h);
-    }
+    esp_err_t e = nvstore_save_u8(VOL_NVS_KEY, (uint8_t)v, now_ms);
     bool wrote = e == ESP_OK;
     xSemaphoreTake(s_mtx, portMAX_DELAY);
     if (wrote) {
@@ -161,7 +122,6 @@ bool volume_poll(uint32_t now_ms, bool quiet)
     } else if (streak == VS_STREAK_END) {
         ESP_LOGI(TAG, "nvs write succeeded again");
     }
-    s_last_write = now_ms;
     s_saves += wrote;
     return wrote;
 }

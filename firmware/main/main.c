@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "imu.h"
 #include "keydebounce.h"
+#include "nvstore.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -414,6 +415,7 @@ void app_main(void)
     s_last_host_ms = now_ms();
     transport_start(on_frame);
     ESP_LOGI(TAG, "boot fw=%s reset_reason=%d", FW_VERSION, (int)esp_reset_reason());
+    nvstore_init();
     volume_init();
     ui_start();
     ESP_LOGI(TAG, "display up; free internal %u largest %u psram %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
