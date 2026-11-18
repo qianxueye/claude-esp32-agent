@@ -69,27 +69,42 @@ static void test_a1_band_and_order(void)
     assert(4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX > 4 * (LISTEN_RING_DIAMETER / 2) * (LISTEN_RING_DIAMETER / 2));
 }
 
-/* Conservative corner radius of the scene content over every orbit position, from the extents in ui.c. */
+typedef struct { int content_u, thought, dx_min, dx_max, dy_min, dy_max; } scene_case_t;
+
+/* Corner radius of the one bounding rectangle ui.c clears and rotates, per state and orbit position, with its 1 px margin. */
 static double worst_corner(void)
 {
-    const int u = BUBBLE_UNIT_PX, c = MASCOT_CELL_PX, scene = SCENE_SIZE_PX, shift = BUBBLE_SHIFT_UNITS * u, reach = SCUTTLE_DISTANCE_UNITS * u;
-    const int bubble_half = (42 * u) / 2;
+    static const scene_case_t CASES[] = {
+        {0, 0, -4 * SCUTTLE_DISTANCE_UNITS, 4 * SCUTTLE_DISTANCE_UNITS, 0, 4},  /* IDLE */
+        {34, 0, 0, 0, 0, 0},                                                      /* LISTENING */
+        {33, 1, 0, 0, 0, 0},                                                      /* THINKING */
+        {34, 0, 0, 0, -2 * BUBBLE_UNIT_PX, 0},                                    /* SPEAKING */
+        {36, 0, -BUBBLE_UNIT_PX, BUBBLE_UNIT_PX, 0, 0},                           /* ERROR */
+        {24, 0, 0, 0, 0, BUBBLE_UNIT_PX},                                         /* OFFLINE */
+    };
+    const int u = BUBBLE_UNIT_PX, c = MASCOT_CELL_PX, half = SCENE_SIZE_PX / 2;
     double worst = 0;
-    for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
-        int gx, gy;
-        dp_orbit(i, &gx, &gy);
-        int anchor_top = scene / 2 - 5 * c + shift + gy;
-        int thought_top = ((anchor_top - BUBBLE_GAP_UNITS * u) / u - 8 - 18) * u;
-        int top = scene / 2 - 5 * c + gy - 2 * u, bottom = scene / 2 - 5 * c + gy + shift + u + 10 * c;
-        int box[2][4] = {
-            {scene / 2 - 8 * c + gx - reach, top, scene / 2 + 8 * c + gx + reach, bottom},
-            {scene / 2 - bubble_half + gx, thought_top, scene / 2 + bubble_half + gx, top},
-        };
-        for (int k = 0; k < 2; k++) {
-            for (int a = 0; a < 2; a++) {
-                for (int b = 0; b < 2; b++) {
-                    double r = hypot(box[k][a * 2] - scene / 2, box[k][b * 2 + 1] - scene / 2);
-                    worst = r > worst ? r : worst;
+    for (size_t k = 0; k < sizeof(CASES) / sizeof(CASES[0]); k++) {
+        const scene_case_t *s = &CASES[k];
+        int shift = s->content_u ? BUBBLE_SHIFT_UNITS * u : 0;
+        for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+            int gx, gy;
+            dp_orbit(i, &gx, &gy);
+            for (int dxi = 0; dxi < 2; dxi++) {
+                for (int dyi = 0; dyi < 2; dyi++) {
+                    int dx = dxi ? s->dx_max : s->dx_min, dy = dyi ? s->dy_max : s->dy_min;
+                    int ox = half - 8 * c + gx + dx, oy = half - 5 * c + gy + shift + dy;
+                    int x0 = ox, x1 = ox + 16 * c, y0 = oy, y1 = oy + 10 * c;
+                    if (s->content_u) {
+                        int w = (s->content_u + 2 * BUBBLE_PAD_UNITS + 2 + 1) & ~1, cx = (half + gx) / u;
+                        int anchor_top = half - 5 * c + shift + gy, below = s->thought ? 8 : 2;
+                        int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * u) / u - below;
+                        x0 = x0 < (cx - w / 2) * u ? x0 : (cx - w / 2) * u;
+                        x1 = x1 > (cx - w / 2 + w) * u ? x1 : (cx - w / 2 + w) * u;
+                        y0 = y0 < (bottom_u - 18) * u ? y0 : (bottom_u - 18) * u;
+                    }
+                    double ax = fmax(abs(x0 - 1 - half), abs(x1 + 1 - half)), ay = fmax(abs(y0 - 1 - half), abs(y1 + 1 - half));
+                    worst = fmax(worst, hypot(ax, ay));
                 }
             }
         }
@@ -159,7 +174,6 @@ static void test_area_budget(void)
     assert(worst_single + 10 <= 32);
     int big = frame_areas(0, 5, 100, &px);
     assert(big <= VOLARC_MAX_AREAS);
-    printf("full-arc pixels flushed: %d\n", ({ int p; frame_areas(0, 0, 100, &p); p; }));
 }
 
 static void test_class(void)

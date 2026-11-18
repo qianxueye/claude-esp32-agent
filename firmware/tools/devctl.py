@@ -649,7 +649,7 @@ def cmd_v3check(link, args):
     ok &= expect("HELLO reply + WIFI_STATUS", link.wait_for(T_HELLO, 1.0, show=False) is not None
                  and link.wait_for(T_WIFI_STATUS, 1.0, show=False) == b'{"wifi":"off","relay":"none"}'
                  and link.hellos[-1]["reason"] == "reply", json.dumps(link.hellos[-1:]))
-    ok &= expect("transient 0 left the stored volume unchanged", link.hellos[-1:] and link.hellos[-1].get("vol") == vol0,
+    ok &= expect("transient 0 left the stored volume unchanged", bool(link.hellos) and link.hellos[-1].get("vol") == vol0,
                  "vol %r then %r" % (vol0, link.hellos[-1:] and link.hellos[-1].get("vol")))
     link.send(T_SET_STATE, bytes([5]))
     time.sleep(0.2)

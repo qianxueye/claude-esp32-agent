@@ -126,9 +126,11 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 
 - The device owns the user volume and keeps it in non-volatile storage (namespace `clawd`, key `vol`). Without a stored value it uses 70 and reports `vol_set` false.
 - Knob: an edge touch arms after 15° of net travel along the edge; the first 15° never change the volume. Then 270° of travel is 0–100, clockwise raises, in 1 % steps; the ends saturate and do not wrap. A touch that jumps farther than the plausible finger speed cancels the knob and restores the volume it armed with. Before arming, leaving radius 150 px ends the gesture; after arming, samples inside radius 100 px are skipped.
+- Jump limit: between two samples whose point changed, the touch angle may change by at most 10° plus 720°/s times the sample gap (the gap capped at 50 ms); a larger change cancels the knob.
 - A transient SET_VOLUME changes the codec only. It ends, restoring the user volume, at the next valid HOST_HELLO, on entering OFFLINE, at reboot, when the knob arms, and at a persist set. A tool that needs it to last keeps its link alive.
 - A persist set becomes the user volume, is stored and reported by VOLUME. A seed does the same only when `vol_set` is false and is otherwise ignored, so repeated HELLOs do not repeat it.
 - Writes: only a knob release or a persist or applied seed set marks the volume for writing; the write waits until the amplifier is off and the state is not LISTENING, and at least 5 s after the previous write. A reset before the write loses that change.
+- Wear: a save is one 32-byte entry, 126 entries fill a 4096-byte page and the six pages rotate, so each sector is erased once per 756 saves. At one save per 5 s without pause that is 17 280 saves a day, about 12 years at 100 000 erase cycles per sector.
 - Storage: if the partition is full or from a newer version, it is erased once and reinitialised, which also removes anything else kept there; any other storage error leaves the volume in RAM for that boot, with `vol_set` true after a knob or persist set.
 - The relay keeps the last `vol` or VOLUME value in memory only.
 

@@ -133,6 +133,9 @@ static void handle_debug(const proto_frame_t *f)
 
 static void set_state(dev_state_t s)
 {
+    if (s == ST_OFFLINE && s_state != ST_OFFLINE) {
+        volume_session_reset();
+    }
     xSemaphoreTake(s_state_mtx, portMAX_DELAY);
     s_state = s;
     ui_set_state(s);
@@ -307,7 +310,6 @@ static void life_task(void *arg)
         uint32_t last_host = s_last_host_ms;
         uint32_t t = now_ms();
         if (s_ready && s_state != ST_OFFLINE && t - last_host >= PROTO_HOST_SILENCE_TIMEOUT_MS) {
-            volume_session_reset();
             set_state(ST_OFFLINE);
         }
         if (volume_poll(t, !audio_pa_active() && s_state != ST_LISTENING) && !saved_logged) {
