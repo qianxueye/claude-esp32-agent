@@ -22,6 +22,7 @@
 #include "orient.h"
 #include "proto.h"
 #include "rotblit.h"
+#include "scenepal.h"
 #include "transport.h"
 #include "volarc.h"
 #include "volknob.h"
@@ -45,7 +46,6 @@ typedef struct {
 } scene_t;
 
 enum { EYES_OPEN, EYES_CLOSED, EYES_CROSS };
-enum { PAL_BG, PAL_MASCOT, PAL_FILL, PAL_INK, PAL_ERROR, PAL_OFFLINE_FILL, PAL_N };
 
 typedef struct {
     const char *text;
@@ -404,7 +404,7 @@ static void redraw(const scene_t *s)
 {
     int64_t t0 = esp_timer_get_time();
     if (s_prev_bb.x1 > s_prev_bb.x0) {
-        fill(s_prev_bb.x0, s_prev_bb.y0, s_prev_bb.x1 - s_prev_bb.x0, s_prev_bb.y1 - s_prev_bb.y0, 0);
+        fill(s_prev_bb.x0, s_prev_bb.y0, s_prev_bb.x1 - s_prev_bb.x0, s_prev_bb.y1 - s_prev_bb.y0, PAL_BG);
     }
     s_bb = (irect_t){SCENE, SCENE, 0, 0};
     draw_mascot(s);
