@@ -30,7 +30,9 @@ OUTSTANDING_LIMIT = 64000
 CHUNK = 4096
 BRIGHT_WAIT_S = 5.0
 BRT_MIN_PERCENT, BRT_STEPS = 20, 32  # firmware/main/app_config.h; a host test compares them
-BRIGHT_KEYS = ("lvl", "eff", "panel", "set", "arms", "cancels", "slides", "stops", "saves", "in")
+SWIPE_FINAL_GUARD_S = 0.5  # plain configuration: the final bright line must start this long after the window
+BRIGHT_KEYS = ("lvl", "eff", "panel", "set", "arms", "rim", "cancels", "slides", "stops", "saves", "in")
+BRIGHT_COUNTERS = ("arms", "rim", "cancels", "slides", "stops", "saves", "in")
 BRIGHT_LINE = re.compile(rb"bright " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in BRIGHT_KEYS))
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 
@@ -564,7 +566,7 @@ def cmd_disp(link, args):
     """Display power test aids: speed up the timeline, pin a stage, the ACTIVE brightness or an orbit index, fill the screen with a grey."""
     fields = []
     for key, val in (("disp_scale", args.scale), ("disp_force", args.force), ("orbit", args.orbit), ("fill", args.fill), ("arc", args.arc), ("bench", args.bench),
-                     ("brt", args.brt)):
+                     ("brt", args.brt), ("brt_arc", args.brt_arc)):
         if val is not None:
             fields.append('"%s":%s' % (key, val if val == "null" else int(val)))
     link.send(T_DEBUG, ("{%s}" % ",".join(fields)).encode())
@@ -632,12 +634,12 @@ def cmd_brightness(link, args):
 
 
 def swipe_report(label, first, last, swipes):
-    """Return (lines, passed) for a swipecheck run: counter deltas, unarmed and armed slides, and the verdict."""
+    """Return (lines, passed) for a swipecheck run between the baseline and the final bright line; grip and wipe pass only when nothing armed."""
     if first is None or last is None:
-        return ["swipecheck %s: no 'bright lvl=' line; FAIL" % label], False
-    d = {k: last[k] - first[k] for k in ("arms", "cancels", "slides", "stops", "in")}
-    lines = ["swipecheck %s: arms +%d cancels +%d slides +%d stops +%d in +%d lvl %d -> %d"
-             % (label, d["arms"], d["cancels"], d["slides"], d["stops"], d["in"], first["lvl"], last["lvl"])]
+        return ["swipecheck %s: no %s 'bright lvl=' line; FAIL" % (label, "baseline" if first is None else "final")], False
+    d = {k: last[k] - first[k] for k in BRIGHT_COUNTERS}
+    lines = ["swipecheck %s: arms +%d rim +%d cancels +%d slides +%d stops +%d in +%d lvl %d -> %d"
+             % (label, d["arms"], d["rim"], d["cancels"], d["slides"], d["stops"], d["in"], first["lvl"], last["lvl"])]
     unarmed = [s for s in swipes if not s.get("arm")]
     armed = [s for s in swipes if s.get("arm")]
     by_why = {}
@@ -646,39 +648,54 @@ def swipe_report(label, first, last, swipes):
     lines.append("unarmed %d by why %s" % (len(unarmed), json.dumps(by_why, sort_keys=True)))
     if unarmed:
         top = max(unarmed, key=lambda s: s.get("pk", 0))
-        lines.append("largest unarmed pk %s lat %s cls %s" % (top.get("pk"), top.get("lat"), top.get("cls")))
+        lines.append("largest unarmed pk %s lat %s cls %s ku %s kl %s" % tuple(top.get(k) for k in ("pk", "lat", "cls", "ku", "kl")))
     for s in armed:
-        lines.append("armed pk %s lat %s arm_ms %s rev %s r1 %s b0 %s b %s" % tuple(s.get(k) for k in ("pk", "lat", "arm_ms", "rev", "r1", "b0", "b")))
-    passed = d["arms"] == 0 and first["lvl"] == last["lvl"]
+        lines.append("armed cls %s pk %s lat %s ku %s kl %s arm_ms %s gap %s stp %s rev %s r1 %s b0 %s b %s"
+                     % tuple(s.get(k) for k in ("cls", "pk", "lat", "ku", "kl", "arm_ms", "gap", "stp", "rev", "r1", "b0", "b")))
+    back = [k for k in BRIGHT_COUNTERS if d[k] < 0]
+    if back:
+        lines.append("counters went backwards (%s): the board restarted" % " ".join(back))
+        passed = False
+    elif label == "free":
+        passed = True
+    else:
+        passed = d["arms"] == 0 and first["lvl"] == last["lvl"] and not armed
     lines.append("swipecheck %s %s" % (label, "PASS" if passed else "FAIL"))
     return lines, passed
 
 
 def cmd_swipecheck(link, args):
-    """Hold the screen ACTIVE for SECONDS while the board is handled without swiping on purpose; PASS when no swipe armed and the level is unchanged."""
-    link.send(T_DEBUG, b'{"disp_force":0}')
+    """Hold the screen ACTIVE for SECONDS between a baseline and a final bright line and judge the swipes in between by label."""
     first = last = None
     swipes = []
-    end = time.monotonic() + args.seconds
     next_ping, seq = 0.0, 0
+
+    def logs():
+        nonlocal next_ping, seq
+        if time.monotonic() >= next_ping:
+            seq += 1
+            link.send(T_PING, struct.pack("<I", seq))
+            next_ping = time.monotonic() + 1.0
+        return [p for t, p in link.poll() if t == T_LOG]
+
+    link.send(T_DEBUG, b'{"disp_force":0}')
     try:
-        while time.monotonic() < end:
-            if time.monotonic() >= next_ping:
-                seq += 1
-                link.send(T_PING, struct.pack("<I", seq))
-                next_ping = time.monotonic() + 1.0
-            for t, p in link.poll():
-                if t != T_LOG:
-                    continue
-                b = parse_bright(p)
-                if b:
-                    first = first or b
-                    last = b
+        final_after, end = None, time.monotonic() + BRIGHT_WAIT_S
+        while last is None and time.monotonic() < end:
+            for p in logs():
+                b, s = parse_bright(p), parse_swipe(p)
+                if (b or s) and last is None:
                     print(p.decode("utf-8", "replace"))
-                s = parse_swipe(p)
-                if s:
-                    swipes.append(s)
-                    print(p.decode("utf-8", "replace"))
+                if first is None:
+                    if b:
+                        first = b
+                        final_after = time.monotonic() + args.seconds + SWIPE_FINAL_GUARD_S
+                        end = final_after + BRIGHT_WAIT_S
+                elif last is None:
+                    if s:
+                        swipes.append(s)
+                    if b and time.monotonic() >= final_after:
+                        last = b
     finally:
         link.send(T_DEBUG, b'{"disp_force":null}')
     lines, passed = swipe_report(args.label, first, last, swipes)
@@ -811,7 +828,7 @@ def main():
     s = sub.add_parser("bench"); s.add_argument("mode", type=int); s.add_argument("state", nargs="?", default="idle"); s.add_argument("seconds", type=float, nargs="?", default=8); s.set_defaults(fn=cmd_bench)
     s = sub.add_parser("perf"); s.add_argument("state"); s.add_argument("mode", type=int); s.add_argument("--angle", type=float); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_perf)
     s = sub.add_parser("imu-dump"); s.add_argument("seconds", type=int); s.add_argument("out"); s.set_defaults(fn=cmd_imu_dump)
-    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--arc"); s.add_argument("--bench"); s.add_argument("--brt"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
+    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--arc"); s.add_argument("--bench"); s.add_argument("--brt"); s.add_argument("--brt-arc", dest="brt_arc"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
     s = sub.add_parser("brightness"); s.add_argument("value", type=int, nargs="?"); s.set_defaults(fn=cmd_brightness)
     s = sub.add_parser("swipecheck"); s.add_argument("seconds", type=float); s.add_argument("--label", choices=("grip", "wipe", "free"), required=True); s.set_defaults(fn=cmd_swipecheck)
     s = sub.add_parser("v3check"); s.set_defaults(fn=cmd_v3check)
