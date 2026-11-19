@@ -12,7 +12,7 @@
 #define PROTO_SPK_STATUS_PERIOD_MS 100
 #define STATS_LOG_PERIOD_MS 2000
 #define LIFE_PERIOD_MS 100
-#define HELLO_JSON_BYTES 160
+#define HELLO_JSON_BYTES 192 /* plain configuration: the longest HELLO plus room for later fields; send_hello clamps */
 #define HOST_JSON_BYTES 128
 #define SNAPSHOT_QUEUE_DEPTH 8
 
@@ -98,6 +98,11 @@
 #define BRT_ARC_FILL_COLOR BUBBLE_FILL_COLOR /* plain configuration */
 #define BRT_ARC_TRACK_COLOR BUBBLE_OFFLINE_FILL_COLOR /* plain configuration */
 #define BRT_NVS_KEY "brt" /* plain configuration: NVS key in VOL_NVS_NAMESPACE */
+
+/* Animation pack; format limits are in apack.h */
+#define ANIM_PARTITION_LABEL "animpack" /* plain configuration: data partition of firmware/partitions.csv that holds the pack */
+#define ANIM_DIM_PLAYS 0 /* plain configuration: 0 holds the frame while dim, 1 keeps playing */
+#define ANIM_RING 1 /* plain configuration: 1 keeps the listening ring in pack mode */
 
 /* Selftest */
 #define SELFTEST_BEFORE_MS 400
@@ -234,6 +239,7 @@
 #define PRIO_IMU 3
 #define PRIO_BLIT 5
 #define PRIO_WORKER 5
+#define PRIO_SKIN_VERIFY 3 /* plain configuration: below the UI, audio and rx tasks */
 #define STACK_RX 4096
 #define STACK_TX 4096
 #define STACK_MIC 6144
@@ -243,3 +249,4 @@
 #define STACK_IMU 4096
 #define STACK_BLIT 3072
 #define STACK_WORKER 6144
+#define STACK_SKIN_VERIFY 3072
