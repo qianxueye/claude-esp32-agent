@@ -9,6 +9,7 @@ enum { VOL_MODE_TRANSIENT = 0, VOL_MODE_PERSIST = 1, VOL_MODE_SEED = 2 };
 /* Outcome of reading the stored volume at boot; VS_LOAD_ERROR means the stored value is unknown. */
 enum { VS_LOAD_ABSENT, VS_LOAD_FOUND, VS_LOAD_ERROR };
 enum { VS_STREAK_SAME, VS_STREAK_START, VS_STREAK_END };
+enum { VS_PICK_NONE, VS_PICK_A, VS_PICK_B };
 
 typedef struct {
     int user; /* the volume the user chose; the tentative value while the knob is armed */
@@ -44,3 +45,5 @@ bool vs_needs_save(const volst_t *s);
 /* Records a write outcome; returns VS_STREAK_START or VS_STREAK_END when a run of failures starts or ends. */
 int vs_write_streak(volst_t *s, bool wrote);
 bool vs_save_due(const volst_t *s, uint32_t now, uint32_t last_write, bool quiet);
+/* Which of two keys writes in this slot: the due one, or when both are due the one that was not attempted last (A when none was). */
+int vs_save_pick(bool a_due, bool b_due, int last);

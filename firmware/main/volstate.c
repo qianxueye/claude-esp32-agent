@@ -103,3 +103,11 @@ bool vs_save_due(const volst_t *s, uint32_t now, uint32_t last_write, bool quiet
 {
     return vs_needs_save(s) && quiet && !s->knob && now - last_write >= VOL_SAVE_MIN_MS;
 }
+
+int vs_save_pick(bool a_due, bool b_due, int last)
+{
+    if (a_due && b_due) {
+        return last == VS_PICK_A ? VS_PICK_B : VS_PICK_A;
+    }
+    return a_due ? VS_PICK_A : b_due ? VS_PICK_B : VS_PICK_NONE;
+}
