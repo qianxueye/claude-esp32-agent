@@ -8,8 +8,8 @@
 #define VOLARC_MAX_AREAS 10 /* one area per VOL_ARC_CHUNK_THR percent of the whole arc */
 #define VOLARC_RING_MAX_AREAS 1 /* mathematical model: LVGL's 32 areas less the scene's 10 and the ring's 21; the ring redraws only when the arc change has at most this many */
 
-/* Storage of an end-cue table: the two stretch runs take 2 * ARC_OVER_CELLS percent of the sweep, either arc. */
-#define VOLARC_OVER_CAP (VOLARC_CAP * 2 * ARC_OVER_CELLS / 100)
+/* Mathematical model: the two stretch runs take 2 * ARC_OVER_CELLS percent of the sweep, either arc, plus a half-disc (pi/8 of the band width squared, bounded by 4/10, and one band width of edge pixels) at each tip. */
+#define VOLARC_OVER_CAP (VOLARC_CAP * 2 * ARC_OVER_CELLS / 100 + 2 * (((VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * 4) / 10 + (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX)))
 
 typedef struct {
     uint32_t *e; /* caller storage, VOLARC_CAP entries */

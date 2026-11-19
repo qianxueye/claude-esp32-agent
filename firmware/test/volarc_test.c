@@ -15,6 +15,97 @@ static volarc_t g_arc;
 
 static int d2_of(int x, int y) { int dx = 2 * x - LAST, dy = 2 * y - LAST; return dx * dx + dy * dy; }
 
+/* Geometric oracle of the table rules: the meter sector, its half-disc end caps and the stretch cells, from angles and distances only. */
+enum { GK_VOL, GK_BRT };
+
+static double geo_start(int kind) { return kind == GK_BRT ? BRT_ARC_START_DEG : VOL_ARC_START_DEG; }
+static double geo_sweep(int kind) { return kind == GK_BRT ? BRT_ARC_SWEEP_DEG : VOL_SWEEP_DEG; }
+static int geo_steps(int kind) { return kind == GK_BRT ? BRT_STEPS + 1 : 100; }
+
+static double geo_t(int x, int y, double start)
+{
+    double a = atan2(2.0 * y - LAST, 2.0 * x - LAST) * 180.0 / PI_D, t = a - start;
+    return t - 360.0 * floor(t / 360.0);
+}
+
+static int geo_in_band(int x, int y)
+{
+    int d2 = d2_of(x, y);
+    return d2 >= 4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX && d2 <= 4 * VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX;
+}
+
+/* Whether the pixel lies in the half-disc k cells past the meter end (high: 1) and outward of it. */
+static int geo_in_cap(int kind, int x, int y, int high, int k)
+{
+    double start = geo_start(kind), sweep = geo_sweep(kind), p = sweep / geo_steps(kind), t = geo_t(x, y, start);
+    double th = (high ? start + sweep + k * p : start - k * p) * PI_D / 180.0;
+    double cx = (VOL_ARC_R_IN_PX + VOL_ARC_R_OUT_PX) * cos(th), cy = (VOL_ARC_R_IN_PX + VOL_ARC_R_OUT_PX) * sin(th);
+    double r = VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX, ex = (2.0 * x - LAST) - cx, ey = (2.0 * y - LAST) - cy;
+    double rel = high ? t - (sweep + k * p) : (t > 180.0 ? t - 360.0 : t) + k * p;
+    return (high ? rel >= 0 : rel < 0) && ex * ex + ey * ey <= r * r;
+}
+
+/* Cap code: 0 none, else 1 + k at the low end and 1 + ARC_OVER_CELLS + 1 + k at the high end. */
+static int geo_cap(int kind, int x, int y)
+{
+    for (int high = 0; high < 2; high++) {
+        for (int k = 0; k <= ARC_OVER_CELLS; k++) {
+            if (geo_in_cap(kind, x, y, high, k)) {
+                return 1 + high * (ARC_OVER_CELLS + 1) + k;
+            }
+        }
+    }
+    return 0;
+}
+
+static int geo_cap_end(int code) { return code > ARC_OVER_CELLS + 1; }
+static int geo_cap_k(int code) { return code - 1 - geo_cap_end(code) * (ARC_OVER_CELLS + 1); }
+
+static int geo_sector_thr(int kind, int x, int y)
+{
+    double t = geo_t(x, y, geo_start(kind)), sweep = geo_sweep(kind);
+    return t >= sweep ? 0 : (int)floor(t * geo_steps(kind) / sweep) + 1;
+}
+
+/* The meter's pixel threshold: its sector, plus the resting caps at the end cells. */
+static int geo_main_thr(int kind, int x, int y, int caps)
+{
+    int t = geo_sector_thr(kind, x, y), c = caps && !t ? geo_cap(kind, x, y) : 0;
+    if (c && geo_cap_k(c) == 0) {
+        return geo_cap_end(c) ? geo_steps(kind) : 1;
+    }
+    return t;
+}
+
+/* The stretch cell of a pixel by its sector alone. */
+static int geo_over_sector_thr(int kind, int x, int y)
+{
+    double start = geo_start(kind), sweep = geo_sweep(kind), p = sweep / geo_steps(kind), t = geo_t(x, y, start), run = ARC_OVER_CELLS * p;
+    if (t >= sweep && t - sweep < run) {
+        int j = (int)floor((t - sweep) / p) + 1;
+        return ARC_OVER_CELLS + (j > ARC_OVER_CELLS ? ARC_OVER_CELLS : j);
+    }
+    if (t > 0 && 360.0 - t < run) {
+        int j = (int)floor((360.0 - t) / p) + 1;
+        return j > ARC_OVER_CELLS ? ARC_OVER_CELLS : j;
+    }
+    return 0;
+}
+
+/* The stretch-table threshold: sector cells, with the tip caps relabelled to the cell count they sit at and the resting caps left to the meter. */
+static int geo_over_thr(int kind, int x, int y, int caps)
+{
+    if (!caps) {
+        return geo_over_sector_thr(kind, x, y);
+    }
+    int c = geo_cap(kind, x, y);
+    if (c && geo_sector_thr(kind, x, y) == 0) {
+        int k = geo_cap_k(c);
+        return k == 0 ? 0 : (geo_cap_end(c) ? ARC_OVER_CELLS : 0) + k;
+    }
+    return geo_over_sector_thr(kind, x, y);
+}
+
 static int ui_gap(int x, int y)
 {
     double a = atan2(2.0 * y - LAST, 2.0 * x - LAST) * 180.0 / PI_D, t = a - VOL_ARC_START_DEG;
@@ -35,7 +126,7 @@ static void test_a1_band_and_order(void)
         volarc_xy(g_arc.e[i], 0, &x, &y);
         int d2 = d2_of(x, y);
         assert(d2 >= 4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX && d2 <= 4 * VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX);
-        assert(t >= prev && t >= 1 && t <= 100 && !seen[y][x] && !ui_gap(x, y));
+        assert(t >= prev && t >= 1 && t <= 100 && !seen[y][x] && t == geo_main_thr(GK_VOL, x, y, 1) && (!ui_gap(x, y) || geo_cap(GK_VOL, x, y)));
         seen[y][x] = 1;
         prev = t;
     }
@@ -46,7 +137,7 @@ static void test_a1_band_and_order(void)
         for (int x = 0; x < LCD_SIZE; x++) {
             int d2 = d2_of(x, y);
             if (d2 >= 4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX && d2 <= 4 * VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX && ui_gap(x, y)) {
-                assert(!seen[y][x]);
+                assert(seen[y][x] == (geo_main_thr(GK_VOL, x, y, 1) > 0));
                 gap_in_band++;
             }
         }
@@ -278,7 +369,7 @@ static void test_a4_segment_geometry(void)
         double a = atan2(2.0 * y - LAST, 2.0 * x - LAST) * 180.0 / PI_D;
         a += a < 0 ? 360.0 : 0.0;
         assert(d2 >= 4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX && d2 <= 4 * VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX);
-        assert(a >= BRT_ARC_START_DEG && a < BRT_ARC_START_DEG + BRT_ARC_SWEEP_DEG && t >= prev && t >= 1 && t <= BRT_STEPS + 1 && !seen[y][x]);
+        assert(((a >= BRT_ARC_START_DEG && a < BRT_ARC_START_DEG + BRT_ARC_SWEEP_DEG) || geo_cap(GK_BRT, x, y)) && t == geo_main_thr(GK_BRT, x, y, 1) && t >= prev && t >= 1 && t <= BRT_STEPS + 1 && !seen[y][x]);
         seen[y][x] = 1;
         prev = t;
         bx1 = x < bx1 ? x : bx1;
@@ -620,14 +711,17 @@ static void test_a11_over_geometry(void)
             assert(d2 >= 4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX && d2 <= 4 * VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX);
             assert(thr >= 1 && thr <= 2 * ARC_OVER_CELLS && !main_map[y][x] && !over_map[y][x]);
             over_map[y][x] = 1;
-            if (thr > ARC_OVER_CELLS) {
-                double u = t - sweep;
-                assert(u >= -1e-9 && u / p >= thr - ARC_OVER_CELLS - 1 - 1e-9 && u / p <= thr - ARC_OVER_CELLS + 1e-9);
-            } else {
-                double w = 360.0 - t;
-                assert(w > 0 && w / p >= thr - 1 - 1e-9 && w / p <= thr + 1e-9);
-                wrong_hits += thr == 1 && wrong_low_thr(w, p) != 1;
+            assert(thr == geo_over_thr(kind, x, y, 1));
+            double w = 360.0 - t;
+            if (thr == geo_over_sector_thr(kind, x, y)) {
+                if (thr > ARC_OVER_CELLS) {
+                    double u = t - sweep;
+                    assert(u >= -1e-9 && u / p >= thr - ARC_OVER_CELLS - 1 - 1e-9 && u / p <= thr - ARC_OVER_CELLS + 1e-9);
+                } else {
+                    assert(w > 0 && w / p >= thr - 1 - 1e-9 && w / p <= thr + 1e-9);
+                }
             }
+            wrong_hits += thr == 1 && t > 180.0 && geo_over_sector_thr(kind, x, y) == 1 && wrong_low_thr(w, p) != 1;
         }
         assert(wrong_hits > 0);
         for (int c = 1; c <= 2 * ARC_OVER_CELLS; c++) {
@@ -1086,6 +1180,253 @@ static void test_a13_takeover_spring(void)
     }
 }
 
+/* Round end caps: oracle per band pixel, from the geometry alone. */
+typedef struct {
+    int x, y, main_thr, cap, cell;
+} orc_t;
+
+static orc_t g_orc[2][12000];
+static int g_orc_n[2];
+
+static void orc_build(void)
+{
+    for (int kind = GK_VOL; kind <= GK_BRT; kind++) {
+        int n = 0;
+        for (int y = 0; y < LCD_SIZE; y++) {
+            for (int x = 0; x < LCD_SIZE; x++) {
+                if (geo_in_band(x, y)) {
+                    assert(n < 12000);
+                    g_orc[kind][n++] = (orc_t){x, y, geo_sector_thr(kind, x, y), geo_cap(kind, x, y), geo_over_sector_thr(kind, x, y)};
+                }
+            }
+        }
+        g_orc_n[kind] = n;
+    }
+}
+
+static void rot_xy(int x, int y, int quad, int *ox, int *oy)
+{
+    for (int i = 0; i < quad; i++) {
+        int nx = LAST - y;
+        y = x;
+        x = nx;
+    }
+    *ox = x;
+    *oy = y;
+}
+
+static unsigned short g_c_got[LCD_SIZE * LCD_SIZE], g_c_want[LCD_SIZE * LCD_SIZE];
+
+static unsigned short c_val(int kind, int cls) { return (unsigned short)(1 + kind * 3 + cls); }
+static int c_main_cls(int kind, int thr, int level) { return kind == GK_BRT ? volarc_seg_class(thr, level) : volarc_class(thr, level); }
+static unsigned short c_over_val(int kind, int over) { return c_val(kind, volarc_over_class(kind == GK_BRT, over)); }
+
+/* Lit set at stretch over: the meter, the resting caps, the stretch cells up to the count and the tip cap at the count. */
+static void c_render_oracle(unsigned short *buf, int kind, int quad, int level, int over)
+{
+    memset(buf, 0, sizeof(g_c_got));
+    int n = over < 0 ? -over : over;
+    for (int i = 0; i < g_orc_n[kind]; i++) {
+        const orc_t *q = &g_orc[kind][i];
+        int rx, ry, cend = q->cap ? geo_cap_end(q->cap) : 0, ck = q->cap ? geo_cap_k(q->cap) : 0, lit = 0, thr = q->main_thr;
+        if (!thr && q->cap && ck == 0) {
+            thr = cend ? geo_steps(kind) : 1;
+        }
+        rot_xy(q->x, q->y, quad, &rx, &ry);
+        if (thr) {
+            buf[ry * LCD_SIZE + rx] = c_val(kind, c_main_cls(kind, thr, level));
+            continue;
+        }
+        if (over < 0) {
+            lit = (q->cell >= 1 && q->cell <= ARC_OVER_CELLS && q->cell <= n) || (q->cap && !cend && ck == n);
+        } else if (over > 0) {
+            lit = (q->cell > ARC_OVER_CELLS && q->cell - ARC_OVER_CELLS <= n) || (q->cap && cend && ck == n);
+        }
+        if (lit) {
+            buf[ry * LCD_SIZE + rx] = c_over_val(kind, over);
+        }
+    }
+}
+
+/* square: the pure-sector tables of the earlier rule, built from the same oracle without caps. */
+static void c_render_table(unsigned short *buf, int kind, int quad, int level, int over, int square)
+{
+    memset(buf, 0, sizeof(g_c_got));
+    if (square) {
+        for (int i = 0; i < g_orc_n[kind]; i++) {
+            const orc_t *q = &g_orc[kind][i];
+            int rx, ry;
+            rot_xy(q->x, q->y, quad, &rx, &ry);
+            if (q->main_thr) {
+                buf[ry * LCD_SIZE + rx] = c_val(kind, c_main_cls(kind, q->main_thr, level));
+            } else if (q->cell && volarc_over_lit(q->cell, over)) {
+                buf[ry * LCD_SIZE + rx] = c_over_val(kind, over);
+            }
+        }
+        return;
+    }
+    const volarc_t *m = main_tab(kind), *o = &g_ov[kind];
+    for (int i = 0; i < m->n; i++) {
+        int x, y;
+        volarc_xy(m->e[i], quad, &x, &y);
+        buf[y * LCD_SIZE + x] = c_val(kind, c_main_cls(kind, volarc_thr(m->e[i]), level));
+    }
+    for (int i = 0; i < o->n; i++) {
+        int x, y;
+        volarc_xy(o->e[i], quad, &x, &y);
+        if (volarc_over_lit(volarc_thr(o->e[i]), over)) {
+            buf[y * LCD_SIZE + x] = c_over_val(kind, over);
+        }
+    }
+}
+
+/* Returns the index of the first differing pixel, or -1. */
+static int c_first_diff(const unsigned short *a, const unsigned short *b)
+{
+    for (int i = 0; i < LCD_SIZE * LCD_SIZE; i++) {
+        if (a[i] != b[i]) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int c1_run(int square)
+{
+    int bad = 0;
+    for (int kind = GK_VOL; kind <= GK_BRT; kind++) {
+        int top = kind == GK_BRT ? BRT_STEPS : 100;
+        for (int quad = 0; quad < 4; quad++) {
+            for (int level = 0; level <= top; level++) {
+                for (int over = level == 0 ? -ARC_OVER_CELLS : 0; over <= (level == top ? ARC_OVER_CELLS : 0); over++) {
+                    c_render_table(g_c_got, kind, quad, level, over, square);
+                    c_render_oracle(g_c_want, kind, quad, level, over);
+                    int d = c_first_diff(g_c_got, g_c_want);
+                    if (d >= 0) {
+                        if (!square) {
+                            printf("C1 mismatch kind %d quad %d level %d stretch %d at x=%d y=%d: table %d oracle %d\n", kind, quad, level, over, d % LCD_SIZE, d / LCD_SIZE, g_c_got[d], g_c_want[d]);
+                        }
+                        bad++;
+                    }
+                }
+            }
+        }
+    }
+    return bad;
+}
+
+static void test_c1_oracle(void)
+{
+    setup_tables();
+    orc_build();
+    assert(c1_run(0) == 0);
+    /* the square-cut tables must be rejected */
+    assert(c1_run(1) > 0);
+}
+
+static void test_c2_caps_inside_cells(void)
+{
+    for (int kind = GK_VOL; kind <= GK_BRT; kind++) {
+        for (int high = 0; high < 2; high++) {
+            for (int k = 0; k <= ARC_OVER_CELLS; k++) {
+                int cnt = 0;
+                for (int i = 0; i < g_orc_n[kind]; i++) {
+                    const orc_t *q = &g_orc[kind][i];
+                    if (!q->cap || geo_cap_end(q->cap) != high || geo_cap_k(q->cap) != k) {
+                        continue;
+                    }
+                    cnt++;
+                    assert(geo_in_band(q->x, q->y) && q->main_thr == 0);
+                    if (k < ARC_OVER_CELLS) {
+                        assert(q->cell == (high ? ARC_OVER_CELLS : 0) + k + 1);
+                    }
+                }
+                printf("cap kind %d %s k=%d: %d px\n", kind, high ? "high" : "low", k, cnt);
+                assert(cnt > 0);
+            }
+        }
+    }
+}
+
+static void test_c3_no_shared_pixel(void)
+{
+    static unsigned char map[LCD_SIZE][LCD_SIZE];
+    for (int kind = GK_VOL; kind <= GK_BRT; kind++) {
+        memset(map, 0, sizeof(map));
+        const volarc_t *m = main_tab(kind), *o = &g_ov[kind];
+        for (int i = 0; i < m->n; i++) {
+            int x, y;
+            volarc_xy(m->e[i], 0, &x, &y);
+            map[y][x] = 1;
+        }
+        for (int i = 0; i < o->n; i++) {
+            int x, y;
+            volarc_xy(o->e[i], 0, &x, &y);
+            assert(!map[y][x]);
+        }
+        printf("tables kind %d: main %d/%d over %d/%d\n", kind, m->n, VOLARC_CAP, o->n, VOLARC_OVER_CAP);
+        assert(m->n <= VOLARC_CAP && o->n <= VOLARC_OVER_CAP);
+    }
+}
+
+/* Springing back from any stretch to any other at the same end repaints only the changed range and still equals a fresh render. */
+static void test_c4_spring_back(void)
+{
+    for (int kind = GK_VOL; kind <= GK_BRT; kind++) {
+        int top = kind == GK_BRT ? BRT_STEPS : 100;
+        for (int end = 0; end < 2; end++) {
+            int level = end ? top : 0, sign = end ? 1 : -1;
+            for (int from = 0; from <= ARC_OVER_CELLS; from++) {
+                for (int to = 0; to <= ARC_OVER_CELLS; to++) {
+                    int quad = (from + to) & 3, f = sign * from, t = sign * to;
+                    c_render_table(g_c_got, kind, quad, level, f, 0);
+                    int lo[2], hi[2], n = volarc_over_ranges(f, t, lo, hi);
+                    const volarc_t *o = &g_ov[kind];
+                    for (int j = 0; j < n; j++) {
+                        for (int i = o->cnt[lo[j]]; i < o->cnt[hi[j]]; i++) {
+                            int x, y;
+                            volarc_xy(o->e[i], quad, &x, &y);
+                            g_c_got[y * LCD_SIZE + x] = volarc_over_lit(volarc_thr(o->e[i]), t) ? c_over_val(kind, t) : 0;
+                        }
+                    }
+                    c_render_table(g_c_want, kind, quad, level, t, 0);
+                    int d = c_first_diff(g_c_got, g_c_want);
+                    if (d >= 0) {
+                        printf("C4 kind %d end %d %d->%d at x=%d y=%d\n", kind, end, f, t, d % LCD_SIZE, d / LCD_SIZE);
+                    }
+                    assert(d < 0);
+                    if (to == 0) {
+                        int caps = 0;
+                        for (int i = 0; i < g_orc_n[kind]; i++) {
+                            const orc_t *q = &g_orc[kind][i];
+                            int rx, ry;
+                            if (q->cap && geo_cap_k(q->cap) == 0 && geo_cap_end(q->cap) == end) {
+                                rot_xy(q->x, q->y, quad, &rx, &ry);
+                                assert(g_c_got[ry * LCD_SIZE + rx] == c_val(kind, c_main_cls(kind, end ? geo_steps(kind) : 1, level)));
+                                caps++;
+                            }
+                        }
+                        assert(caps > 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void test_c5_tip_keeps_colour(void)
+{
+    for (int kind = GK_VOL; kind <= GK_BRT; kind++) {
+        int top = kind == GK_BRT ? BRT_STEPS : 100;
+        for (int end = 0; end < 2; end++) {
+            int level = end ? top : 0, thr = end ? geo_steps(kind) : 1;
+            for (int n = 1; n <= ARC_OVER_CELLS; n++) {
+                assert(c_main_cls(kind, thr, level) == volarc_over_class(kind == GK_BRT, end ? n : -n));
+            }
+        }
+    }
+}
+
 int main(void)
 {
     test_a1_band_and_order();
@@ -1109,6 +1450,11 @@ int main(void)
     test_a13_takeover_spring();
     test_a14_colour();
     test_a15_latched_quadrant();
+    test_c1_oracle();
+    test_c2_caps_inside_cells();
+    test_c3_no_shared_pixel();
+    test_c4_spring_back();
+    test_c5_tip_keeps_colour();
     puts("ok");
     return 0;
 }

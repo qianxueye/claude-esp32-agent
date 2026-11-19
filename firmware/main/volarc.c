@@ -9,6 +9,10 @@ _Static_assert(VOL_ARC_R_OUT_PX < LCD_SIZE / 2, "arc must lie inside the glass")
 _Static_assert(VOL_ARC_R_IN_PX < VOL_ARC_R_OUT_PX, "arc band must not be empty");
 _Static_assert(2 * ARC_OVER_CELLS * VOL_SWEEP_DEG <= (360 - VOL_SWEEP_DEG) * 100, "both volume end-cue runs must fit the gap of the volume arc");
 _Static_assert(2 * ARC_OVER_CELLS * BRT_ARC_SWEEP_DEG <= (360 - BRT_ARC_SWEEP_DEG) * (BRT_STEPS + 1), "both brightness end-cue runs must fit outside its arc");
+_Static_assert(2 * ARC_OVER_CELLS * VOL_SWEEP_DEG * VOL_ARC_R_IN_PX + 90 * (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * 100 <= (360 - VOL_SWEEP_DEG) * 100 * VOL_ARC_R_IN_PX,
+               "the end-cue runs and their round caps must fit the gap of the volume arc");
+_Static_assert(2 * ARC_OVER_CELLS * BRT_ARC_SWEEP_DEG * VOL_ARC_R_IN_PX + 90 * (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * (BRT_STEPS + 1) <= (360 - BRT_ARC_SWEEP_DEG) * (BRT_STEPS + 1) * VOL_ARC_R_IN_PX,
+               "the end-cue runs and their round caps must fit outside the brightness arc");
 _Static_assert(BRT_ARC_SWEEP_DEG * 100 * 10 <= (BRT_STEPS + 1) * VOL_SWEEP_DEG * 11, "VOLARC_OVER_CAP must hold the brightness cell pitch");
 
 static int thr_at(int x, int y, double start_deg, double sweep_deg, int steps)
@@ -38,8 +42,43 @@ typedef struct {
     int steps;
 } geom_t;
 
+static double rel_t(int x, int y, double start)
+{
+    double t = atan2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D - start;
+    return t - 360.0 * floor(t / 360.0);
+}
+
+/* Round cap, mathematical model: half the band width closes the band with a half-disc of that radius on the arc's middle radius. */
+static int in_cap(int x, int y, const geom_t *g, int high, int k)
+{
+    double pitch = g->sweep / g->steps, t = rel_t(x, y, g->start);
+    double th = (g->start + (high ? g->sweep + k * pitch : -k * pitch)) * PI_D / 180.0;
+    double mid = VOL_ARC_R_IN_PX + VOL_ARC_R_OUT_PX, w = VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX;
+    double ex = 2 * x - C2 - mid * cos(th), ey = 2 * y - C2 - mid * sin(th);
+    int outward = high ? t >= g->sweep + k * pitch : (t > 180.0 ? t - 360.0 : t) < -k * pitch;
+    return outward && ex * ex + ey * ey <= w * w;
+}
+
+/* The end cap k cells past the meter end that holds the pixel, as 1 + k at the low end and 1 + ARC_OVER_CELLS + k at the high end; 0 for none. */
+static int cap_of(int x, int y, const geom_t *g)
+{
+    for (int k = 0; k <= ARC_OVER_CELLS; k++) {
+        for (int high = 0; high < 2; high++) {
+            if (in_cap(x, y, g, high, k)) {
+                return 1 + high * (1 + ARC_OVER_CELLS) + k;
+            }
+        }
+    }
+    return 0;
+}
+
 static int thr_over_at(int x, int y, const geom_t *g)
 {
+    int cap = cap_of(x, y, g);
+    if (cap) {
+        int high = cap > 1 + ARC_OVER_CELLS, k = cap - 1 - high * (1 + ARC_OVER_CELLS);
+        return k == 0 ? 0 : (high ? ARC_OVER_CELLS : 0) + k;
+    }
     double a = atan2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D, t = a - g->start;
     t -= 360.0 * floor(t / 360.0);
     double pitch = g->sweep / g->steps, run = ARC_OVER_CELLS * pitch;
@@ -56,7 +95,11 @@ static int thr_over_at(int x, int y, const geom_t *g)
 
 static int thr_main_at(int x, int y, const geom_t *g)
 {
-    return thr_at(x, y, g->start, g->sweep, g->steps);
+    int t = thr_at(x, y, g->start, g->sweep, g->steps), cap = t ? 0 : cap_of(x, y, g);
+    if (cap == 1) {
+        return 1;
+    }
+    return cap == 2 + ARC_OVER_CELLS ? g->steps : t;
 }
 
 static int build_table(volarc_t *a, uint32_t *storage, int cap, int nthr, const geom_t *g, int (*thr_fn)(int, int, const geom_t *))
