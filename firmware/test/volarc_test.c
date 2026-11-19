@@ -230,23 +230,25 @@ static double rect_corner(ag_rect_t r)
 static void test_a2s_sticker_scene_clear_of_arc(void)
 {
     static const struct {
-        int content_u;
+        ag_content_t content;
         bool thought;
-    } W[4] = {{34, false}, {36, false}, {24, false}, {33, true}};
+    } W[4] = {{{2, false, true}, false}, {{3, false, false}, false}, {{2, false, false}, false}, {{2, true, false}, true}};
     double worst = 0;
     long n = 0;
     for (int k = 0; k < 4; k++) {
-        const int w = ag_bubble_w_units(W[k].content_u);
         for (int left = 0; left < 2; left++) {
             for (int y = -AG_BUBBLE_Y_MAX_PX; y <= AG_BUBBLE_Y_MAX_PX; y += 4) {
                 for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
                     int gx, gy;
                     dp_orbit(i, &gx, &gy);
                     for (int pop = 1; pop <= 3; pop++) {
-                        const ag_bubble_t b = ag_side_bubble(w, W[k].content_u, W[k].thought, left, y, gx, gy, pop, SCENE_SIZE_PX);
+                        const ag_bubble_t b = ag_side_bubble(W[k].content, W[k].thought, left, y, gx, gy, pop, 0, SCENE_SIZE_PX);
                         worst = fmax(worst, rect_corner(b.body));
                         for (int c = 0; c < b.n_cells; c++) {
                             worst = fmax(worst, rect_corner(b.cells[c].r));
+                        }
+                        for (int c = 0; c < b.n_frame; c++) {
+                            worst = fmax(worst, rect_corner(b.frame[c].r));
                         }
                         n++;
                     }
@@ -280,7 +282,7 @@ static void test_a2r_listening_clear_of_arc(void)
             int gx, gy;
             dp_orbit(i, &gx, &gy);
             for (int y = -AG_BUBBLE_Y_MAX_PX; y <= AG_BUBBLE_Y_MAX_PX; y += 4) {
-                const ag_bubble_t b = ag_side_bubble(ag_bubble_w_units(34), 34, false, left, y, gx, gy, 3, SCENE_SIZE_PX);
+                const ag_bubble_t b = ag_side_bubble((ag_content_t){2, false, true}, false, left, y, gx, gy, 3, 0, SCENE_SIZE_PX);
                 sticker = fmax(sticker, rect_corner(b.body));
             }
         }

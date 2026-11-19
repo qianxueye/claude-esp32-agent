@@ -131,22 +131,17 @@ static ap_pack_t synthetic(int w, int h)
     return p;
 }
 
-/* Side bubbles at pop 3 for the widths and sides in use, the bubble's own rectangle with its tail or dots. */
+/* Side bubbles at pop 3 for the contents and sides in use: the pure box over the body and the tail or dots. */
 typedef struct {
-    int content_u;
+    ag_content_t content;
     bool thought, left;
     int bub_y;
 } bub_t;
 
 static irect_t bubble_bb(const bub_t *b, int gx, int gy)
 {
-    const ag_bubble_t g = ag_side_bubble(ag_bubble_w_units(b->content_u), b->content_u, b->thought, b->left, b->bub_y, gx, gy, 3, SCENE);
-    irect_t r = {SCENE, SCENE, 0, 0};
-    r = grown(r, g.body.x, g.body.y, g.body.x + g.body.w, g.body.y + g.body.h);
-    for (int i = 0; i < g.n_cells; i++) {
-        r = grown(r, g.cells[i].r.x, g.cells[i].r.y, g.cells[i].r.x + g.cells[i].r.w, g.cells[i].r.y + g.cells[i].r.h);
-    }
-    return r;
+    const ag_bubble_t g = ag_side_bubble(b->content, b->thought, b->left, b->bub_y, gx, gy, 3, 0, SCENE);
+    return ag_bubble_bbox(&g);
 }
 
 static void sticker_sweep(void)
@@ -163,25 +158,19 @@ static void sticker_sweep(void)
     static xspan_t art[4][OUT], scn[OUT], un[OUT];
     worst_t w[4];
     memset(w, 0, sizeof w);
-    const int widths[] = {34, 36, 24, 33}; /* the last is the thought bubble */
+    const ag_content_t contents[4] = {{2, false, true}, {3, false, false}, {2, false, false}, {2, true, false}}; /* the last is the thought bubble */
     for (int i = 0; i < POINTS; i++) {
         int gx, gy;
         dp_orbit(i, &gx, &gy);
-        irect_t bbs[4 * 2 * 3 + N_STATES - 1];
+        irect_t bbs[4 * 2 * 3];
         int nb = 0;
         for (int wi = 0; wi < 4; wi++) {
             for (int side = 0; side < 2; side++) {
                 for (size_t yi = 0; yi < sizeof ys / sizeof ys[0]; yi++) {
-                    const bub_t b = {widths[wi], wi == 3, side == 1, ys[yi]};
+                    const bub_t b = {contents[wi], wi == 3, side == 1, ys[yi]};
                     bbs[nb++] = bubble_bb(&b, gx, gy);
                 }
             }
-        }
-        /* The top bubble, pop 3, with its tail or dots, is what a pack clip still gets beside the side bubble's layout. */
-        for (int s = 1; s < N_STATES; s++) {
-            const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(STATES[s].content_u), STATES[s].thought, 3, gx, gy, SCENE);
-            const int below = STATES[s].thought ? 8 : 2;
-            bbs[nb++] = grown((irect_t){SCENE, SCENE, 0, 0}, t.body.x, t.body.y, t.body.x + t.body.w, t.body.y + t.body.h + below * U);
         }
         for (int t = 0; t < 3600; t++) {
             for (int k = 0; k < 4; k++) {

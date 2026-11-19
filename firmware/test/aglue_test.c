@@ -65,20 +65,31 @@ static void test_sticker_place(void)
     assert(shifted_oy != ag_sticker_place(&big, &big.clip[0], -12, -4, SCENE).oy);
 }
 
-/* Bubble content in units (glyphs, dots, spinner) behind the 160, 168 and 120 px widths, and the thought variant of 160. */
+/* The four contents ui.c's BUBBLES table gives: speech with dots, the error text, the offline text, and the thought bubble with its spinner. */
 typedef struct {
-    int content_u, w_px;
+    ag_content_t content;
+    int w_px;
     bool thought;
 } bub_case_t;
 
-static const bub_case_t BUB_CASES[4] = {{34, 160, false}, {36, 168, false}, {24, 120, false}, {33, 160, true}};
+static const bub_case_t BUB_CASES[4] = {{{2, false, true}, 160, false}, {{3, false, false}, 168, false}, {{2, false, false}, 120, false}, {{2, true, false}, 160, true}};
 
 static bool rect_in_scene(ag_rect_t r)
 {
     return r.x >= 0 && r.y >= 0 && r.x + r.w <= SCENE && r.y + r.h <= SCENE;
 }
 
-/* B1: the three widths at bub_y 0 on the right put the rectangle and the tail or dots where the layout says; every cell and the text rows stay in the scene. */
+static bool rect_in_box(ag_rect_t r, irect_t b)
+{
+    return r.x >= b.x0 && r.y >= b.y0 && r.x + r.w <= b.x1 && r.y + r.h <= b.y1;
+}
+
+static ag_bubble_t side(const bub_case_t *bc, bool left, int y, int gx, int gy, int pop, int phase)
+{
+    return ag_side_bubble(bc->content, bc->thought, left, y, gx, gy, pop, phase, SCENE);
+}
+
+/* B1: the three widths at bub_y 0 on the right put the rectangle and the tail or dots where the layout says; every cell, the spinner, the dots and the text rows stay in the scene and in the box. */
 static void test_b1_side_bubble_table(void)
 {
     static const int REL_X0[3] = {28, 20, 68};
@@ -88,9 +99,8 @@ static void test_b1_side_bubble_table(void)
         const int cx = SCENE / 2 + gx + 2, cy = SCENE / 2 + gy - 10;
         for (int k = 0; k < 3; k++) {
             const bub_case_t *bc = &BUB_CASES[k];
-            const int w = ag_bubble_w_units(bc->content_u);
-            assert(w * BUBBLE_UNIT_PX == bc->w_px);
-            const ag_bubble_t b = ag_side_bubble(w, bc->content_u, false, false, 0, gx, gy, 3, SCENE);
+            assert(ag_bubble_w_units(ag_content_units(bc->content)) * BUBBLE_UNIT_PX == bc->w_px);
+            const ag_bubble_t b = side(bc, false, 0, gx, gy, 3, 0);
             assert(b.body.x == cx + REL_X0[k] && b.body.x + b.body.w == cx + 188 && b.body.y == cy - 36 && b.body.h == 72);
             /* Tail on the inner edge at the centre row: rel x 20..28, y -8..8. */
             assert(b.n_cells == 4);
@@ -98,36 +108,60 @@ static void test_b1_side_bubble_table(void)
             assert(b.cells[3].ink && b.cells[3].r.x == cx + REL_X0[k] - 8 && b.cells[3].r.y == cy - 4 && b.cells[3].r.h == 8);
         }
         /* Thought dots of the 160 px bubble: rel 8..24 x -8..8 and -4..4 x -4..4. */
-        const ag_bubble_t t = ag_side_bubble(40, 33, true, false, 0, gx, gy, 3, SCENE);
+        const ag_bubble_t t = side(&BUB_CASES[3], false, 0, gx, gy, 3, 0);
         assert(t.n_cells == 2 && t.cells[0].r.x == cx + 8 && t.cells[0].r.w == 16 && t.cells[0].r.y == cy - 8 && t.cells[0].r.h == 16);
         assert(t.cells[1].r.x == cx - 4 && t.cells[1].r.w == 8 && t.cells[1].r.y == cy - 4 && t.cells[1].r.h == 8);
+        /* Pinned content of the 160 px dots bubble at bub_y 0: text row at rel y -24, mask at rel x 40, dots after 2 glyphs and 2 units. */
+        const ag_bubble_t d = side(&BUB_CASES[0], false, 0, gx, gy, 3, 1);
+        assert(d.mask.x == cx + 40 && d.mask.y == cy - 36 + 12 && d.mask.w == 96 && d.mask.h == 48);
+        assert(d.n_dots == 3 && d.dots[0].w == 4 && d.dots[1].w == 8 && d.dots[2].w == 4);
+        assert(d.dots[0].x == d.mask.x + 96 + 8 && d.dots[1].x == d.dots[0].x + 12 && d.dots[0].y == d.mask.y + 44 - 4 && d.dots[1].y == d.mask.y + 44 - 8);
+        assert(t.spinner && t.spin.x == cx + 40 && t.spin.w == 28 && t.spin.y == t.body.y + 12 + 8);
     }
     int cells = 0;
     for (int c = 0; c < 4; c++) {
         const bub_case_t *bc = &BUB_CASES[c];
-        const int w = ag_bubble_w_units(bc->content_u);
         for (int left = 0; left < 2; left++) {
             for (int y = -100; y <= 100; y += 4) {
                 for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
                     int gx, gy;
                     dp_orbit(i, &gx, &gy);
                     for (int pop = 0; pop <= 3; pop++) {
-                        const ag_bubble_t b = ag_side_bubble(w, bc->content_u, bc->thought, left, y, gx, gy, pop, SCENE);
-                        assert(rect_in_scene(b.body));
-                        for (int k = 0; k < b.n_cells; k++) {
-                            assert(rect_in_scene(b.cells[k].r));
-                            cells++;
-                        }
-                        if (pop == 3) {
-                            const ag_rect_t text = {b.text_x, b.text_y, bc->content_u * BUBBLE_UNIT_PX, 48};
-                            assert(rect_in_scene(text) && text.x >= b.body.x && text.x + text.w <= b.body.x + b.body.w);
+                        for (int phase = 0; phase < 3; phase++) {
+                            const ag_bubble_t b = side(bc, left, y, gx, gy, pop, phase);
+                            const irect_t box = ag_bubble_bbox(&b);
+                            assert(rect_in_scene(b.body) && (pop == 0) == (b.n_frame == 0) && (pop == 0) == (box.x1 <= box.x0));
+                            assert(pop == 0 || rect_in_box(b.body, box));
+                            for (int k = 0; k < b.n_frame; k++) {
+                                assert(rect_in_scene(b.frame[k].r) && rect_in_box(b.frame[k].r, box));
+                                cells++;
+                            }
+                            for (int k = 0; k < b.n_cells; k++) {
+                                assert(rect_in_scene(b.cells[k].r) && rect_in_box(b.cells[k].r, box));
+                                cells++;
+                            }
+                            if (pop < 3) {
+                                assert(b.n_cells == 0 && !b.spinner && b.n_dots == 0 && b.mask.w == 0);
+                                continue;
+                            }
+                            assert(rect_in_scene(b.mask) && rect_in_box(b.mask, box) && b.mask.w == bc->content.glyphs * 48 && b.mask.h == 48);
+                            assert(b.spinner == bc->content.spinner && b.n_dots == (bc->content.dots ? 3 : 0));
+                            assert(!b.spinner || (rect_in_scene(b.spin) && rect_in_box(b.spin, box)));
+                            for (int k = 0; k < b.n_dots; k++) {
+                                assert(rect_in_scene(b.dots[k]) && rect_in_box(b.dots[k], box));
+                            }
+                            cells += 1 + b.spinner + b.n_dots;
                         }
                     }
                 }
             }
         }
     }
-    printf("B1: %d cells inside the scene\n", cells);
+    /* Red proof: the box of the body alone misses the tail cells. */
+    const ag_bubble_t r = side(&BUB_CASES[0], false, 0, 0, 0, 3, 0);
+    assert(!rect_in_box(r.cells[3].r, (irect_t){r.body.x, r.body.y, r.body.x + r.body.w, r.body.y + r.body.h}));
+    assert(ag_bubble_bbox(&r).x0 == r.cells[3].r.x);
+    printf("B1: %d cells inside the scene and the box\n", cells);
 }
 
 /* B2: the left side mirrors the right about the art centre, body and cells. */
@@ -135,18 +169,21 @@ static void test_b2_left_mirrors_right(void)
 {
     for (int c = 0; c < 4; c++) {
         const bub_case_t *bc = &BUB_CASES[c];
-        const int w = ag_bubble_w_units(bc->content_u);
         for (int y = -96; y <= 96; y += 4) {
             for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
                 int gx, gy;
                 dp_orbit(i, &gx, &gy);
                 const int cx = SCENE / 2 + gx + 2;
                 for (int pop = 1; pop <= 3; pop++) {
-                    const ag_bubble_t r = ag_side_bubble(w, bc->content_u, bc->thought, false, y, gx, gy, pop, SCENE);
-                    const ag_bubble_t l = ag_side_bubble(w, bc->content_u, bc->thought, true, y, gx, gy, pop, SCENE);
+                    const ag_bubble_t r = side(bc, false, y, gx, gy, pop, 0);
+                    const ag_bubble_t l = side(bc, true, y, gx, gy, pop, 0);
                     assert(l.body.y == r.body.y && l.body.w == r.body.w && l.body.h == r.body.h);
                     assert(l.body.x - cx == -(r.body.x + r.body.w - cx));
-                    assert(l.n_cells == r.n_cells);
+                    assert(l.n_cells == r.n_cells && l.n_frame == r.n_frame);
+                    for (int k = 0; k < r.n_frame; k++) {
+                        assert(l.frame[k].ink == r.frame[k].ink && l.frame[k].r.y == r.frame[k].r.y && l.frame[k].r.h == r.frame[k].r.h);
+                        assert(l.frame[k].r.x - cx == -(r.frame[k].r.x + r.frame[k].r.w - cx));
+                    }
                     for (int k = 0; k < r.n_cells; k++) {
                         assert(l.cells[k].ink == r.cells[k].ink && l.cells[k].r.y == r.cells[k].r.y && l.cells[k].r.w == r.cells[k].r.w);
                         assert(l.cells[k].r.x - cx == -(r.cells[k].r.x + r.cells[k].r.w - cx));
@@ -156,7 +193,7 @@ static void test_b2_left_mirrors_right(void)
         }
     }
     /* Red proof: dividing by the unit after adding the orbit moves a bubble 2 px, so its mirror differs. */
-    const ag_bubble_t r = ag_side_bubble(40, 34, false, false, 0, -12, -4, 3, SCENE);
+    const ag_bubble_t r = side(&BUB_CASES[0], false, 0, -12, -4, 3, 0);
     const int snapped = (SCENE / 2 + -12 + 188) / BUBBLE_UNIT_PX * BUBBLE_UNIT_PX;
     assert(snapped != r.body.x + r.body.w);
 }
@@ -177,10 +214,10 @@ static void test_b3_bub_y_snap_and_edge(void)
         assert(ag_bubble_edge(Y[k], 36, ORBIT_HALF_X_PX, ORBIT_HALF_Y_PX) == EDGE[k]);
     }
     /* A bubble requested at 6 sits at 4 and one at -6 at -4, rectangle included. */
-    const ag_bubble_t a = ag_side_bubble(40, 34, false, false, 6, 0, 0, 3, SCENE);
-    const ag_bubble_t b = ag_side_bubble(40, 34, false, false, 4, 0, 0, 3, SCENE);
+    const ag_bubble_t a = side(&BUB_CASES[0], false, 6, 0, 0, 3, 0);
+    const ag_bubble_t b = side(&BUB_CASES[0], false, 4, 0, 0, 3, 0);
     assert(a.body.y == b.body.y && a.body.x == b.body.x);
-    assert(ag_side_bubble(40, 34, false, false, 500, 0, 0, 3, SCENE).body.y == ag_side_bubble(40, 34, false, false, 96, 0, 0, 3, SCENE).body.y);
+    assert(side(&BUB_CASES[0], false, 500, 0, 0, 3, 0).body.y == side(&BUB_CASES[0], false, 96, 0, 0, 3, 0).body.y);
     /* Red proof: a one-pixel looser radius moves the y 0 edge from 188 to 192. */
     assert(ag_bubble_edge(0, 36, ORBIT_HALF_X_PX - 4, ORBIT_HALF_Y_PX) == 192);
 }

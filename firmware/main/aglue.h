@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "aplay.h"
 #include "dpower.h"
+#include "rotblit.h"
 
 /* Pure glue between the clip player and the UI task: pickup bit, stage map, frame buffer and placement in the scene. */
 
@@ -48,11 +49,30 @@ typedef struct {
     bool ink; /* ink colour, else the bubble fill */
 } ag_cell_t;
 
+#define AG_SPINNER_UNITS 7 /* plain configuration: the spinner sprite's side in units, as ui.c's SPINNER rows */
+#define AG_GLYPH_UNITS 12  /* plain configuration: one text glyph's width in units (48 px at the 4 px unit) */
+#define AG_TEXT_ROWS_PX 48 /* plain configuration: height of the text mask in px */
+
 typedef struct {
-    ag_rect_t body;      /* the bubble at this pop step; empty at pop 0 */
-    int text_x, text_y;  /* scene pixels of the content row's top-left corner, at pop 3 */
-    int n_cells;         /* tail cells (4) or thought dots (2), drawn in order at pop 3, else 0 */
+    int glyphs;
+    bool spinner, dots; /* a spinner before the text, three pulsing dots after it */
+} ag_content_t;
+
+/* Content width in units: spinner and its gap, the glyphs, the dots. */
+int ag_content_units(ag_content_t c);
+
+/* Every cell the side bubble draws, in scene pixels and in drawing order: frame, tail or thought, spinner, dots, then the text mask. */
+typedef struct {
+    ag_rect_t body;      /* the bubble at this pop step */
+    int n_frame;         /* 4 frame rectangles (two ink, two fill) from pop 1, else 0 */
+    ag_cell_t frame[4];
+    int n_cells;         /* tail cells (4) or thought dots (2) at pop 3, else 0 */
     ag_cell_t cells[4];
+    bool spinner;        /* the spinner sprite's square at pop 3, drawn cell by cell at the unit */
+    ag_rect_t spin;
+    int n_dots;          /* 3 pulsing dots at pop 3 when the content has them, else 0 */
+    ag_rect_t dots[3];
+    ag_rect_t mask;      /* the text mask's rectangle at pop 3; w 0 otherwise */
 } ag_bubble_t;
 
 typedef struct {
@@ -66,7 +86,9 @@ int ag_bubble_w_units(int content_units);
 int ag_bub_y_snap(int y);
 /* Outer edge in px from the art centre on the bubble's side: the largest multiple of the unit whose far corners, with the orbit's half ranges, stay inside the ring's clear radius. */
 int ag_bubble_edge(int bub_y, int half_h_px, int orbit_hx_px, int orbit_hy_px);
-/* The sticker skin's bubble beside the art; gx, gy is the raw orbit point. */
-ag_bubble_t ag_side_bubble(int w_units, int content_units, bool thought, bool left, int bub_y, int gx, int gy, int pop, int scene);
+/* The sticker skin's bubble beside the art; gx, gy is the raw orbit point, dot_phase the dot drawn larger. */
+ag_bubble_t ag_side_bubble(ag_content_t content, bool thought, bool left, int bub_y, int gx, int gy, int pop, int dot_phase, int scene);
+/* The body and the tail or thought cells, which reach past the body; empty (x1 <= x0) at pop 0. */
+irect_t ag_bubble_bbox(const ag_bubble_t *b);
 /* Clawd's bubble above the mascot, as ui.c draws it. */
 ag_top_bubble_t ag_top_bubble(int w_units, bool thought, int pop, int gx, int gy, int scene);

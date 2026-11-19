@@ -68,7 +68,7 @@ static const bubble_def_t BUBBLES[ST_COUNT] = {
 };
 
 #define SPINNER_N 6
-#define SPINNER_PX 7
+#define SPINNER_PX AG_SPINNER_UNITS
 static const char *const SPINNER[SPINNER_N][SPINNER_PX] = {
     {".......", ".......", ".......", "...#...", ".......", ".......", "......."},
     {"...#...", "...#...", "...#...", "###.###", "...#...", "...#...", "...#..."},
@@ -210,26 +210,20 @@ static void draw_mascot(const scene_t *s)
     draw_eyes(s, ox, oy, PAL_BG);
 }
 
-static void draw_sprite(int ux, int uy, const char *const rows[SPINNER_PX], uint8_t color)
+static void draw_sprite(int x, int y, const char *const rows[SPINNER_PX], uint8_t color)
 {
     for (int r = 0; r < SPINNER_PX; r++) {
         for (int c = 0; c < SPINNER_PX; c++) {
             if (rows[r][c] == '#') {
-                fill_u(ux + c, uy + r, 1, 1, color);
+                fill(x + c * U, y + r * U, U, U, color);
             }
         }
     }
 }
 
-static int even_up(int v)
+static ag_content_t bubble_content(const bubble_def_t *b)
 {
-    return (v + 1) & ~1;
-}
-
-static void bubble_size_units(const bubble_def_t *b, int *w, int *content)
-{
-    *content = (b->spinner ? SPINNER_PX + 2 : 0) + 12 * b->glyphs + (b->dots ? 10 : 0);
-    *w = even_up(*content + 2 * BUBBLE_PAD_UNITS + 2);
+    return (ag_content_t){b->glyphs, b->spinner, b->dots};
 }
 
 static void draw_bubble_frame(int x0, int y0, int w, int h, uint8_t ink, uint8_t fill_c)
@@ -240,21 +234,50 @@ static void draw_bubble_frame(int x0, int y0, int w, int h, uint8_t ink, uint8_t
     fill_u(x0 + 1, y0 + 2, w - 2, h - 4, fill_c);
 }
 
-static void draw_bubble(const scene_t *s)
+static void draw_mask(const bubble_def_t *b, int st, int ox, int oy)
+{
+    const uint8_t *mask = s_mask[st];
+    const int mw = 12 * b->glyphs * U;
+    for (int j = 0; j < TEXT_ROWS_PX; j++) {
+        for (int i = 0; i < mw; i++) {
+            if (mask[j * mw + i]) {
+                s_model[(size_t)(oy + j) * SCENE + ox + i] = b->text_color;
+            }
+        }
+    }
+    grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
+}
+
+/* The sticker skin's bubble beside the art, every cell from ag_side_bubble placed to the pixel. */
+static void draw_side_bubble(const scene_t *s, const ap_clip_t *clip)
 {
     const bubble_def_t *b = &BUBBLES[s->bub];
-    if (s->pop == 0 || !b->text) {
-        return;
+    const ag_bubble_t g = ag_side_bubble(bubble_content(b), b->thought, clip->bubble_left, clip->bubble_y, s->gx, s->gy, s->pop, s->dot_phase, SCENE);
+    const irect_t box = ag_bubble_bbox(&g);
+    grow_bb(box.x0, box.y0, box.x1, box.y1);
+    for (int i = 0; i < g.n_frame; i++) {
+        fill(g.frame[i].r.x, g.frame[i].r.y, g.frame[i].r.w, g.frame[i].r.h, g.frame[i].ink ? PAL_INK : b->fill);
     }
-    int w, content;
-    bubble_size_units(b, &w, &content);
-    const int h = 18;
-    int ws = s->pop == 3 ? w : even_up(w * s->pop / 3), hs = s->pop == 3 ? h : even_up(h * s->pop / 3);
-    int below = b->thought ? 8 : 2;
-    int anchor_top = SCENE / 2 - 5 * C + BUBBLE_SHIFT_UNITS * U + s->gy;
-    int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * U) / U - below;
-    int cx = (SCENE / 2 + s->gx) / U;
-    int x0 = cx - ws / 2, y0 = bottom_u - hs;
+    for (int i = 0; i < g.n_cells; i++) {
+        fill(g.cells[i].r.x, g.cells[i].r.y, g.cells[i].r.w, g.cells[i].r.h, g.cells[i].ink ? PAL_INK : b->fill);
+    }
+    if (g.spinner) {
+        draw_sprite(g.spin.x, g.spin.y, SPINNER[s->spin], PAL_INK);
+    }
+    for (int i = 0; i < g.n_dots; i++) {
+        fill(g.dots[i].x, g.dots[i].y, g.dots[i].w, g.dots[i].h, PAL_INK);
+    }
+    if (g.mask.w > 0) {
+        draw_mask(b, s->bub, g.mask.x, g.mask.y);
+    }
+}
+
+static void draw_top_bubble(const scene_t *s)
+{
+    const bubble_def_t *b = &BUBBLES[s->bub];
+    const int content = ag_content_units(bubble_content(b)), w = ag_bubble_w_units(content);
+    const ag_top_bubble_t t = ag_top_bubble(w, b->thought, s->pop, s->gx, s->gy, SCENE);
+    const int cx = t.cx_u, bottom_u = t.bottom_u, x0 = t.body.x / U, y0 = t.body.y / U, ws = t.body.w / U, hs = t.body.h / U;
     const uint8_t ink = PAL_INK, fillc = b->fill;
     draw_bubble_frame(x0, y0, ws, hs, ink, fillc);
     if (s->pop < 3) {
@@ -269,30 +292,33 @@ static void draw_bubble(const scene_t *s)
         fill_u(cx - 1, bottom_u, 2, 1, fillc);
         fill_u(cx - 1, bottom_u + 1, 2, 1, ink);
     }
-    int left = x0 + 1 + BUBBLE_PAD_UNITS + (w - 2 - 2 * BUBBLE_PAD_UNITS - content) / 2;
-    int text_y = y0 + 3;
+    const int left = x0 + 1 + BUBBLE_PAD_UNITS + (w - 2 - 2 * BUBBLE_PAD_UNITS - content) / 2;
+    const int text_y = y0 + 3;
     int tx = left;
     if (b->spinner) {
-        draw_sprite(left, text_y + 2, SPINNER[s->spin], ink);
+        draw_sprite(left * U, (text_y + 2) * U, SPINNER[s->spin], ink);
         tx += SPINNER_PX + 2;
     }
     if (b->dots) {
-        int dx = tx + 12 * b->glyphs + 2;
+        const int dx = tx + 12 * b->glyphs + 2;
         for (int i = 0; i < 3; i++) {
-            int size = i == s->dot_phase ? 2 : 1;
+            const int size = i == s->dot_phase ? 2 : 1;
             fill_u(dx + i * 3, text_y + 11 - size, size, size, ink);
         }
     }
-    const uint8_t *mask = s_mask[s->bub];
-    const int mw = 12 * b->glyphs * U, ox = tx * U, oy = text_y * U;
-    for (int j = 0; j < TEXT_ROWS_PX; j++) {
-        for (int i = 0; i < mw; i++) {
-            if (mask[j * mw + i]) {
-                s_model[(size_t)(oy + j) * SCENE + ox + i] = b->text_color;
-            }
-        }
+    draw_mask(b, s->bub, tx * U, text_y * U);
+}
+
+static void draw_bubble(const scene_t *s)
+{
+    if (s->pop == 0 || !BUBBLES[s->bub].text) {
+        return;
     }
-    grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
+    if (s_art_ready) {
+        draw_side_bubble(s, &s_ap.pack->clip[s->anim_clip]);
+    } else {
+        draw_top_bubble(s);
+    }
 }
 
 static void render_masks(lv_obj_t *scr)

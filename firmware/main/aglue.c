@@ -100,9 +100,15 @@ static ag_cell_t cell(int cx, int cy, int ic, int dir, int da, int db, int ya, i
     return (ag_cell_t){rect_u(cx, cy, lo, ya, abs(cb - ca) + 1, yb - ya + 1), ink};
 }
 
-ag_bubble_t ag_side_bubble(int w_units, int content_units, bool thought, bool left, int bub_y, int gx, int gy, int pop, int scene)
+int ag_content_units(ag_content_t c)
 {
-    const int h = AG_BUBBLE_H_UNITS;
+    return (c.spinner ? AG_SPINNER_UNITS + 2 : 0) + AG_GLYPH_UNITS * c.glyphs + (c.dots ? 10 : 0);
+}
+
+ag_bubble_t ag_side_bubble(ag_content_t content, bool thought, bool left, int bub_y, int gx, int gy, int pop, int dot_phase, int scene)
+{
+    const int h = AG_BUBBLE_H_UNITS, content_units = ag_content_units(content);
+    const int w_units = ag_bubble_w_units(content_units);
     const int by = ag_bub_y_snap(bub_y);
     const int x1 = ag_bubble_edge(by, h * U / 2, ORBIT_HALF_X_PX, ORBIT_HALF_Y_PX);
     const int ws = pop >= 3 ? w_units : even_up(w_units * pop / 3), hs = pop >= 3 ? h : even_up(h * pop / 3);
@@ -112,12 +118,31 @@ ag_bubble_t ag_side_bubble(int w_units, int content_units, bool thought, bool le
     ag_bubble_t b;
     memset(&b, 0, sizeof b);
     b.body = rect_u(cx, cy, bx0, by0, ws, hs);
+    if (pop < 1) {
+        return b;
+    }
+    b.n_frame = 4;
+    b.frame[0] = (ag_cell_t){rect_u(cx, cy, bx0 + 1, by0, ws - 2, hs), true};
+    b.frame[1] = (ag_cell_t){rect_u(cx, cy, bx0, by0 + 1, ws, hs - 2), true};
+    b.frame[2] = (ag_cell_t){rect_u(cx, cy, bx0 + 2, by0 + 1, ws - 4, hs - 2), false};
+    b.frame[3] = (ag_cell_t){rect_u(cx, cy, bx0 + 1, by0 + 2, ws - 2, hs - 4), false};
     if (pop < 3) {
         return b;
     }
-    const int tx = bx0 + 1 + BUBBLE_PAD_UNITS + (w_units - 2 - 2 * BUBBLE_PAD_UNITS - content_units) / 2;
-    b.text_x = cx + tx * U;
-    b.text_y = cy + (by0 + 3) * U;
+    const int tx = bx0 + 1 + BUBBLE_PAD_UNITS + (w_units - 2 - 2 * BUBBLE_PAD_UNITS - content_units) / 2, ty = by0 + 3;
+    const int mx = tx + (content.spinner ? AG_SPINNER_UNITS + 2 : 0);
+    if (content.spinner) {
+        b.spinner = true;
+        b.spin = rect_u(cx, cy, tx, ty + 2, AG_SPINNER_UNITS, AG_SPINNER_UNITS);
+    }
+    if (content.dots) {
+        b.n_dots = 3;
+        for (int i = 0; i < 3; i++) {
+            const int size = i == dot_phase ? 2 : 1;
+            b.dots[i] = rect_u(cx, cy, mx + AG_GLYPH_UNITS * content.glyphs + 2 + i * 3, ty + 11 - size, size, size);
+        }
+    }
+    b.mask = rect_u(cx, cy, mx, ty, AG_GLYPH_UNITS * content.glyphs, AG_TEXT_ROWS_PX / U);
     const int ic = left ? bx0 + ws - 1 : bx0, dir = left ? 1 : -1;
     if (thought) {
         b.cells[0] = cell(cx, cy, ic, dir, 1, 4, yc - 2, yc + 1, false);
@@ -131,6 +156,22 @@ ag_bubble_t ag_side_bubble(int w_units, int content_units, bool thought, bool le
         b.n_cells = 4;
     }
     return b;
+}
+
+irect_t ag_bubble_bbox(const ag_bubble_t *b)
+{
+    if (b->n_frame == 0) {
+        return (irect_t){0, 0, 0, 0};
+    }
+    irect_t r = {b->body.x, b->body.y, b->body.x + b->body.w, b->body.y + b->body.h};
+    for (int i = 0; i < b->n_cells; i++) {
+        const ag_rect_t c = b->cells[i].r;
+        r.x0 = c.x < r.x0 ? c.x : r.x0;
+        r.y0 = c.y < r.y0 ? c.y : r.y0;
+        r.x1 = c.x + c.w > r.x1 ? c.x + c.w : r.x1;
+        r.y1 = c.y + c.h > r.y1 ? c.y + c.h : r.y1;
+    }
+    return r;
 }
 
 ag_top_bubble_t ag_top_bubble(int w_units, bool thought, int pop, int gx, int gy, int scene)
