@@ -16,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "core/lv_refr_private.h"
+#include "aglue.h"
 #include "arcvis.h"
 #include "bright.h"
 #include "brtmap.h"
@@ -23,6 +24,7 @@
 #include "proto.h"
 #include "rotblit.h"
 #include "scenepal.h"
+#include "skin.h"
 #include "transport.h"
 #include "volarc.h"
 #include "volknob.h"
@@ -43,6 +45,7 @@ typedef struct {
     int eye_mode, eye_dx, eye_row, eye_h;
     int claw_l, claw_r, legs_up, dim;
     int pop, bub, dot_phase, spin;
+    int anim_clip, anim_frame;
 } scene_t;
 
 enum { EYES_OPEN, EYES_CLOSED, EYES_CROSS };
@@ -112,6 +115,15 @@ static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
 static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown"};
+static aplay_t s_ap;
+static bool s_ap_ready, s_skin_on = true;
+static int s_anim_pin = -1, s_pal_clip = -1;
+static aplay_out_t s_anim = {APLAY_NOTHING, 0};
+static uint8_t *s_abuf;
+static ag_held_t s_held = {-1, -1, 0, 0};
+static volatile uint32_t s_dec_sum, s_dec_max, s_work_sum, s_work_max, s_cut_last, s_cut_max;
+static int64_t s_work_t0, s_cut_t0;
+static bool s_work_pending, s_cut_pending;
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -313,6 +325,44 @@ static void render_masks(lv_obj_t *scr)
     }
 }
 
+static void anim_reset_held(void)
+{
+    s_held.clip = s_held.frame = -1;
+    s_pal_clip = -1;
+}
+
+/* Decodes the frame if the buffer holds another, loads the clip's palette on a change, and copies the crop into the scene. */
+static void draw_anim(const scene_t *s)
+{
+    const ap_pack_t *p = s_ap.pack;
+    const ap_clip_t *c = &p->clip[s->anim_clip];
+    if (s_held.clip != s->anim_clip || s_held.frame != s->anim_frame) {
+        const int64_t t0 = esp_timer_get_time();
+        if (!ag_bring(p, s->anim_clip, s->anim_frame, s_abuf, &s_held)) {
+            skin_fail(AP_DECODE_ERROR);
+            aplay_init(&s_ap, NULL);
+            anim_reset_held();
+            return;
+        }
+        const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+        s_dec_sum += us;
+        s_dec_max = us > s_dec_max ? us : s_dec_max;
+        s_work_t0 = t0;
+        s_work_pending = true;
+    }
+    if (s_pal_clip != s->anim_clip) {
+        for (int i = 0; i < c->colors; i++) {
+            s_pal[PAL_PACK_FIRST + i] = (uint16_t)(c->palette[2 * i] | (c->palette[2 * i + 1] << 8));
+        }
+        s_pal_clip = s->anim_clip;
+    }
+    const ag_place_t pl = ag_place(p, c, s->gx, s->gy, s->shift, SCENE);
+    if (pl.x0 < pl.x1 && pl.y0 < pl.y1) {
+        ag_copy(s_abuf, c, p->scale, &pl, s_model, SCENE);
+        grow_bb(pl.x0, pl.y0, pl.x1, pl.y1);
+    }
+}
+
 static void compute_scene(scene_t *s, uint32_t now)
 {
     memset(s, 0, sizeof(*s));
@@ -331,6 +381,11 @@ static void compute_scene(scene_t *s, uint32_t now)
         s->spin = SPINNER_PINGPONG[pingpong(t, SPINNER_STEP_MS, 10)];
     }
     dp_orbit(s_orbit_force >= 0 ? s_orbit_force : (int)((now / ORBIT_DWELL_MS) % (ORBIT_COLS * ORBIT_ROWS)), &s->gx, &s->gy);
+    s->anim_clip = s_anim.clip;
+    s->anim_frame = s_anim.frame;
+    if (s_anim.clip != APLAY_CLAWD) {
+        return;
+    }
     switch (s_state) {
     case ST_IDLE: {
         s->dy += (t % IDLE_BOB_PERIOD_MS) >= IDLE_BOB_PERIOD_MS / 2 ? U : 0;
@@ -407,7 +462,11 @@ static void redraw(const scene_t *s)
         fill(s_prev_bb.x0, s_prev_bb.y0, s_prev_bb.x1 - s_prev_bb.x0, s_prev_bb.y1 - s_prev_bb.y0, PAL_BG);
     }
     s_bb = (irect_t){SCENE, SCENE, 0, 0};
-    draw_mascot(s);
+    if (s->anim_clip == APLAY_CLAWD) {
+        draw_mascot(s);
+    } else if (s->anim_clip >= 0) {
+        draw_anim(s);
+    }
     draw_bubble(s);
     s_prev_bb = s_bb;
     s_model_dirty = true;
@@ -535,6 +594,9 @@ static uint32_t dp_clock(void)
 
 static void ui_set_state_locked(dev_state_t s)
 {
+    if (s != s_state) {
+        s_cut_t0 = esp_timer_get_time();
+    }
     s_state = s;
     s_state_since = lv_tick_get();
     dp_state(&s_dp, dp_clock(), (int)s);
@@ -682,6 +744,19 @@ static void refr_cb(lv_event_t *e)
         s_refr_sum_ms += d;
         if (d > s_refr_worst_ms) {
             s_refr_worst_ms = d;
+        }
+        const int64_t t = esp_timer_get_time();
+        if (s_work_pending) {
+            const uint32_t us = (uint32_t)(t - s_work_t0);
+            s_work_sum += us;
+            s_work_max = us > s_work_max ? us : s_work_max;
+            s_work_pending = false;
+        }
+        if (s_cut_pending) {
+            s_cut_last = (uint32_t)((t - s_cut_t0) / 1000);
+            s_cut_max = s_cut_last > s_cut_max ? s_cut_last : s_cut_max;
+            s_cut_pending = false;
+            s_cut_t0 = 0;
         }
     }
 }
@@ -844,7 +919,7 @@ static int arc_update(uint32_t now)
 static void update_ring(void)
 {
     int w = 0, opa = 0;
-    if (s_state == ST_LISTENING) {
+    if (s_state == ST_LISTENING && (ANIM_RING || s_anim.clip == APLAY_CLAWD)) {
         int lvl = audio_mic_level() * LISTEN_RING_STEPS / 1001 * 1000 / (LISTEN_RING_STEPS - 1);
         opa = LISTEN_RING_MIN_OPA + lvl * (255 - LISTEN_RING_MIN_OPA) / 1000;
         w = LISTEN_RING_MIN_WIDTH_PX + lvl * (LISTEN_RING_MAX_WIDTH_PX - LISTEN_RING_MIN_WIDTH_PX) / 1000;
@@ -868,6 +943,9 @@ static void power_tick(void)
     }
     if (bits & (1u << DP_CAUSE_SETDOWN)) {
         dp_setdown(&s_dp, t);
+    }
+    if (bits & AG_PICKUP_BIT) {
+        aplay_pickup(&s_ap);
     }
     dp_out_t o = dp_update(&s_dp, t);
     if (o.panel_on && !s_panel_on) {
@@ -896,6 +974,38 @@ static void power_tick(void)
     }
 }
 
+/* Hands the player the pack once verified, then picks this tick's clip and frame; nothing is drawn while the check runs. */
+static void anim_tick(uint32_t now)
+{
+    if (skin_status() == AP_VERIFYING) {
+        s_anim = (aplay_out_t){APLAY_NOTHING, 0};
+        return;
+    }
+    if (!s_ap_ready) {
+        s_ap_ready = true;
+        const ap_pack_t *p = skin_pack();
+        if (p) {
+            s_abuf = heap_caps_malloc(p->max_area, MALLOC_CAP_SPIRAM);
+            if (!s_abuf) {
+                ESP_LOGW(TAG, "anim: no frame buffer of %u bytes", (unsigned)p->max_area);
+                p = NULL;
+            }
+        }
+        aplay_init(&s_ap, p);
+        aplay_enable(&s_ap, s_skin_on);
+        aplay_pin(&s_ap, s_anim_pin);
+    }
+    const uint32_t cuts = s_ap.cuts;
+    s_anim = aplay_tick(&s_ap, now, (int)s_state, ag_stage(s_panel_on, s_logged_stage, ANIM_DIM_PLAYS));
+    s_cut_pending = s_cut_pending || (s_ap.cuts != cuts && s_cut_t0 != 0);
+    if (!s_cut_pending) {
+        s_cut_t0 = 0;
+    }
+    if (s_anim.clip < 0) {
+        anim_reset_held();
+    }
+}
+
 static void tick_cb(lv_timer_t *t)
 {
     uint32_t now = lv_tick_get();
@@ -907,6 +1017,7 @@ static void tick_cb(lv_timer_t *t)
         s_pop_at = now;
     }
     power_tick();
+    anim_tick(now);
     scene_t sc;
     compute_scene(&sc, now);
     if (memcmp(&sc, &s_drawn, sizeof(sc)) != 0 || s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK || s_bench == UI_BENCH_REDRAW) {
@@ -1077,6 +1188,7 @@ void ui_start(void)
     s_last_tick = lv_tick_get();
     dp_start();
     ui_set_state_locked(ST_IDLE);
+    anim_tick(s_last_tick);
     scene_t sc;
     compute_scene(&sc, s_last_tick);
     s_drawn = sc;
@@ -1146,6 +1258,11 @@ void ui_wake(dp_cause_t cause)
     __atomic_fetch_or(&s_wake_bits, 1u << cause, __ATOMIC_RELAXED);
 }
 
+void ui_wake_bits(uint32_t bits)
+{
+    __atomic_fetch_or(&s_wake_bits, bits, __ATOMIC_RELAXED);
+}
+
 void ui_set_disp_force(int stage)
 {
     bsp_display_lock(-1);
@@ -1210,4 +1327,44 @@ void ui_wake_counts(uint32_t out[DP_CAUSE_N])
     for (int i = 0; i < DP_CAUSE_N; i++) {
         out[i] = s_wakes[i];
     }
+}
+
+void ui_set_skin(bool on)
+{
+    bsp_display_lock(-1);
+    s_skin_on = on;
+    if (s_ap_ready) {
+        aplay_enable(&s_ap, on);
+    }
+    bsp_display_unlock();
+}
+
+void ui_set_anim_pin(int clip)
+{
+    bsp_display_lock(-1);
+    s_anim_pin = clip;
+    if (s_ap_ready) {
+        aplay_pin(&s_ap, clip);
+    }
+    bsp_display_unlock();
+}
+
+void ui_anim_stats(ui_anim_stats_t *out)
+{
+    *out = (ui_anim_stats_t){
+        .pack = (int)skin_status(),
+        .skin = s_skin_on,
+        .clip = s_anim.clip,
+        .frames = s_held.frames,
+        .dec_sum = s_dec_sum,
+        .dec_max = s_dec_max,
+        .work_sum = s_work_sum,
+        .work_max = s_work_max,
+        .late = s_ap.late,
+        .cuts = s_ap.cuts,
+        .cut_last = s_cut_last,
+        .cut_max = s_cut_max,
+        .seeks = s_held.seeks,
+        .verify_ms = skin_verify_ms(),
+    };
 }
