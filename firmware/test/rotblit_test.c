@@ -1,4 +1,6 @@
 #include <assert.h>
+#include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include "rotblit.h"
@@ -46,7 +48,7 @@ static const pin_t PINS[] = {
     {3599, 0x5707DC1Du, 0xCE86B296u},
 };
 
-int main(void)
+static void r1(void)
 {
     fixture();
     const irect_t inner = {40, 60, 440, 420}, outer = {20, 30, 470, 450};
@@ -63,5 +65,92 @@ int main(void)
         assert(hs == PINS[i].spans && hp == PINS[i].pixels);
     }
     printf("R1: %d angles pinned\n", n);
+}
+
+#define TOL 1e-3 /* test tolerance: above the double-versus-float span error, far below the inset */
+
+static void exact_cs(int tenths, double *s, double *c)
+{
+    static const double CO[4] = {1, 0, -1, 0}, SI[4] = {0, 1, 0, -1};
+    if (tenths % 900 == 0) {
+        *c = CO[tenths / 900];
+        *s = SI[tenths / 900];
+        return;
+    }
+    const double r = tenths * 0.1 * 3.14159265358979323846 / 180.0;
+    *s = sin(r);
+    *c = cos(r);
+}
+
+static void exact_uv(int tenths, int x, int y, double *u, double *v)
+{
+    double s, c;
+    exact_cs(tenths, &s, &c);
+    const double dx = x + 0.5 - OUT / 2.0, dy = y + 0.5 - OUT / 2.0;
+    *u = dx * c + dy * s + S / 2.0;
+    *v = -dx * s + dy * c + S / 2.0;
+}
+
+/* One row end read through the 16.16 stepping a blitter uses; true when it stays inside the rectangle. */
+static bool stepped_inside(const irect_t *r, int tenths, int y, int xa, int n, double *worst)
+{
+    double sd, cd;
+    exact_cs(tenths, &sd, &cd);
+    const int32_t dudx = (int32_t)lroundf((float)cd * 65536.0f), dvdx = (int32_t)lroundf((float)-sd * 65536.0f);
+    double u, v;
+    exact_uv(tenths, xa, y, &u, &v);
+    const int64_t U = llround(u * 65536.0) + (int64_t)(n - 1) * dudx, V = llround(v * 65536.0) + (int64_t)(n - 1) * dvdx;
+    exact_uv(tenths, xa + n - 1, y, &u, &v);
+    const double e = fmax(fabs((double)U / 65536.0 - u), fabs((double)V / 65536.0 - v));
+    *worst = fmax(*worst, e);
+    return (U >> 16) >= r->x0 && (U >> 16) < r->x1 && (V >> 16) >= r->y0 && (V >> 16) < r->y1;
+}
+
+static void r2(void)
+{
+    const double step_err = OUT * (0.5 / 65536.0 + 1.0 / 8388608.0);
+    const double start_err = 0.5 / 65536.0 + (OUT / 2.0) * 2.0 / 8388608.0;
+    const double bound = step_err + start_err;
+    assert((double)ROTBLIT_NEAREST_INSET > bound);
+    const irect_t rects[] = {{40, 60, 440, 420}, {-30, -10, 150, 200}, {235, 235, 251, 247}, {300, 100, 700, 600}};
+    static xspan_t sp[OUT];
+    double worst = 0;
+    long rows = 0, pix_in = 0;
+    for (size_t k = 0; k < sizeof rects / sizeof rects[0]; k++) {
+        const irect_t *r = &rects[k];
+        for (int t = 0; t < 3600; t++) {
+            rotblit_spans_nearest(r, S, OUT, t, sp);
+            for (int y = 0; y < OUT; y++) {
+                const int n = sp[y].x1 - sp[y].x0;
+                if (n > 0) {
+                    assert(stepped_inside(r, t, y, sp[y].x0, 1, &worst) && stepped_inside(r, t, y, sp[y].x0, n, &worst));
+                    rows++;
+                    pix_in += n;
+                }
+                const bool full = t % 50 == 0;
+                for (int x = 0; x < OUT; x++) {
+                    if (!full && (x < sp[y].x0 - 1 || x > sp[y].x1)) {
+                        continue;
+                    }
+                    double u, v;
+                    exact_uv(t, x, y, &u, &v);
+                    const double in = ROTBLIT_NEAREST_INSET;
+                    const bool inside = u >= r->x0 + in - TOL && u <= r->x1 - in + TOL && v >= r->y0 + in - TOL && v <= r->y1 - in + TOL;
+                    const bool deep = u > r->x0 + in + TOL && u < r->x1 - in - TOL && v > r->y0 + in + TOL && v < r->y1 - in - TOL;
+                    const bool listed = x >= sp[y].x0 && x < sp[y].x1;
+                    assert(!listed || inside);
+                    assert(listed || !deep);
+                }
+            }
+        }
+    }
+    printf("R2: inset %.5f px > bound %.5f px (steps %.5f, start %.5f); worst stepped deviation %.5f px; %ld rows, %ld pixels\n",
+           (double)ROTBLIT_NEAREST_INSET, bound, step_err, start_err, worst, rows, pix_in);
+}
+
+int main(void)
+{
+    r1();
+    r2();
     return 0;
 }
