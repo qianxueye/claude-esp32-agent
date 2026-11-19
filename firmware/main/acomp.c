@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 static bool art_ok(const acomp_art_t *a)
 {
@@ -93,4 +94,38 @@ int acomp_bands(const xspan_t *spans, int n, int band_rows, irect_t *out_rects, 
         }
     }
     return count;
+}
+
+int acomp_step(acomp_state_t *st, bool active, const acomp_art_t *art, const xspan_t *scene)
+{
+    /* st->all holds the new spans until they replace st->art. */
+    if (active && art->out == ACOMP_ROWS) {
+        acomp_spans(art, st->all);
+    } else {
+        memset(st->all, 0, sizeof st->all);
+    }
+    acomp_dirty(st->art, st->all, st->dirty, ACOMP_ROWS);
+    memcpy(st->art, st->all, sizeof st->art);
+    if (scene) {
+        acomp_dirty(st->dirty, scene, st->all, ACOMP_ROWS);
+    } else {
+        memcpy(st->all, st->dirty, sizeof st->all);
+    }
+    st->n_bands = acomp_bands(st->all, ACOMP_ROWS, DIRTY_BAND_ROWS, st->bands, ACOMP_MAX_BANDS);
+    return st->n_bands;
+}
+
+bool acomp_split(const xspan_t *spans, int y0, int y1, int *ya, int *mid, int *yb)
+{
+    int a = y1, b = y0;
+    for (int y = y0 < 0 ? 0 : y0; y < y1 && y < ACOMP_ROWS; y++) {
+        if (!empty(spans[y])) {
+            a = y < a ? y : a;
+            b = y + 1;
+        }
+    }
+    *ya = a;
+    *yb = b;
+    *mid = (a + b) / 2;
+    return a < b;
 }

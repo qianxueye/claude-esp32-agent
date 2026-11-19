@@ -99,6 +99,21 @@ static ap_pack_t golden(void)
     return p;
 }
 
+/* Clipped copy of a decoded crop into dst, each index widened to scale x scale pixels; the oracle for the old render path. */
+static void oracle_copy(const uint8_t *buf, const ap_clip_t *c, uint8_t scale, const ag_place_t *pl, uint8_t *dst, int dst_stride)
+{
+    if (pl->x0 >= pl->x1 || pl->y0 >= pl->y1 || scale < 1) {
+        return;
+    }
+    for (int y = pl->y0; y < pl->y1; y++) {
+        const uint8_t *row = buf + (size_t)((y - pl->oy) / scale) * c->w;
+        uint8_t *out = dst + (size_t)y * dst_stride;
+        for (int x = pl->x0; x < pl->x1; x++) {
+            out[x] = row[(x - pl->ox) / scale];
+        }
+    }
+}
+
 /* Reference path as the old render did it: clipped copy into a zeroed scene model, then the exact rotblit. */
 static void reference(const uint8_t *buf, const ap_clip_t *c, int scale, const ag_place_t *place, int tenths)
 {
@@ -108,7 +123,7 @@ static void reference(const uint8_t *buf, const ap_clip_t *c, int scale, const a
     pl.x1 = pl.ox + c->w * scale > SCENE ? SCENE : pl.ox + c->w * scale;
     pl.y1 = pl.oy + c->h * scale > SCENE ? SCENE : pl.oy + c->h * scale;
     memset(g_model, 0, sizeof g_model);
-    ag_copy(buf, c, (uint8_t)scale, &pl, g_model, SCENE);
+    oracle_copy(buf, c, (uint8_t)scale, &pl, g_model, SCENE);
     const irect_t all = {0, 0, SCENE, SCENE};
     rotblit_spans(&all, SCENE, OUT, tenths, g_clear);
     memset(g_ref, 0, sizeof g_ref);
@@ -411,7 +426,7 @@ static void step_rows(const state_t *prev, const state_t *next)
     }
 }
 
-static int g_stale_controls;
+static int g_stale_controls, g_tick_cases;
 
 static void transition(const state_t *a, const state_t *b)
 {
@@ -457,6 +472,130 @@ static void x6(void)
     free(g_arts[1].mem);
     printf("X6: 5 transitions and panel off -> on equal the full recomposition; %d stale controls differ without the union\n",
            g_stale_controls);
+}
+
+static acomp_state_t g_st, g_ctl;
+
+/* Runs one tick from a to b and flushes its strips over a panel showing a; the panel must equal a full recomposition of b. */
+static void tick_case(const state_t *a, bool active, const acomp_art_t *art_arg, const state_t *b, bool with_scene)
+{
+    static xspan_t strip[OUT];
+    memset(strip, 0, sizeof strip);
+    for (int y = 20; y < 60; y++) {
+        strip[y] = (xspan_t){300, 380};
+    }
+    uint16_t sout_a[OUT * OUT];
+    memcpy(sout_a, g_sout, sizeof sout_a);
+    memset(&g_st, 0, sizeof g_st);
+    acomp_step(&g_st, a->on, &a->a, NULL);
+    assert(!memcmp(g_st.art, a->sp, sizeof g_st.art));
+    full(a);
+    uint16_t before[OUT * OUT];
+    memcpy(before, g_panel, sizeof before);
+    if (with_scene) {
+        for (int y = 20; y < 60; y++) {
+            for (int x = 300; x < 380; x++) {
+                g_sout[y * OUT + x] ^= 0x0F0F;
+            }
+        }
+    }
+    const int n = acomp_step(&g_st, active, art_arg, with_scene ? strip : NULL);
+    assert(n >= 0 && n <= ACOMP_MAX_BANDS && n == g_st.n_bands);
+    assert(!memcmp(g_st.art, b->sp, sizeof g_st.art));
+    xspan_t want[OUT];
+    acomp_dirty(a->sp, b->sp, want, OUT);
+    assert(!memcmp(g_st.dirty, want, sizeof want));
+    if (!active) {
+        xspan_t none[OUT];
+        memset(none, 0, sizeof none);
+        assert(!memcmp(g_st.art, none, sizeof none) && !memcmp(g_st.dirty, a->sp, sizeof want));
+    }
+    flush(b, g_st.bands, n);
+    memcpy(g_want, g_panel, sizeof g_want);
+    full(b);
+    assert(!memcmp(g_want, g_panel, sizeof g_want));
+    /* Red proof: the same tick with the previous spans dropped (or the scene strip omitted) leaves a stale panel. */
+    memcpy(g_panel, before, sizeof before);
+    memset(&g_ctl, 0, sizeof g_ctl);
+    const int nc = a->on ? acomp_step(&g_ctl, active, art_arg, NULL) : 0;
+    flush(b, g_ctl.bands, nc);
+    const bool differs = memcmp(g_panel, g_want, sizeof g_panel) != 0;
+    assert(differs);
+    g_tick_cases++;
+    memcpy(g_sout, sout_a, sizeof sout_a);
+}
+
+/* X9: acomp_step from every transition equals a full recomposition; each control without the previous spans differs. */
+static void x9(void)
+{
+    g_arts[0] = make_art(120, 100, 2, 31);
+    g_arts[1] = make_art(90, 130, 2, 32);
+    fill_overlay(g_sout, 7);
+    const state_t a0 = mk(true, 0, 2, 160, 170, 0), off = mk(false, 0, 2, 0, 0, 0), crop = mk(true, 1, 2, 150, 140, 0);
+    const state_t orbit = mk(true, 0, 2, 164, 166, 0), a900 = mk(true, 0, 2, 160, 170, 900), a450 = mk(true, 0, 2, 160, 170, 450);
+    /* In order: skin off, unmapped state, decode failure, fill set, fill cleared, panel off, panel on, clip cut, orbit step, 0 -> 900, 900 -> 450, scene strip. */
+    tick_case(&a0, false, NULL, &off, false);
+    tick_case(&a0, false, &a0.a, &off, false);
+    tick_case(&a0, false, &crop.a, &off, false);
+    tick_case(&a0, false, &a0.a, &off, false);
+    tick_case(&off, true, &a0.a, &a0, false);
+    tick_case(&a0, false, &a0.a, &off, false);
+    tick_case(&off, true, &a0.a, &a0, false);
+    tick_case(&a0, true, &crop.a, &crop, false);
+    tick_case(&a0, true, &orbit.a, &orbit, false);
+    tick_case(&a0, true, &a900.a, &a900, false);
+    tick_case(&a900, true, &a450.a, &a450, false);
+    tick_case(&a0, true, &a900.a, &a900, true);
+    tick_case(&a0, false, NULL, &off, true);
+    /* An output size other than the frame's is no art. */
+    acomp_art_t odd = a0.a;
+    odd.out = OUT - 1;
+    memset(&g_st, 0, sizeof g_st);
+    assert(acomp_step(&g_st, true, &odd, NULL) == 0);
+    free(g_arts[0].mem);
+    free(g_arts[1].mem);
+    printf("X9: %d transitions equal the full recomposition; every control without the previous spans or the scene differs\n", g_tick_cases);
+}
+
+/* X10: the rows a chunk holds, split in two, compose to the whole chunk. */
+static void x10(void)
+{
+    g_arts[0] = make_art(120, 100, 2, 41);
+    fill_overlay(g_sout, 9);
+    const state_t a = mk(true, 0, 2, 160, 170, 450);
+    int ya, mid, yb;
+    assert(!acomp_split(a.sp, 0, 20, &ya, &mid, &yb));
+    assert(acomp_split(a.sp, 0, OUT, &ya, &mid, &yb) && ya < mid && mid < yb);
+    assert(a.sp[ya].x0 < a.sp[ya].x1 && a.sp[yb - 1].x0 < a.sp[yb - 1].x1);
+    for (int y = ya; y < yb; y++) {
+        assert(a.sp[y].x0 < a.sp[y].x1);
+    }
+    int chunks = 0;
+    for (int y0 = 0; y0 < OUT; y0 += 32) {
+        const int y1 = y0 + 32 < OUT ? y0 + 32 : OUT;
+        static uint16_t whole[OUT * 32], halves[OUT * 32];
+        const size_t bytes = (size_t)(y1 - y0) * OUT * 2;
+        memcpy(whole, g_sout + (size_t)y0 * OUT, bytes);
+        memcpy(halves, whole, bytes);
+        acomp_rows(&a.a, a.sp, g_pal, whole, OUT, 0, y0, OUT, y1);
+        if (acomp_split(a.sp, y0, y1, &ya, &mid, &yb)) {
+            assert(ya >= y0 && yb <= y1 && mid >= ya && mid <= yb);
+            acomp_rows(&a.a, a.sp, g_pal, halves + (size_t)(ya - y0) * OUT, OUT, 0, ya, OUT, mid);
+            acomp_rows(&a.a, a.sp, g_pal, halves + (size_t)(mid - y0) * OUT, OUT, 0, mid, OUT, yb);
+            chunks++;
+        }
+        assert(!memcmp(whole, halves, bytes));
+    }
+    /* Red proof: composing only the first half leaves the other half's art out. */
+    assert(acomp_split(a.sp, 160, 192, &ya, &mid, &yb) && mid > ya && mid < yb);
+    static uint16_t one[OUT * 32], two[OUT * 32];
+    memcpy(one, g_sout + 160 * OUT, sizeof one);
+    memcpy(two, one, sizeof two);
+    acomp_rows(&a.a, a.sp, g_pal, one, OUT, 0, 160, OUT, 192);
+    acomp_rows(&a.a, a.sp, g_pal, two + (size_t)(ya - 160) * OUT, OUT, 0, ya, OUT, mid);
+    assert(memcmp(one, two, sizeof one) != 0);
+    free(g_arts[0].mem);
+    printf("X10: %d chunks split in two equal the whole chunk\n", chunks);
 }
 
 /* Transcription of the conversions in ui.c, which cannot be linked on the host. */
@@ -567,5 +706,7 @@ int main(void)
     x6();
     x7();
     x8();
+    x9();
+    x10();
     return 0;
 }
