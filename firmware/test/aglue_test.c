@@ -307,8 +307,26 @@ static void test_imu_bits(void)
     assert(ag_imu_bits(MOTION_EV_REST | MOTION_EV_SETDOWN, false) == 1u << DP_CAUSE_SETDOWN);
 }
 
+/* The longest log prefix, as ESP_LOGI writes it at the largest uptime. */
+#define PREFIX "I (4294967295) app: "
+#define W 4294967295u
+
+static void test_log_lines_fit(void)
+{
+    char line[512];
+    int n = snprintf(line, sizeof line, PREFIX AG_LINE_FMT, AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W);
+    assert(n > 0 && n < LOG_LINE_MAX_BYTES);
+    n = snprintf(line, sizeof line, PREFIX AG_TIME_LINE_FMT, W, W, W, W, W, W);
+    assert(n > 0 && n < LOG_LINE_MAX_BYTES);
+    /* Red proof: the same fields on one line are cut. */
+    n = snprintf(line, sizeof line, PREFIX "anim: pack=%d skin=%d clip=%d frames=%u dec_us=%u/%u work_us=%u/%u late=%u cuts=%u cut_ms=%u/%u seek=%u verify_ms=%u iheap=%u/%u ilarge=%u",
+                 AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W, W, W, W, W, W, W);
+    assert(n >= LOG_LINE_MAX_BYTES);
+}
+
 int main(void)
 {
+    test_log_lines_fit();
     test_place_at_every_orbit_point();
     test_copy_clips_to_the_scene();
     test_bring_follows_the_decode_rules();

@@ -15,6 +15,8 @@ enum {
 };
 
 uint16_t proto_crc16(const uint8_t *data, size_t len, uint16_t crc);
+/* Bytes to send of an snprintf into a buffer of cap: none on an error, only the stored text when it was cut. */
+size_t proto_json_len(int n, size_t cap);
 /* Writes a complete frame to out (capacity >= len + FRAME_OVERHEAD); returns its size. */
 size_t proto_encode(uint8_t *out, uint8_t type, const void *payload, size_t len);
 

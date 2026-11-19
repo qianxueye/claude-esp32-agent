@@ -33,6 +33,14 @@ int main(void)
     assert(!proto_parser_next(&p, 2000, &f));
     assert(!proto_parser_next(&p, 2300, &f));
     assert(p.fill < 5);
+    char js[24];
+    int jn = snprintf(js, sizeof js, "{\"reason\":\"%s\"}", "a-reason-longer-than-the-buffer");
+    assert(jn > (int)sizeof js && proto_json_len(jn, sizeof js) == strlen(js));
+    jn = snprintf(js, sizeof js, "{\"proto\":%d}", 3);
+    assert(proto_json_len(jn, sizeof js) == strlen(js) && strlen(js) == 11);
+    assert(proto_json_len(-1, sizeof js) == 0 && proto_json_len(5, 0) == 0 && proto_json_len(24, 24) == 23);
+    /* Red proof: passing the snprintf result as is would send bytes past the buffer. */
+    assert((size_t)snprintf(js, sizeof js, "%040d", 0) > sizeof js);
     puts("ok");
     return 0;
 }

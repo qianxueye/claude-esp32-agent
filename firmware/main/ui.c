@@ -122,8 +122,9 @@ static aplay_out_t s_anim = {APLAY_NOTHING, 0};
 static uint8_t *s_abuf;
 static ag_held_t s_held = {-1, -1, 0, 0};
 static volatile uint32_t s_dec_sum, s_dec_max, s_work_sum, s_work_max, s_cut_last, s_cut_max;
-static int64_t s_work_t0, s_cut_t0;
-static bool s_work_pending, s_cut_pending;
+static int64_t s_work_t0, s_work_tick_us, s_refr_t0_us, s_cut_t0;
+static int s_work_stage; /* 1: frame decoded, 2: presented, waiting for its flush */
+static bool s_cut_pending;
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -348,7 +349,7 @@ static void draw_anim(const scene_t *s)
         s_dec_sum += us;
         s_dec_max = us > s_dec_max ? us : s_dec_max;
         s_work_t0 = t0;
-        s_work_pending = true;
+        s_work_stage = 1;
     }
     if (s_pal_clip != s->anim_clip) {
         for (int i = 0; i < c->colors; i++) {
@@ -738,6 +739,7 @@ static void refr_cb(lv_event_t *e)
             s_te_missed++;
         }
         s_refr_start = lv_tick_get();
+        s_refr_t0_us = esp_timer_get_time();
     } else {
         uint32_t d = lv_tick_elaps(s_refr_start);
         s_refr_count++;
@@ -746,11 +748,11 @@ static void refr_cb(lv_event_t *e)
             s_refr_worst_ms = d;
         }
         const int64_t t = esp_timer_get_time();
-        if (s_work_pending) {
-            const uint32_t us = (uint32_t)(t - s_work_t0);
+        if (s_work_stage == 2) {
+            const uint32_t us = (uint32_t)(s_work_tick_us + (t - s_refr_t0_us));
             s_work_sum += us;
             s_work_max = us > s_work_max ? us : s_work_max;
-            s_work_pending = false;
+            s_work_stage = 0;
         }
         if (s_cut_pending) {
             s_cut_last = (uint32_t)((t - s_cut_t0) / 1000);
@@ -1037,6 +1039,10 @@ static void tick_cb(lv_timer_t *t)
         apply_rotation(s_bench_angle);
     } else {
         apply_rotation(orient_step(dt, s_panel_on));
+    }
+    if (s_work_stage == 1) {
+        s_work_tick_us = esp_timer_get_time() - s_work_t0;
+        s_work_stage = 2;
     }
     static uint32_t last_log;
     if (now - last_log >= UI_FPS_LOG_PERIOD_MS) {

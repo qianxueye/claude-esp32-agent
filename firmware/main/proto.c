@@ -115,3 +115,11 @@ void proto_parser_release(proto_parser_t *p, const proto_frame_t *f)
 {
     drop(p, (size_t)f->len + FRAME_OVERHEAD);
 }
+
+size_t proto_json_len(int n, size_t cap)
+{
+    if (n < 0 || cap == 0) {
+        return 0;
+    }
+    return (size_t)n < cap ? (size_t)n : cap - 1;
+}
