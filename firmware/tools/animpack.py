@@ -2,6 +2,7 @@
 """Builds, inspects, verifies and decodes Clawd animation packs; the format is the one firmware/main/apack.h reads."""
 
 import argparse
+import math
 import re
 import struct
 import sys
@@ -10,10 +11,10 @@ import zlib
 from pathlib import Path
 
 MAGIC = b"CLWDANIM"
-VERSION = 1
+VERSION = 2
 HEADER = 48
-CLIP_ENTRY = 24
-FRAME_ENTRY = 8
+CLIP_ENTRY = 28
+FRAME_ENTRY = 16
 CODEC_DELTA = 1
 KEY = 0x8000
 MS_MASK = 0x7FFF
@@ -22,13 +23,19 @@ STATE_SLOTS = 8
 EVENT_SLOTS = 4
 MAX_CLIPS = 16
 MAX_COLORS = 250
-CANVAS_MAX = 240
-SAFE_UP = 92
-SAFE_DOWN = 96
+CANVAS_MAX = 512  # plain configuration: format cap on the canvas side in screen px
+ART_REACH_MAX = 207  # mathematical model: art reach x scale plus the 17.21 px recentred orbit reach stays within the 225 px scene radius
+ALIGN_COLS = 64  # plain configuration: a crop this many columns wide is widened by one so the column walk does not thrash the data cache
+BUBBLE_Y_MIN, BUBBLE_Y_MAX = -32768, 32767
+BUBBLE_RECT = (28, 188, -36, 36)  # plain configuration: default bubble rectangle on the right, screen px from the canvas centre, y down
+FLAG_LOOP, FLAG_BUBBLE_LEFT = 1, 2
+SKIP_MAX = 128 + 0xFFFF
+CARD_FILE = "ANIMPACK.BIN"
 STATES = ("idle", "listening", "thinking", "speaking", "error", "offline")
 EVENTS = ("pickup",)
 HEAD_FMT = "<8sHBBHHIII8s4sI"
-CLIP_FMT = "<HHHHHHIIBBH"
+CLIP_FMT = "<HHHHHHIIBBHhH"
+FRAME_FMT = "<IIIHH"
 
 
 class PackError(Exception):
@@ -39,21 +46,26 @@ def rgb565(r, g, b):
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
-def layout_ok(canvas_w, canvas_h, scale, x, y, w, h):
+def layout_ok(canvas_w, canvas_h, scale, x, y, w, h, reach):
     """Mirror of ap_layout_ok in apack.c."""
-    if scale not in (1, 2) or canvas_w == 0 or canvas_h == 0 or w == 0 or h == 0:
+    if scale not in (1, 2) or 0 in (canvas_w, canvas_h, w, h, reach):
         return False
-    cw, ch = canvas_w * scale, canvas_h * scale
-    if cw > CANVAS_MAX or ch > CANVAS_MAX or x + w > canvas_w or y + h > canvas_h:
+    if canvas_w * scale > CANVAS_MAX or canvas_h * scale > CANVAS_MAX or x + w > canvas_w or y + h > canvas_h or reach * scale > ART_REACH_MAX:
         return False
-    return y * scale - ch // 2 >= -SAFE_UP and (y + h) * scale - ch // 2 <= SAFE_DOWN
+    ex = max(abs(2 * x - canvas_w), abs(2 * (x + w) - canvas_w))
+    ey = max(abs(2 * y - canvas_h), abs(2 * (y + h) - canvas_h))
+    return 2 * reach >= max(ex, ey) and (2 * (reach - 1)) ** 2 < ex * ex + ey * ey
 
 
 # Frame tokens
 
 
 def _skip(n):
-    return bytes([n - 1]) if n <= 127 else bytes([0x7F]) + struct.pack("<H", n - 128)
+    out = bytearray()
+    while n > SKIP_MAX:
+        out += bytes([0x7F]) + struct.pack("<H", SKIP_MAX - 128)
+        n -= SKIP_MAX
+    return bytes(out) + (bytes([n - 1]) if n <= 127 else bytes([0x7F]) + struct.pack("<H", n - 128))
 
 
 def _literal(data):
@@ -277,7 +289,57 @@ def crop_box(planes, w, h):
     return x0, y0, x1 - x0, y1 - y0
 
 
-def _clip_from_frames(frames, durations, colors, canvas_px, scale):
+def lit_reach(planes, w, h):
+    """Canvas px from the canvas centre to the far corner of the farthest non-zero pixel, rounded up."""
+    far = 0
+    for p in planes:
+        for y in range(h):
+            row = p[y * w : (y + 1) * w]
+            if not any(row):
+                continue
+            first = next(i for i, v in enumerate(row) if v)
+            last = w - 1 - next(i for i, v in enumerate(reversed(row)) if v)
+            dy = max(abs(2 * y - h), abs(2 * y + 2 - h))
+            for px in (first, last):
+                dx = max(abs(2 * px - w), abs(2 * px + 2 - w))
+                far = max(far, dx * dx + dy * dy)
+    r = math.isqrt(far) // 2
+    while 4 * r * r < far:
+        r += 1
+    return r
+
+
+def widen(side, scale, crop, reach):
+    """Adds one column to a crop whose width is a multiple of ALIGN_COLS, on the side that keeps the layout valid."""
+    x, y, w, h = crop
+    if w % ALIGN_COLS:
+        return crop
+    options = [(x - 1, w + 1) if x > 0 else None, (x, w + 1) if x + w < side else None]
+    ok = [o for o in options if o and layout_ok(side, side, scale, o[0], y, o[1], h, reach)]
+    if not ok:
+        return crop
+    nx, nw = min(ok, key=lambda o: min(abs(2 * o[0] - side), abs(2 * (o[0] + o[1]) - side)))
+    return nx, y, nw, h
+
+
+def bubble_side(planes, side, scale):
+    """The side whose default bubble rectangle covers fewer lit pixels of the clip's union mask; ties go right."""
+    x0, x1, y0, y1 = BUBBLE_RECT
+    counts = {"right": 0, "left": 0}
+    union = bytearray(side * side)
+    for p in planes:
+        union = bytearray(a | b for a, b in zip(union, p))
+    for i, v in enumerate(union):
+        if not v:
+            continue
+        sx, sy = (2 * (i % side) + 1 - side) * scale, (2 * (i // side) + 1 - side) * scale
+        if 2 * y0 <= sy <= 2 * y1:
+            counts["right"] += 2 * x0 <= sx <= 2 * x1
+            counts["left"] += -2 * x1 <= sx <= -2 * x0
+    return "left" if counts["left"] < counts["right"] else "right"
+
+
+def _clip_from_frames(frames, durations, colors, canvas_px, scale, side_pref=None, bubble_y=0):
     from PIL import Image
 
     if scale == 2:
@@ -287,21 +349,24 @@ def _clip_from_frames(frames, durations, colors, canvas_px, scale):
     side = canvas_px // scale
     palette, planes = index_clip(frames, colors)
     x, y, w, h = crop_box(planes, side, side)
-    if not layout_ok(side, side, scale, x, y, w, h):
-        raise PackError(f"content {x},{y} {w}x{h} lies outside the safe box ({SAFE_UP} px up, {SAFE_DOWN} px down)")
+    reach = lit_reach(planes, side, side)
+    if reach * scale > ART_REACH_MAX:
+        raise PackError(f"content reaches {reach * scale} px from the canvas centre; the limit is {ART_REACH_MAX}")
+    x, y, w, h = widen(side, scale, (x, y, w, h), reach)
+    if not layout_ok(side, side, scale, x, y, w, h, reach):
+        raise PackError(f"content {x},{y} {w}x{h} does not fit the canvas or its reach {reach}")
     cropped = [b"".join(p[(y + r) * side + x : (y + r) * side + x + w] for r in range(h)) for p in planes]
     data, prev = [], bytes(w * h)
     for i, cur in enumerate(cropped):
         tok = encode_frame(bytes(w * h) if i == 0 else prev, cur)
-        if len(tok) > 0xFFFF:
-            raise PackError("a frame encodes to more than 65535 bytes")
         data.append(tok)
         prev = cur
-    return {"crop": (x, y, w, h), "palette": palette, "frames": cropped, "data": data, "ms": durations}
+    left = (side_pref or bubble_side(planes, side, scale)) == "left"
+    return {"crop": (x, y, w, h), "palette": palette, "frames": cropped, "data": data, "ms": durations, "reach": reach, "bubble_left": left, "bubble_y": bubble_y}
 
 
 def assemble(clips, canvas_side, scale, state_clip, event_clip, loops):
-    """Header, index (clip table, then each clip's palette and frame table) and payload, with both CRCs."""
+    """Header, index (clip table, then each clip's palette and frame table) and payload, with the index CRC and a CRC per frame."""
     n = len(clips)
     off = HEADER + n * CLIP_ENTRY
     pal_off, tbl_off = [], []
@@ -314,15 +379,16 @@ def assemble(clips, canvas_side, scale, state_clip, event_clip, loops):
     table, tail, payload = bytearray(), bytearray(), bytearray()
     for i, c in enumerate(clips):
         x, y, w, h = c["crop"]
-        table += struct.pack(CLIP_FMT, x, y, w, h, len(c["data"]), len(c["palette"]), pal_off[i], tbl_off[i], 1 if loops[i] else 0, CODEC_DELTA, 0)
+        flags = (FLAG_LOOP if loops[i] else 0) | (FLAG_BUBBLE_LEFT if c["bubble_left"] else 0)
+        table += struct.pack(CLIP_FMT, x, y, w, h, len(c["data"]), len(c["palette"]), pal_off[i], tbl_off[i], flags, CODEC_DELTA, c["reach"], c["bubble_y"], 0)
         tail += b"".join(struct.pack("<H", rgb565(*rgb)) for rgb in c["palette"])
         for k, (tok, ms) in enumerate(zip(c["data"], c["ms"])):
-            tail += struct.pack("<IHH", HEADER + index_len + len(payload), len(tok), ms | (KEY if k == 0 else 0))
+            tail += struct.pack(FRAME_FMT, HEADER + index_len + len(payload), len(tok), zlib.crc32(tok), ms | (KEY if k == 0 else 0), 0)
             payload += tok
     index = bytes(table + tail)
     total = HEADER + index_len + len(payload)
     head = struct.pack(
-        HEAD_FMT, MAGIC, VERSION, scale, n, canvas_side, canvas_side, total, index_len, zlib.crc32(payload), bytes(state_clip), bytes(event_clip), 0
+        HEAD_FMT, MAGIC, VERSION, scale, n, canvas_side, canvas_side, total, index_len, 0, bytes(state_clip), bytes(event_clip), 0
     )
     return head + struct.pack("<I", zlib.crc32(index, zlib.crc32(head))) + index + bytes(payload)
 
@@ -359,7 +425,12 @@ def build(mapping_path, colors=None, fps_div=1, scale=1):
     for key in keys:
         frames, durations = read_clip(mapping_path.parent, specs[key], canvas)
         frames, durations = thin(frames, durations, fps_div)
-        clips.append(_clip_from_frames(frames, durations, colors, canvas, scale))
+        side_pref, bub_y = specs[key].get("bubble_side"), specs[key].get("bubble_y", 0)
+        if side_pref not in (None, "left", "right"):
+            raise PackError('bubble_side must be "left" or "right"')
+        if isinstance(bub_y, bool) or not isinstance(bub_y, int) or not BUBBLE_Y_MIN <= bub_y <= BUBBLE_Y_MAX:
+            raise PackError("bubble_y must be an integer that fits 16 bits")
+        clips.append(_clip_from_frames(frames, durations, colors, canvas, scale, side_pref, bub_y))
         loops.append(bool(specs[key].get("loop", True)))
     return assemble(clips, canvas // scale, scale, state_clip, event_clip, loops), clips
 
@@ -374,9 +445,9 @@ def parse(pack):
     if pack[:HEADER] == b"\xff" * HEADER:
         raise PackError("empty (erased) pack")
     f = struct.unpack(HEAD_FMT, pack[:44])
-    magic, version, scale, count, cw, ch, total, index_len, payload_crc, states, events, _ = f
+    magic, version, scale, count, cw, ch, total, index_len, _, states, events, _ = f
     if magic != MAGIC or version != VERSION:
-        raise PackError("not a version 1 pack")
+        raise PackError("not a version 2 pack")
     if total > len(pack) or total < HEADER or index_len > total - HEADER:
         raise PackError("lengths do not fit")
     if zlib.crc32(pack[HEADER : HEADER + index_len], zlib.crc32(pack[:44])) != struct.unpack_from("<I", pack, 44)[0]:
@@ -388,28 +459,34 @@ def parse(pack):
         raise PackError("bad clip table or map")
     clips = []
     for i in range(count):
-        x, y, w, h, frames, colors, pal, tbl, flags, codec, _ = struct.unpack_from(CLIP_FMT, pack, HEADER + i * CLIP_ENTRY)
+        x, y, w, h, frames, colors, pal, tbl, flags, codec, reach, bub_y, _ = struct.unpack_from(CLIP_FMT, pack, HEADER + i * CLIP_ENTRY)
         if codec != CODEC_DELTA or not 1 <= colors <= MAX_COLORS or frames == 0:
             raise PackError(f"clip {i}: bad codec, colours or frame count")
         if not (tbl_end <= pal and pal + 2 * colors <= payload_off and tbl_end <= tbl and tbl + FRAME_ENTRY * frames <= payload_off):
             raise PackError(f"clip {i}: palette or frame table outside the index")
-        entries = [struct.unpack_from("<IHH", pack, tbl + FRAME_ENTRY * k) for k in range(frames)]
-        for k, (doff, dlen, meta) in enumerate(entries):
-            if not (payload_off <= doff and doff + dlen <= total) or meta & MS_MASK == 0 or (k == 0 and not meta & KEY):
+        entries = [struct.unpack_from(FRAME_FMT, pack, tbl + FRAME_ENTRY * k) for k in range(frames)]
+        nxt = 0
+        for k, (doff, dlen, _, meta, _) in enumerate(entries):
+            if not (payload_off <= doff and doff + dlen <= total) or meta & MS_MASK == 0 or (k == 0 and not meta & KEY) or (k and doff != nxt):
                 raise PackError(f"clip {i} frame {k}: bad entry")
-        if not layout_ok(cw, ch, scale, x, y, w, h):
-            raise PackError(f"clip {i}: crop outside the canvas or the safe box")
+            nxt = doff + dlen
+        if not layout_ok(cw, ch, scale, x, y, w, h, reach):
+            raise PackError(f"clip {i}: crop, canvas or reach outside the limits")
         palette = list(struct.unpack_from(f"<{colors}H", pack, pal))
-        clips.append({"crop": (x, y, w, h), "palette": palette, "loop": bool(flags & 1), "entries": entries})
+        clips.append({"crop": (x, y, w, h), "palette": palette, "loop": bool(flags & FLAG_LOOP), "bubble_left": bool(flags & FLAG_BUBBLE_LEFT), "bubble_y": bub_y, "reach": reach, "entries": entries})
     return {
         "scale": scale,
         "canvas": (cw, ch),
         "total": total,
-        "payload_ok": zlib.crc32(pack[payload_off:total]) == payload_crc,
         "states": list(states),
         "events": list(events),
         "clips": clips,
     }
+
+
+def frame_crcs_ok(pack, info):
+    """True when every frame's bytes match its CRC."""
+    return all(zlib.crc32(pack[o : o + n]) == crc for c in info["clips"] for o, n, crc, _, _ in c["entries"])
 
 
 def decode_clips(pack, info):
@@ -418,7 +495,7 @@ def decode_clips(pack, info):
     for c in info["clips"]:
         x, y, w, h = c["crop"]
         buf, planes = bytearray(w * h), []
-        for doff, dlen, meta in c["entries"]:
+        for doff, dlen, _, meta, _ in c["entries"]:
             decode_frame(pack[doff : doff + dlen], buf, bool(meta & KEY))
             planes.append(bytes(buf))
         out.append(planes)
@@ -451,14 +528,15 @@ def _guard(path, allow):
 
 
 def _summary(info):
-    lines = [f"canvas {info['canvas'][0]}x{info['canvas'][1]} scale {info['scale']} bytes {info['total']} payload_crc {'ok' if info['payload_ok'] else 'BAD'}"]
+    lines = [f"canvas {info['canvas'][0]}x{info['canvas'][1]} scale {info['scale']} bytes {info['total']}"]
     lines.append("states " + " ".join(f"{n}={'-' if v == NO_CLIP else v}" for n, v in zip(STATES, info["states"])))
     lines.append("once " + " ".join(f"{n}={'-' if v == NO_CLIP else v}" for n, v in zip(EVENTS, info["events"])))
     for i, c in enumerate(info["clips"]):
         x, y, w, h = c["crop"]
-        ms = sum(m & MS_MASK for _, _, m in c["entries"])
-        size = sum(n for _, n, _ in c["entries"])
-        lines.append(f"clip {i}: crop {x},{y} {w}x{h} frames {len(c['entries'])} colours {len(c['palette'])} loop_ms {ms} data {size}")
+        ms = sum(e[3] & MS_MASK for e in c["entries"])
+        size = sum(e[1] for e in c["entries"])
+        side = "left" if c["bubble_left"] else "right"
+        lines.append(f"clip {i}: crop {x},{y} {w}x{h} reach {c['reach']} bubble {side} {c['bubble_y']} frames {len(c['entries'])} colours {len(c['palette'])} loop_ms {ms} data {size}")
     return "\n".join(lines)
 
 
@@ -467,13 +545,15 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build", help="convert the clips of a mapping file into a pack")
     b.add_argument("--map", required=True)
-    b.add_argument("--out", required=True)
+    target = b.add_mutually_exclusive_group(required=True)
+    target.add_argument("--out")
+    target.add_argument("--card", metavar="DIR", help=f"write DIR/{CARD_FILE}")
     b.add_argument("--colors", type=int)
     b.add_argument("--fps-div", type=int, default=1)
     b.add_argument("--scale", type=int, default=1)
     b.add_argument("--emit-c", metavar="HEADER", help="also write a C header with the pack and its decoded frames")
     b.add_argument("--allow-in-repo", action="store_true")
-    for name, text in (("info", "print the header and a summary per clip"), ("verify", "check both CRCs and decode every frame")):
+    for name, text in (("info", "print the header and a summary per clip"), ("verify", "check the index CRC and every frame CRC, then decode every frame")):
         s = sub.add_parser(name, help=text)
         s.add_argument("pack")
     d = sub.add_parser("decode", help="write every frame as a PNG")
@@ -483,13 +563,15 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         if args.cmd == "build":
-            _guard(args.out, args.allow_in_repo)
+            out = Path(args.card) / CARD_FILE if args.card else Path(args.out)
+            _guard(out, args.allow_in_repo)
             if args.emit_c:
                 _guard(args.emit_c, args.allow_in_repo)
             pack, _ = build(args.map, args.colors, args.fps_div, args.scale)
             info = parse(pack)
             planes = decode_clips(pack, info)
-            Path(args.out).write_bytes(pack)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(pack)
             if args.emit_c:
                 Path(args.emit_c).write_text(emit_c(pack, planes, Path(args.emit_c).stem.upper()))
             print(_summary(info))
@@ -499,8 +581,8 @@ def main(argv=None):
         if args.cmd == "info":
             print(_summary(info))
             return 0
-        if not info["payload_ok"]:
-            raise PackError("payload CRC mismatch")
+        if not frame_crcs_ok(pack, info):
+            raise PackError("frame CRC mismatch")
         planes = decode_clips(pack, info)
         if args.cmd == "verify":
             print(f"ok: {len(info['clips'])} clips, {sum(len(p) for p in planes)} frames")

@@ -43,7 +43,13 @@ uint32_t skin_verify_ms(void)
 
 static void verify(void)
 {
-    const bool ok = ap_payload_ok(&s_pack);
+    bool ok = true;
+    for (int c = 0; ok && c < s_pack.clip_count; c++) {
+        for (int k = 0; ok && k < s_pack.clip[c].frames; k++) {
+            ap_frame_t f;
+            ok = ap_frame(&s_pack, c, k, &f) && ap_frame_crc_ok(&f);
+        }
+    }
     const int64_t us = esp_timer_get_time() - s_verify_t0;
     s_verify_ms = us > 0 ? (uint32_t)(us / 1000) : 0;
     set_status(ok ? AP_OK : AP_BAD_PAYLOAD);
@@ -94,7 +100,7 @@ void skin_init(void)
         ESP_LOGW(TAG, "pack=%d mmap err=%d", AP_BAD_HEADER, (int)err);
         return;
     }
-    const ap_status_t st = ap_parse((const uint8_t *)map, total, &s_pack);
+    const ap_status_t st = ap_parse((const uint8_t *)map, total, total, &s_pack);
     if (st != AP_OK) {
         esp_partition_munmap(handle);
         set_status(st);

@@ -147,13 +147,13 @@ def test_crop_durations_and_fps_div(tmp_path):
     info = animpack.parse(animpack.build(m)[0])
     clip = info["clips"][0]
     assert clip["crop"] == (10, 12, 6, 9)
-    assert [e[2] & animpack.MS_MASK for e in clip["entries"]] == [50, 40, 30, 50, 40, 30]
-    assert [bool(e[2] & animpack.KEY) for e in clip["entries"]] == [True] + [False] * 5
+    assert [e[3] & animpack.MS_MASK for e in clip["entries"]] == [50, 40, 30, 50, 40, 30]
+    assert [bool(e[3] & animpack.KEY) for e in clip["entries"]] == [True] + [False] * 5
     info2 = animpack.parse(animpack.build(m, fps_div=2)[0])
-    assert [e[2] & animpack.MS_MASK for e in info2["clips"][0]["entries"]] == [90, 80, 70]
+    assert [e[3] & animpack.MS_MASK for e in info2["clips"][0]["entries"]] == [90, 80, 70]
     m3 = write_map(tmp_path / "p.toml", 'canvas = 32\n[states]\nidle = "k"\n[clips.k]\nfile = "x.gif"\nframe_ms = [70, 20]\n')
     info3 = animpack.parse(animpack.build(m3)[0])
-    assert [e[2] & animpack.MS_MASK for e in info3["clips"][0]["entries"]] == [70, 20, 70, 20, 70, 20]
+    assert [e[3] & animpack.MS_MASK for e in info3["clips"][0]["entries"]] == [70, 20, 70, 20, 70, 20]
 
 
 def test_scale_two_halves_the_canvas(tmp_path):
@@ -276,12 +276,7 @@ def test_errors(tmp_path):
     assert "missing file" in build_error(tmp_path, 'canvas = 16\n[states]\nidle = "k"\n[clips.k]\nfile = "nope.gif"\n')
     assert "unknown clip key" in build_error(tmp_path, 'canvas = 16\n[states]\nidle = "z"\n[clips.k]\nfile = "a.gif"\n', [("a.gif", one)])
     assert "unknown state" in build_error(tmp_path, 'canvas = 16\n[states]\nsleep = "k"\n[clips.k]\nfile = "a.gif"\n', [("a.gif", one)])
-    assert "canvas" in build_error(tmp_path, 'canvas = 248\n[states]\nidle = "k"\n[clips.k]\nfile = "a.gif"\n', [("a.gif", one)])
-    top = [frame(240, {(120, 120 - animpack.SAFE_UP - 1): A})]
-    assert "safe box" in build_error(tmp_path, 'canvas = 240\n[states]\nidle = "k"\n[clips.k]\nfile = "t.gif"\n', [("t.gif", top)])
-    edge = [frame(240, {(120, 120 - animpack.SAFE_UP): A, (120, 120 + animpack.SAFE_DOWN - 1): B})]
-    save_gif(tmp_path / "e.gif", edge, [50])
-    animpack.build(write_map(tmp_path / "ok.toml", 'canvas = 240\n[states]\nidle = "k"\n[clips.k]\nfile = "e.gif"\n'))
+    assert "canvas" in build_error(tmp_path, 'canvas = 520\n[states]\nidle = "k"\n[clips.k]\nfile = "a.gif"\n', [("a.gif", one)])
     assert "no visible pixel" in build_error(tmp_path, 'canvas = 16\n[states]\nidle = "k"\n[clips.k]\nfile = "b.gif"\n', [("b.gif", [frame(16, {})])])
     assert "frame size" in build_error(tmp_path, 'canvas = 32\n[states]\nidle = "k"\n[clips.k]\nfile = "a.gif"\n', [("a.gif", one)])
 
@@ -303,7 +298,7 @@ def test_info_verify_and_decode(tmp_path, capsys):
     pack, _ = emit_golden(tmp_path)
     p = tmp_path / "out.clawdpack"
     assert animpack.main(["info", str(p)]) == 0
-    assert "clip 1: crop 0,2 16x12 frames 1" in capsys.readouterr().out
+    assert "clip 1: crop 0,2 16x12 reach 10 bubble right 0 frames 1" in capsys.readouterr().out
     assert animpack.main(["verify", str(p)]) == 0
     assert animpack.main(["decode", str(p), str(tmp_path / "frames")]) == 0
     with Image.open(tmp_path / "frames" / "c00_f001.png") as im:
@@ -318,6 +313,108 @@ def test_info_verify_and_decode(tmp_path, capsys):
     assert animpack.main(["info", str(p)]) == 2
     p.write_bytes(b"\xff" * 64)
     assert animpack.main(["info", str(p)]) == 2
+
+
+def one_clip(tmp_path, canvas, frames, extra="", name="x"):
+    save_gif(tmp_path / f"{name}.gif", frames, [50] * len(frames))
+    return write_map(tmp_path / f"{name}.toml", f'canvas = {canvas}\n[states]\nidle = "k"\n[clips.k]\nfile = "{name}.gif"\n{extra}')
+
+
+def test_skip_beyond_u16_becomes_two_tokens():
+    tokens = animpack._skip(70000)
+    assert tokens == animpack._skip(animpack.SKIP_MAX) + animpack._skip(70000 - animpack.SKIP_MAX) and len(tokens) == 6
+    buf = bytearray(70001)
+    animpack.decode_frame(tokens + bytes([0x80, 7]), buf, True)
+    assert buf[70000] == 7 and not any(buf[:70000])
+    assert animpack._skip(animpack.SKIP_MAX) == bytes([0x7F, 0xFF, 0xFF])
+
+
+def test_reach_of_a_pixel_at_a_known_radius():
+    def plane(w, x, y):
+        p = bytearray(w * w)
+        p[y * w + x] = 1
+        return [bytes(p)]
+
+    # Canvas 100, centre 50: pixel 52,46 has its far corner at (53, 46), 3 px right and 4 px above, exactly 5.
+    assert animpack.lit_reach(plane(100, 52, 46), 100, 100) == 5
+    # Pixel 80,50: far corner (81, 51) is hypot(31, 1) = 31.02 px away, rounded up.
+    assert animpack.lit_reach(plane(100, 80, 50), 100, 100) == 32
+    # Odd side 101, centre 50.5: pixel 50,50 spans 49.5..50.5 either side, far corner 0.5 px from the centre in both axes, rounded up.
+    assert animpack.lit_reach(plane(101, 50, 50), 101, 101) == 1
+
+
+def test_reach_over_the_cap_raises(tmp_path):
+    corner = [frame(400, {(0, 0): A})]
+    assert "reaches" in build_error(tmp_path, 'canvas = 400\n[states]\nidle = "k"\n[clips.k]\nfile = "c.gif"\n', [("c.gif", corner)])
+    at_cap = animpack.ART_REACH_MAX
+    inside = [frame(416, {(2, 208): A})]
+    save_gif(tmp_path / "i.gif", inside, [50])
+    m = write_map(tmp_path / "i.toml", 'canvas = 416\n[states]\nidle = "k"\n[clips.k]\nfile = "i.gif"\n')
+    assert animpack.parse(animpack.build(m)[0])["clips"][0]["reach"] == at_cap
+    edge = [frame(416, {(1, 208): A})]
+    assert "reaches" in build_error(tmp_path, 'canvas = 416\n[states]\nidle = "k"\n[clips.k]\nfile = "j.gif"\n', [("j.gif", edge)])
+
+
+def test_width_multiple_of_64_gains_a_column(tmp_path):
+    wide = [frame(400, {(40, 190): A, (359, 209): B})]
+    clip = animpack.parse(animpack.build(one_clip(tmp_path, 400, wide))[0])["clips"][0]
+    assert clip["crop"][2] == 321 and clip["crop"][0] in (39, 40)
+    full = [frame(64, {(0, 30): A, (63, 33): B})]
+    assert animpack.parse(animpack.build(one_clip(tmp_path, 64, full, name="f"))[0])["clips"][0]["crop"] == (0, 30, 64, 4)
+    other = [frame(400, {(40, 190): A, (358, 209): B})]
+    assert animpack.parse(animpack.build(one_clip(tmp_path, 400, other, name="o"))[0])["clips"][0]["crop"][2] == 319
+
+
+def test_bubble_side_picks_the_emptier_half(tmp_path):
+    def side(pixels, extra=""):
+        m = one_clip(tmp_path, 400, [frame(400, pixels)], extra)
+        clip = animpack.parse(animpack.build(m)[0])["clips"][0]
+        return "left" if clip["bubble_left"] else "right", clip["bubble_y"]
+
+    assert side({(250, 200): A, (200, 100): B}) == ("left", 0)
+    assert side({(150, 200): A, (200, 100): B}) == ("right", 0)
+    assert side({(200, 100): A, (200, 300): B}) == ("right", 0)
+    assert side({(250, 200): A, (200, 100): B}, 'bubble_side = "right"\nbubble_y = -12\n') == ("right", -12)
+    assert side({(150, 200): A, (200, 100): B}, 'bubble_side = "left"\n') == ("left", 0)
+    with pytest.raises(animpack.PackError):
+        side({(150, 200): A}, 'bubble_side = "up"\n')
+
+
+def test_card_option_writes_animpack_bin(tmp_path):
+    m = golden_inputs(tmp_path)
+    card = tmp_path / "card"
+    card.mkdir()
+    assert animpack.main(["build", "--map", str(m), "--card", str(card)]) == 0
+    assert [p.name for p in card.iterdir()] == ["ANIMPACK.BIN"]
+    assert animpack.main(["verify", str(card / "ANIMPACK.BIN")]) == 0
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    assert animpack.main(["build", "--map", str(m), "--card", str(repo)]) == 2 and not (repo / "ANIMPACK.BIN").exists()
+
+
+def test_v2_round_trip_with_long_skip_and_frame_crcs(tmp_path):
+    a = {(70, 70): A, (330, 330): A}
+    b = {(70, 70): B, (330, 330): B}
+    frames = [frame(400, a), frame(400, b)]
+    pack, _ = animpack.build(one_clip(tmp_path, 400, frames))
+    assert pack[8:10] == b"\x02\x00" and pack[24:28] == bytes(4)
+    info = animpack.parse(pack)
+    clip = info["clips"][0]
+    assert clip["crop"] == (70, 70, 261, 261) and clip["reach"] == 186 and animpack.frame_crcs_ok(pack, info)
+    assert [e[0] + e[1] for e in clip["entries"][:-1]] == [e[0] for e in clip["entries"][1:]]
+    assert len(animpack._skip(261 * 261 - 2)) == 6
+    planes = animpack.decode_clips(pack, info)[0]
+    lut = [0] + clip["palette"]
+    assert [lut[v] for v in (planes[0][0], planes[0][-1], planes[1][0], planes[1][-1])] == [rgb565_of(A), rgb565_of(A), rgb565_of(B), rgb565_of(B)]
+    flipped = bytearray(pack)
+    flipped[clip["entries"][1][0]] ^= 1
+    assert not animpack.frame_crcs_ok(bytes(flipped), animpack.parse(bytes(flipped)))
+    skewed = bytearray(pack)
+    entry = animpack.HEADER + animpack.CLIP_ENTRY + 2 * len(clip["palette"]) + animpack.FRAME_ENTRY
+    skewed[entry : entry + 4] = (clip["entries"][1][0] + 1).to_bytes(4, "little")
+    skewed[44:48] = animpack.zlib.crc32(bytes(skewed[48 : animpack.HEADER + int.from_bytes(skewed[20:24], "little")]), animpack.zlib.crc32(bytes(skewed[:44]))).to_bytes(4, "little")
+    with pytest.raises(animpack.PackError):
+        animpack.parse(bytes(skewed))
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--write-golden"]:

@@ -31,9 +31,9 @@ static void set_clip(int k, int frames, const uint16_t *ms, int n_ms, bool loop)
     for (int i = 0; i < frames; i++) {
         uint8_t *e = g_tbl[k] + i * AP_FRAME_ENTRY_BYTES;
         uint16_t meta = (uint16_t)(ms[i % n_ms] | (i == 0 ? AP_FRAME_KEY : 0));
-        memset(e, 0, 6);
-        e[6] = (uint8_t)meta;
-        e[7] = (uint8_t)(meta >> 8);
+        memset(e, 0, AP_FRAME_ENTRY_BYTES);
+        e[12] = (uint8_t)meta;
+        e[13] = (uint8_t)(meta >> 8);
     }
 }
 

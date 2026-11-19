@@ -32,20 +32,25 @@ static bool inside(uint32_t off, uint32_t len, uint32_t lo, uint32_t hi)
     return off >= lo && off <= hi && len <= hi - off;
 }
 
-bool ap_layout_ok(uint16_t canvas_w, uint16_t canvas_h, uint8_t scale, uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+static int32_t abs32(int32_t v)
 {
-    if (scale < 1 || scale > 2 || canvas_w == 0 || canvas_h == 0 || w == 0 || h == 0) {
+    return v < 0 ? -v : v;
+}
+
+bool ap_layout_ok(uint16_t canvas_w, uint16_t canvas_h, uint8_t scale, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t reach)
+{
+    if (scale < 1 || scale > 2 || canvas_w == 0 || canvas_h == 0 || w == 0 || h == 0 || reach == 0) {
         return false;
     }
-    const int32_t cw = (int32_t)canvas_w * scale, ch = (int32_t)canvas_h * scale;
-    if (cw > AP_CANVAS_MAX_PX || ch > AP_CANVAS_MAX_PX) {
+    if ((int32_t)canvas_w * scale > AP_CANVAS_MAX_PX || (int32_t)canvas_h * scale > AP_CANVAS_MAX_PX ||
+        (int32_t)x + w > canvas_w || (int32_t)y + h > canvas_h || (int32_t)reach * scale > AP_ART_REACH_MAX_PX) {
         return false;
     }
-    if ((int32_t)x + w > canvas_w || (int32_t)y + h > canvas_h) {
-        return false;
-    }
-    const int32_t top = (int32_t)y * scale - ch / 2, bottom = ((int32_t)y + h) * scale - ch / 2;
-    return top >= -AP_SAFE_UP_PX && bottom <= AP_SAFE_DOWN_PX;
+    /* Distances are doubled so an odd canvas side keeps an integer centre. */
+    const int32_t ex = abs32(2 * x - canvas_w) > abs32(2 * (x + w) - canvas_w) ? abs32(2 * x - canvas_w) : abs32(2 * (x + w) - canvas_w);
+    const int32_t ey = abs32(2 * y - canvas_h) > abs32(2 * (y + h) - canvas_h) ? abs32(2 * y - canvas_h) : abs32(2 * (y + h) - canvas_h);
+    const int32_t edge = ex > ey ? ex : ey, corner2 = ex * ex + ey * ey, below = 2 * ((int32_t)reach - 1);
+    return 2 * (int32_t)reach >= edge && below * below < corner2;
 }
 
 static bool clip_ok(uint8_t v, uint8_t clip_count)
@@ -62,7 +67,10 @@ static ap_status_t parse_clip(const ap_pack_t *p, const uint8_t *e, uint32_t tbl
     c->frames = rd16(e + 8);
     c->colors = rd16(e + 10);
     const uint32_t pal_off = rd32(e + 12), frm_off = rd32(e + 16);
-    c->loop = (e[20] & 1) != 0;
+    c->loop = (e[20] & AP_CLIP_LOOP) != 0;
+    c->bubble_left = (e[20] & AP_CLIP_BUBBLE_LEFT) != 0;
+    c->reach = rd16(e + 22);
+    c->bubble_y = (int16_t)rd16(e + 24);
     if (e[21] != AP_CODEC_DELTA || c->colors < 1 || c->colors > AP_MAX_COLORS || c->frames == 0) {
         return AP_BAD_HEADER;
     }
@@ -72,23 +80,26 @@ static ap_status_t parse_clip(const ap_pack_t *p, const uint8_t *e, uint32_t tbl
     }
     c->palette = p->base + pal_off;
     c->frame_tbl = p->base + frm_off;
+    uint32_t next = 0;
     for (uint32_t i = 0; i < c->frames; i++) {
         const uint8_t *fe = c->frame_tbl + i * AP_FRAME_ENTRY_BYTES;
-        const uint16_t meta = rd16(fe + 6);
-        if (!inside(rd32(fe), rd16(fe + 4), p->payload_off, p->total_len) || (meta & AP_FRAME_MS_MASK) == 0) {
+        const uint32_t off = rd32(fe), len = rd32(fe + 4);
+        const uint16_t meta = rd16(fe + 12);
+        if (!inside(off, len, p->payload_off, p->total_len) || (meta & AP_FRAME_MS_MASK) == 0 || (i > 0 && off != next)) {
             return AP_BAD_HEADER;
         }
         if (i == 0 && !(meta & AP_FRAME_KEY)) {
             return AP_BAD_HEADER;
         }
+        next = off + len;
     }
-    if (!ap_layout_ok(p->canvas_w, p->canvas_h, p->scale, c->x, c->y, c->w, c->h)) {
+    if (!ap_layout_ok(p->canvas_w, p->canvas_h, p->scale, c->x, c->y, c->w, c->h, c->reach)) {
         return AP_BAD_LAYOUT;
     }
     return AP_OK;
 }
 
-static ap_status_t parse_pack(const uint8_t *base, uint32_t avail, ap_pack_t *out)
+static ap_status_t parse_pack(const uint8_t *base, uint32_t avail, uint32_t limit, ap_pack_t *out)
 {
     if (!base || avail < AP_HEADER_BYTES) {
         return AP_BAD_HEADER;
@@ -104,7 +115,7 @@ static ap_status_t parse_pack(const uint8_t *base, uint32_t avail, ap_pack_t *ou
         return AP_BAD_HEADER;
     }
     const uint32_t total = rd32(base + 16), index_len = rd32(base + 20);
-    if (total > avail || total < AP_HEADER_BYTES || index_len > total - AP_HEADER_BYTES) {
+    if (total > limit || total < AP_HEADER_BYTES || index_len > total - AP_HEADER_BYTES || index_len > avail - AP_HEADER_BYTES) {
         return AP_BAD_HEADER;
     }
     uint32_t crc = ap_crc32(0, base, 44);
@@ -114,7 +125,7 @@ static ap_status_t parse_pack(const uint8_t *base, uint32_t avail, ap_pack_t *ou
     out->base = base;
     out->total_len = total;
     out->payload_off = AP_HEADER_BYTES + index_len;
-    out->payload_crc = rd32(base + 24);
+    out->avail = avail;
     out->scale = base[10];
     out->clip_count = base[11];
     out->canvas_w = rd16(base + 12);
@@ -154,19 +165,19 @@ static ap_status_t parse_pack(const uint8_t *base, uint32_t avail, ap_pack_t *ou
     return AP_OK;
 }
 
-ap_status_t ap_parse(const uint8_t *base, uint32_t avail, ap_pack_t *out)
+ap_status_t ap_parse(const uint8_t *base, uint32_t avail, uint32_t limit, ap_pack_t *out)
 {
     memset(out, 0, sizeof(*out));
-    const ap_status_t st = parse_pack(base, avail, out);
+    const ap_status_t st = parse_pack(base, avail, limit, out);
     if (st != AP_OK) {
         memset(out, 0, sizeof(*out));
     }
     return st;
 }
 
-bool ap_payload_ok(const ap_pack_t *p)
+bool ap_frame_crc_ok(const ap_frame_t *f)
 {
-    return p && p->base && ap_crc32(0, p->base + p->payload_off, p->total_len - p->payload_off) == p->payload_crc;
+    return f && f->data && ap_crc32(0, f->data, f->len) == f->crc;
 }
 
 bool ap_frame(const ap_pack_t *p, int clip, int frame, ap_frame_t *out)
@@ -175,13 +186,15 @@ bool ap_frame(const ap_pack_t *p, int clip, int frame, ap_frame_t *out)
         return false;
     }
     const uint8_t *fe = p->clip[clip].frame_tbl + (uint32_t)frame * AP_FRAME_ENTRY_BYTES;
-    const uint32_t off = rd32(fe);
-    const uint16_t len = rd16(fe + 4), meta = rd16(fe + 6);
+    const uint32_t off = rd32(fe), len = rd32(fe + 4);
+    const uint16_t meta = rd16(fe + 12);
     if (!inside(off, len, p->payload_off, p->total_len)) {
         return false;
     }
-    out->data = p->base + off;
+    out->data = p->avail >= p->total_len ? p->base + off : NULL;
+    out->off = off;
     out->len = len;
+    out->crc = rd32(fe + 8);
     out->ms = meta & AP_FRAME_MS_MASK;
     out->key = (meta & AP_FRAME_KEY) != 0;
     return true;
@@ -189,7 +202,7 @@ bool ap_frame(const ap_pack_t *p, int clip, int frame, ap_frame_t *out)
 
 bool ap_decode(const ap_frame_t *f, uint8_t *buf, uint32_t area)
 {
-    if (!f || !buf) {
+    if (!f || !buf || (!f->data && f->len > 0)) {
         return false;
     }
     if (f->key) {

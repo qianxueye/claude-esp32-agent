@@ -16,12 +16,12 @@ static const uint8_t *const GOLDEN_CLIPS[2] = {APACK_GOLDEN_CLIP0, APACK_GOLDEN_
 static ap_pack_t golden(void)
 {
     ap_pack_t p;
-    assert(ap_parse(APACK_GOLDEN_PACK, sizeof APACK_GOLDEN_PACK, &p) == AP_OK);
+    assert(ap_parse(APACK_GOLDEN_PACK, sizeof APACK_GOLDEN_PACK, sizeof APACK_GOLDEN_PACK, &p) == AP_OK);
     return p;
 }
 
 /* A pack view with only the fields placement reads: one crop on a canvas. */
-static ap_pack_t canvas(int cw, int ch, int scale, int x, int y, int w, int h)
+static ap_pack_t canvas(int cw, int ch, int scale, int x, int y, int w, int h, int reach)
 {
     ap_pack_t p;
     memset(&p, 0, sizeof p);
@@ -33,7 +33,8 @@ static ap_pack_t canvas(int cw, int ch, int scale, int x, int y, int w, int h)
     p.clip[0].y = (uint16_t)y;
     p.clip[0].w = (uint16_t)w;
     p.clip[0].h = (uint16_t)h;
-    assert(ap_layout_ok(p.canvas_w, p.canvas_h, p.scale, p.clip[0].x, p.clip[0].y, p.clip[0].w, p.clip[0].h));
+    p.clip[0].reach = (uint16_t)reach;
+    assert(ap_layout_ok(p.canvas_w, p.canvas_h, p.scale, p.clip[0].x, p.clip[0].y, p.clip[0].w, p.clip[0].h, p.clip[0].reach));
     return p;
 }
 
@@ -74,10 +75,11 @@ static void test_place_at_every_orbit_point(void)
 {
     const ap_pack_t g = golden();
     assert(placed_well(&g, 0, 0));
-    const int top = AP_CANVAS_MAX_PX / 2 - AP_SAFE_UP_PX, h = AP_SAFE_UP_PX + AP_SAFE_DOWN_PX;
-    const ap_pack_t full = canvas(AP_CANVAS_MAX_PX, AP_CANVAS_MAX_PX, 1, 0, top, AP_CANVAS_MAX_PX, h);
+    /* A 240 px canvas whose crop spans 92 px above and 96 px below the centre; reach is its farthest corner, 154 px. */
+    const int top = 28, h = 188;
+    const ap_pack_t full = canvas(240, 240, 1, 0, top, 240, h, 154);
     assert(placed_well(&full, 0, 0));
-    const ap_pack_t half = canvas(AP_CANVAS_MAX_PX / 2, AP_CANVAS_MAX_PX / 2, 2, 0, top / 2, AP_CANVAS_MAX_PX / 2, h / 2);
+    const ap_pack_t half = canvas(120, 120, 2, 0, top / 2, 120, h / 2, 77);
     assert(placed_well(&half, 0, 0));
     /* Red proof: applying the mascot's one-unit bob moves the canvas off the mascot centre and, under a full bubble at the lowest orbit row, out of the scene. */
     assert(!placed_well(&g, 0, BUBBLE_UNIT_PX));
@@ -123,7 +125,7 @@ static void test_copy_clips_to_the_scene(void)
     assert(pl.x0 >= pl.x1);
     check_copy(&g, c1, APACK_GOLDEN_CLIP1, 4 * SCENE, 0);
     /* Scale 2 widens each index to a 2 x 2 block, also when the clip edge cuts a block in half. */
-    ap_pack_t two = canvas(8, 8, 2, 1, 2, 3, 2);
+    ap_pack_t two = canvas(8, 8, 2, 1, 2, 3, 2, 4);
     static const uint8_t px[6] = {1, 2, 3, 4, 5, 6};
     check_copy(&two, &two.clip[0], px, 0, 0);
     check_copy(&two, &two.clip[0], px, -SCENE / 2 + 5, 0);
@@ -196,9 +198,9 @@ static const ap_pack_t *sim_pack(void)
         c->frame_tbl = g_tbl[k];
         for (int i = 0; i < 4; i++) {
             const uint16_t meta = (uint16_t)(100 | (i == 0 ? AP_FRAME_KEY : 0));
-            memset(g_tbl[k] + i * AP_FRAME_ENTRY_BYTES, 0, 6);
-            g_tbl[k][i * AP_FRAME_ENTRY_BYTES + 6] = (uint8_t)meta;
-            g_tbl[k][i * AP_FRAME_ENTRY_BYTES + 7] = (uint8_t)(meta >> 8);
+            memset(g_tbl[k] + i * AP_FRAME_ENTRY_BYTES, 0, AP_FRAME_ENTRY_BYTES);
+            g_tbl[k][i * AP_FRAME_ENTRY_BYTES + 12] = (uint8_t)meta;
+            g_tbl[k][i * AP_FRAME_ENTRY_BYTES + 13] = (uint8_t)(meta >> 8);
         }
     }
     memset(g_pack.state_clip, AP_NO_CLIP, sizeof g_pack.state_clip);
