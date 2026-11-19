@@ -416,6 +416,101 @@ static void test_volume_multi_step_budget(void)
     assert(worst <= 32);
 }
 
+static void test_a7_one_meter(void)
+{
+    arcvis_t v;
+    av_init(&v);
+    av_arm(&v, 40);
+    av_frame(&v, 0, 0);
+    av_end(&v, 40, 100);
+    assert(av_frame(&v, 200, 0).flags == 0);
+    av_arm_kind(&v, AV_BRT, 16, 0);
+    avact_t a = av_frame(&v, 216, 0);
+    assert(a.flags == (AV_CLEAR_OLD | AV_DRAW_NEW) && a.old_kind == AV_VOL && a.old_quad == 0 && a.kind == AV_BRT && a.val == 16);
+    av_set(&v, 17);
+    a = av_frame(&v, 232, 0);
+    assert(a.flags == AV_DIFF && a.kind == AV_BRT && a.from == 16 && a.to == 17);
+    av_end(&v, 17, 248);
+    assert(av_frame(&v, 300, 0).flags == 0);
+    av_arm(&v, 55);
+    a = av_frame(&v, 316, 0);
+    assert(a.flags == (AV_CLEAR_OLD | AV_DRAW_NEW) && a.old_kind == AV_BRT && a.kind == AV_VOL && a.val == 55);
+    av_end(&v, 55, 400);
+    assert(av_frame(&v, 400 + VOL_ARC_LINGER_MS, 0).flags == AV_CLEAR_OLD);
+    /* One instance per kind draws the second meter while the first still lingers: the red proof. */
+    arcvis_t wrong_vol, wrong_brt;
+    av_init(&wrong_vol);
+    av_init(&wrong_brt);
+    av_arm(&wrong_vol, 40);
+    av_frame(&wrong_vol, 0, 0);
+    av_end(&wrong_vol, 40, 100);
+    av_arm_kind(&wrong_brt, AV_BRT, 16, 0);
+    assert(av_frame(&wrong_vol, 216, 0).flags == 0 && av_frame(&wrong_brt, 216, 0).flags == AV_DRAW_NEW);
+}
+
+static void test_a8_latched_quadrant(void)
+{
+    arcvis_t v;
+    av_init(&v);
+    av_arm_kind(&v, AV_BRT, 16, 0);
+    assert(av_frame(&v, 0, 0).flags == AV_DRAW_NEW);
+    assert(av_frame(&v, 16, 1).flags == 0);
+    av_set(&v, 17);
+    avact_t a = av_frame(&v, 32, 1);
+    assert(a.flags == AV_DIFF && a.quad == 0);
+    av_end(&v, 17, 48);
+    assert(av_frame(&v, 64, 2).flags == 0);
+    av_arm(&v, 40);
+    a = av_frame(&v, 80, 1);
+    assert(a.flags == (AV_CLEAR_OLD | AV_DRAW_NEW) && a.old_quad == 0 && a.quad == 1);
+    a = av_frame(&v, 96, 2);
+    assert(a.flags == (AV_CLEAR_OLD | AV_DRAW_NEW) && a.old_quad == 1 && a.quad == 2);
+    /* Following the target re-anchors the segment mid-swipe: the red proof. */
+    arcvis_t wrong;
+    av_init(&wrong);
+    av_arm_kind(&wrong, AV_BRT, 16, -1);
+    av_frame(&wrong, 0, 0);
+    assert(av_frame(&wrong, 16, 1).flags == (AV_CLEAR_OLD | AV_DRAW_NEW));
+    av_init(&v);
+    av_force_kind(&v, AV_BRT, 11);
+    a = av_frame(&v, 0, 3);
+    assert(a.flags == AV_DRAW_NEW && a.kind == AV_BRT && a.quad == 3 && a.val == 11);
+}
+
+static void test_a9_blink(void)
+{
+    const uint32_t t = 0xFFFFFF80u;
+    arcvis_t v;
+    av_init(&v);
+    av_arm_kind(&v, AV_BRT, BRT_STEPS, 0);
+    av_frame(&v, t, 0);
+    av_blink(&v, t + 16);
+    avact_t a = av_frame(&v, t + 16, 0);
+    assert(a.flags == AV_CLEAR_OLD && a.old_kind == AV_BRT);
+    for (uint32_t d = 32; d < 16 + BRT_END_BLINK_MS; d += 16) {
+        assert(av_frame(&v, t + d, 0).flags == 0);
+    }
+    a = av_frame(&v, t + 16 + BRT_END_BLINK_MS, 0);
+    assert(a.flags == AV_DRAW_NEW && a.kind == AV_BRT && a.val == BRT_STEPS);
+
+    av_blink(&v, t + 400);
+    assert(av_frame(&v, t + 400, 0).flags == AV_CLEAR_OLD);
+    av_end(&v, BRT_STEPS, t + 450);
+    assert(av_frame(&v, t + 450, 0).flags == 0);
+    assert(av_frame(&v, t + 400 + BRT_END_BLINK_MS, 0).flags == AV_DRAW_NEW);
+    for (uint32_t d = 400 + BRT_END_BLINK_MS + 16; d < 450 + VOL_ARC_LINGER_MS; d += 16) {
+        assert(av_visible(&v, t + d) && av_frame(&v, t + d, 0).flags == 0);
+    }
+    assert(av_frame(&v, t + 450 + VOL_ARC_LINGER_MS, 0).flags == AV_CLEAR_OLD);
+
+    av_arm_kind(&v, AV_BRT, 0, 0);
+    av_frame(&v, t + 2000, 0);
+    av_blink(&v, t + 2016);
+    av_frame(&v, t + 2016, 0);
+    av_arm_kind(&v, AV_BRT, 0, 0);
+    assert(av_frame(&v, t + 2032, 0).flags == AV_DRAW_NEW);
+}
+
 int main(void)
 {
     test_a1_band_and_order();
@@ -430,6 +525,9 @@ int main(void)
     test_a5_minimum_is_visible();
     test_a6_segment_budget();
     test_volume_multi_step_budget();
+    test_a7_one_meter();
+    test_a8_latched_quadrant();
+    test_a9_blink();
     puts("ok");
     return 0;
 }
