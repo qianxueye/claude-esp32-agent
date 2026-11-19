@@ -3,6 +3,10 @@
 #include <stdbool.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define MASK565 0x07E0F81Fu
 
 static void sincos_tenths(int tenths, float *s, float *c)
