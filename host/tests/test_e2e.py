@@ -66,7 +66,7 @@ async def test_two_turns_one_session():
         mark = 0
         for i, mic in enumerate(mics):
             dev.mic = mic
-            dev.inject(Input.TAP)
+            dev.inject(Input.BOOT_BUTTON)
             async with asyncio.timeout(120):
                 while len(relay.turn_log) <= i:
                     await asyncio.sleep(0.1)
