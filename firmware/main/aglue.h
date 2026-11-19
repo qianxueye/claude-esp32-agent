@@ -12,7 +12,7 @@ _Static_assert(DP_CAUSE_N < 31, "the pickup bit sits above every cause bit");
 
 /* The 2 s log lines; two lines so the worst case fits LOG_LINE_MAX_BYTES with its prefix, checked by aglue_test. */
 #define AG_LINE_FMT "anim: pack=%d skin=%d clip=%d frames=%u late=%u cuts=%u seek=%u verify_ms=%u iheap=%u/%u ilarge=%u"
-#define AG_TIME_LINE_FMT "animt: dec_us=%u/%u work_us=%u/%u cut_ms=%u/%u"
+#define AG_TIME_LINE_FMT "animt: dec_us=%u/%u work_us=%u/%u cut_ms=%u/%u boot_ms=%u patch_us=%u/%u ring_defer=%u"
 
 /* Wake bits for one IMU sample: the lifted level wakes, only the pickup edge also carries AG_PICKUP_BIT. */
 uint32_t ag_imu_bits(int motion_ev, bool lifted);
@@ -92,3 +92,22 @@ ag_bubble_t ag_side_bubble(ag_content_t content, bool thought, bool left, int bu
 irect_t ag_bubble_bbox(const ag_bubble_t *b);
 /* Clawd's bubble above the mascot, as ui.c draws it. */
 ag_top_bubble_t ag_top_bubble(int w_units, bool thought, int pop, int gx, int gy, int scene);
+
+/* A running count, sum and maximum of per-frame times in microseconds. */
+typedef struct {
+    uint32_t n, sum, max;
+} ag_acc_t;
+void ag_acc_add(ag_acc_t *a, uint32_t us);
+/* Mean over the window between two reads of the cumulative counters, safe across one wrap of the sum or the count; 0 for an empty window. */
+uint32_t ag_window_mean(uint32_t prev_sum, uint32_t prev_n, uint32_t sum, uint32_t n);
+
+/* The work statistics of decoded-art frames; the first refresh after start is the boot frame and is reported apart. */
+typedef struct {
+    bool armed;
+    uint32_t boot_us;
+    ag_acc_t work;
+} ag_work_t;
+/* Folds one finished refresh: frame_us is the decoded art's time from decode to the end of the refresh (the refresh alone when none was pending). The first call only records boot_us; later calls add a sample when pending. */
+void ag_work_refresh(ag_work_t *w, bool pending, uint32_t frame_us);
+/* The boot frame's time in milliseconds, rounded to nearest; 0 before it. */
+uint32_t ag_work_boot_ms(const ag_work_t *w);

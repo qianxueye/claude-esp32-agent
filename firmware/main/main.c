@@ -379,7 +379,14 @@ static void life_task(void *arg)
             ESP_LOGI(TAG, AG_LINE_FMT, an.pack, an.skin, an.clip, (unsigned)an.frames, (unsigned)an.late, (unsigned)an.cuts, (unsigned)an.seeks, (unsigned)an.verify_ms,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-            ESP_LOGI(TAG, AG_TIME_LINE_FMT, (unsigned)an.dec_sum, (unsigned)an.dec_max, (unsigned)an.work_sum, (unsigned)an.work_max, (unsigned)an.cut_last, (unsigned)an.cut_max);
+            static uint32_t prev_patch_sum, prev_patch_n, prev_defer;
+            const uint32_t patch_mean = ag_window_mean(prev_patch_sum, prev_patch_n, an.patch_sum, an.patch_n);
+            const uint32_t defer = an.ring_defer - prev_defer;
+            prev_patch_sum = an.patch_sum;
+            prev_patch_n = an.patch_n;
+            prev_defer = an.ring_defer;
+            ESP_LOGI(TAG, AG_TIME_LINE_FMT, (unsigned)an.dec_sum, (unsigned)an.dec_max, (unsigned)an.work_sum, (unsigned)an.work_max, (unsigned)an.cut_last, (unsigned)an.cut_max,
+                     (unsigned)an.boot_ms, (unsigned)patch_mean, (unsigned)an.patch_max, (unsigned)defer);
         }
     }
 }

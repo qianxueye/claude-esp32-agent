@@ -123,7 +123,10 @@ static int s_anim_pin = -1, s_pal_clip = -1;
 static aplay_out_t s_anim = {APLAY_NOTHING, 0};
 static uint8_t *s_abuf;
 static ag_held_t s_held = {-1, -1, 0, 0};
-static volatile uint32_t s_dec_sum, s_dec_max, s_work_sum, s_work_max, s_cut_last, s_cut_max;
+static volatile uint32_t s_dec_sum, s_dec_max, s_cut_last, s_cut_max, s_ring_defer;
+static ag_work_t s_work;
+static ag_acc_t s_patch;
+static uint32_t s_patch_acc_us; /* patch time of the refresh in progress */
 static int64_t s_work_t0, s_work_tick_us, s_refr_t0_us, s_cut_t0;
 static int s_work_stage; /* 1: frame decoded, 2: presented, waiting for its flush */
 static bool s_cut_pending;
@@ -657,7 +660,9 @@ static void patch_chunk(uint16_t *chunk, int x0, int y0, int x1, int y1)
 static esp_err_t flush_hook(lv_display_t *disp, esp_lcd_panel_handle_t panel, int x0, int y0, int x1, int y1, const void *map, void *ctx)
 {
     if (art_wanted()) {
+        const int64_t t0 = esp_timer_get_time();
         patch_chunk((uint16_t *)map, x0 - CANVAS_OFF, y0 - CANVAS_OFF, x1 - CANVAS_OFF, y1 - CANVAS_OFF);
+        s_patch_acc_us += (uint32_t)(esp_timer_get_time() - t0);
     }
     return esp_lcd_panel_draw_bitmap(panel, x0, y0, x1, y1, map);
 }
@@ -833,11 +838,13 @@ static void refr_cb(lv_event_t *e)
             s_refr_worst_ms = d;
         }
         const int64_t t = esp_timer_get_time();
-        if (s_work_stage == 2) {
-            const uint32_t us = (uint32_t)(s_work_tick_us + (t - s_refr_t0_us));
-            s_work_sum += us;
-            s_work_max = us > s_work_max ? us : s_work_max;
-            s_work_stage = 0;
+        const bool first = !s_work.armed;
+        const uint32_t refr_us = (uint32_t)(t - s_refr_t0_us);
+        ag_work_refresh(&s_work, s_work_stage == 2, (s_work_stage == 2 ? (uint32_t)s_work_tick_us : 0) + refr_us);
+        s_work_stage = first || s_work_stage == 2 ? 0 : s_work_stage;
+        if (s_patch_acc_us) {
+            ag_acc_add(&s_patch, s_patch_acc_us);
+            s_patch_acc_us = 0;
         }
         if (s_cut_pending) {
             s_cut_last = (uint32_t)((t - s_cut_t0) / 1000);
@@ -1128,6 +1135,8 @@ static void tick_cb(lv_timer_t *t)
     }
     if (volarc_ring_ok(arc_update(now), s_tick_bands)) {
         update_ring();
+    } else {
+        s_ring_defer++;
     }
     if (s_work_stage == 1) {
         s_work_tick_us = esp_timer_get_time() - s_work_t0;
@@ -1459,8 +1468,13 @@ void ui_anim_stats(ui_anim_stats_t *out)
         .frames = s_held.frames,
         .dec_sum = s_dec_sum,
         .dec_max = s_dec_max,
-        .work_sum = s_work_sum,
-        .work_max = s_work_max,
+        .work_sum = s_work.work.sum,
+        .work_max = s_work.work.max,
+        .boot_ms = ag_work_boot_ms(&s_work),
+        .patch_n = s_patch.n,
+        .patch_sum = s_patch.sum,
+        .patch_max = s_patch.max,
+        .ring_defer = s_ring_defer,
         .late = s_ap.late,
         .cuts = s_ap.cuts,
         .cut_last = s_cut_last,

@@ -52,6 +52,7 @@ void ui_set_anim_pin(int clip);
 typedef struct {
     int pack, skin, clip;
     uint32_t frames, dec_sum, dec_max, work_sum, work_max, late, cuts, cut_last, cut_max, seeks, verify_ms;
+    uint32_t boot_ms, patch_n, patch_sum, patch_max, ring_defer;
 } ui_anim_stats_t;
-/* Cumulative animation counters; times in microseconds except cut and verify, in milliseconds. */
+/* Cumulative animation counters; times in microseconds except cut, verify and boot, in milliseconds; work excludes the boot frame. */
 void ui_anim_stats(ui_anim_stats_t *out);

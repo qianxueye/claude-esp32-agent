@@ -186,3 +186,33 @@ ag_top_bubble_t ag_top_bubble(int w_units, bool thought, int pop, int gx, int gy
     t.body = (ag_rect_t){(t.cx_u - ws / 2) * U, (t.bottom_u - hs) * U, ws * U, hs * U};
     return t;
 }
+
+void ag_acc_add(ag_acc_t *a, uint32_t us)
+{
+    a->n++;
+    a->sum += us;
+    a->max = us > a->max ? us : a->max;
+}
+
+uint32_t ag_window_mean(uint32_t prev_sum, uint32_t prev_n, uint32_t sum, uint32_t n)
+{
+    const uint32_t dn = n - prev_n;
+    return dn ? (sum - prev_sum) / dn : 0;
+}
+
+void ag_work_refresh(ag_work_t *w, bool pending, uint32_t frame_us)
+{
+    if (!w->armed) {
+        w->armed = true;
+        w->boot_us = frame_us;
+        return;
+    }
+    if (pending) {
+        ag_acc_add(&w->work, frame_us);
+    }
+}
+
+uint32_t ag_work_boot_ms(const ag_work_t *w)
+{
+    return (w->boot_us + 500) / 1000;
+}

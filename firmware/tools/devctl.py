@@ -37,7 +37,7 @@ BRIGHT_LINE = re.compile(rb"bright " + rb" ".join(k.encode() + rb"=(-?\d+)" for 
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 BOARD_MS = re.compile(rb"\((\d+)\) ")
 ANIM_KEYS = ("pack", "skin", "clip", "frames", "late", "cuts", "seek", "verify_ms", "iheap", "ilarge")  # AG_LINE_FMT in firmware/main/aglue.h
-ANIMT_KEYS = ("dec_us", "work_us", "cut_ms")  # AG_TIME_LINE_FMT
+ANIMT_KEYS = ("dec_us", "work_us", "cut_ms", "boot_ms", "patch_us", "ring_defer")  # AG_TIME_LINE_FMT
 AUDIO_KEYS = ("spkovf", "under", "slow", "micgap", "micdrop")  # stats line counters that gate G3 needs unchanged
 KEEPALIVE_S = 1.0  # plain configuration: below the board's 5 s host-silence timeout
 GATE_VOLUME_MAX = 30  # Owner rule: speech volume during a gate run
@@ -708,6 +708,8 @@ def anim_report(a, b, sa, sb):
     dec = u32_delta(a["dec_us"][0], b["dec_us"][0])
     lines.append("G2 work mean %d us, worst so far %d us; decode mean %d us, worst so far %d us; limits come from the pack's frame durations"
                  % (work // frames if frames else 0, b["work_us"][1], dec // frames if frames else 0, b["dec_us"][1]))
+    lines.append("G2 boot frame %d ms; patch_us over the last window: mean %d, worst so far %d; ring updates deferred in it: %d"
+                 % (b["boot_ms"], b["patch_us"][0], b["patch_us"][1], b["ring_defer"]))
     if sa is None or sb is None:
         failed = True
         lines.append("G3 FAIL no stats line before or after")

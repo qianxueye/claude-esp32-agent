@@ -448,12 +448,42 @@ static void test_log_lines_fit(void)
     char line[512];
     int n = snprintf(line, sizeof line, PREFIX AG_LINE_FMT, AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W);
     assert(n > 0 && n < LOG_LINE_MAX_BYTES);
-    n = snprintf(line, sizeof line, PREFIX AG_TIME_LINE_FMT, W, W, W, W, W, W);
+    n = snprintf(line, sizeof line, PREFIX AG_TIME_LINE_FMT, W, W, W, W, W, W, W, W, W, W);
     assert(n > 0 && n < LOG_LINE_MAX_BYTES);
+    printf("log lines: anim %d, animt %d of %d bytes\n", snprintf(line, sizeof line, PREFIX AG_LINE_FMT, AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W), n, LOG_LINE_MAX_BYTES);
     /* Red proof: the same fields on one line are cut. */
     n = snprintf(line, sizeof line, PREFIX "anim: pack=%d skin=%d clip=%d frames=%u dec_us=%u/%u work_us=%u/%u late=%u cuts=%u cut_ms=%u/%u seek=%u verify_ms=%u iheap=%u/%u ilarge=%u",
                  AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W, W, W, W, W, W, W);
     assert(n >= LOG_LINE_MAX_BYTES);
+}
+
+/* BF1: the first refresh is the boot frame, reported apart and out of the work maximum; the next frame is the first sample. */
+static void test_bf1_boot_frame(void)
+{
+    ag_work_t w;
+    memset(&w, 0, sizeof w);
+    ag_work_refresh(&w, true, 81800);
+    assert(w.armed && w.boot_us == 81800 && ag_work_boot_ms(&w) == 82 && w.work.n == 0 && w.work.max == 0 && w.work.sum == 0);
+    ag_work_refresh(&w, true, 26000);
+    assert(w.work.n == 1 && w.work.max == 26000 && w.work.sum == 26000 && w.boot_us == 81800);
+    ag_work_refresh(&w, false, 17000);
+    ag_work_refresh(&w, true, 30000);
+    assert(w.work.n == 2 && w.work.max == 30000 && w.work.sum == 56000);
+    /* A boot refresh with no pending decode is the boot frame too, and the rounding is to nearest. */
+    memset(&w, 0, sizeof w);
+    ag_work_refresh(&w, false, 17499);
+    assert(w.armed && ag_work_boot_ms(&w) == 17 && w.work.n == 0);
+    ag_work_refresh(&w, true, 500);
+    assert(w.work.n == 1 && w.work.max == 500);
+    assert(ag_work_boot_ms(&(ag_work_t){true, 17500, {0, 0, 0}}) == 18 && ag_work_boot_ms(&(ag_work_t){0}) == 0);
+    /* Red proof: sampling the boot refresh like any other puts 81.8 ms in the maximum. */
+    ag_acc_t wrong = {0, 0, 0};
+    ag_acc_add(&wrong, 81800);
+    assert(wrong.max == 81800);
+    /* The window mean over two reads, also across a wrap of the sum. */
+    assert(ag_window_mean(1000, 10, 4000, 13) == 1000 && ag_window_mean(5, 5, 9, 5) == 0);
+    assert(ag_window_mean(0xFFFFFF00u, 100, 0x100u + 0x400u, 102) == 0x300u);
+    puts("BF1: boot frame apart, next frame first sample");
 }
 
 /* S1: LRU data cache of 128 sets x 8 ways x 32 B lines; counts misses of a walk down every column of a size x size byte buffer. */
@@ -507,6 +537,7 @@ int main(void)
 {
     test_scene_stride_suits_the_cache();
     test_log_lines_fit();
+    test_bf1_boot_frame();
     test_sticker_place();
     test_b1_side_bubble_table();
     test_b2_left_mirrors_right();

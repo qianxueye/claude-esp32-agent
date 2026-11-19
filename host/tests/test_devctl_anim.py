@@ -14,10 +14,11 @@ SPEC.loader.exec_module(devctl)
 FIRMWARE = Path(__file__).parents[2] / "firmware" / "main"
 
 
-def anim_lines(ms, frames=100, late=0, cuts=2, pack=1, verify=640, free=101000, large=40000, work=(150000, 9000), dec=(30000, 2100)):
+def anim_lines(ms, frames=100, late=0, cuts=2, pack=1, verify=640, free=101000, large=40000, work=(150000, 9000), dec=(30000, 2100), boot=82, patch=(4200, 6100), defer=3):
     a = b"I (%d) app: anim: pack=%d skin=1 clip=0 frames=%d late=%d cuts=%d seek=0 verify_ms=%d iheap=%d/%d ilarge=%d" % (
         ms, pack, frames, late, cuts, verify, free, free - 900, large)
-    t = b"I (%d) app: animt: dec_us=%d/%d work_us=%d/%d cut_ms=40/71" % (ms, dec[0], dec[1], work[0], work[1])
+    t = b"I (%d) app: animt: dec_us=%d/%d work_us=%d/%d cut_ms=40/71 boot_ms=%d patch_us=%d/%d ring_defer=%d" % (
+        ms, dec[0], dec[1], work[0], work[1], boot, patch[0], patch[1], defer)
     return [a, t]
 
 
@@ -70,6 +71,7 @@ def test_report_computes_deltas_across_a_wrap():
     assert "G1 PASS late +0; frames +900 in 60.0 s (15.00/s)" in text
     assert "G2 work mean 10000 us, worst so far 9500 us" in text
     assert "G3 PASS spkovf +0 under +0" in text
+    assert "G2 boot frame 82 ms; patch_us over the last window: mean 4200, worst so far 6100; ring updates deferred in it: 3" in text
     assert "G4 cut_ms last 40 worst 71" in text and "G7 PASS pack=1 verify_ms=640" in text
     assert re.search(r"^G4 (?!PASS|FAIL)", text, re.M) and re.search(r"^G6 (?!PASS|FAIL)", text, re.M)
 
