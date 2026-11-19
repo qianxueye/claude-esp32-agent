@@ -94,7 +94,7 @@ static int s_pop, s_pop_target, s_bub_state;
 static scene_t s_drawn;
 static volknob_t s_vk;
 static arcvis_t s_av;
-static volarc_t s_arc, s_barc;
+static volarc_t s_arc, s_barc, s_over[2];
 static uint16_t s_arc_col[3], s_barc_col[3];
 static int s_bench, s_ring_width, s_ring_opa;
 static char s_miss[150];
@@ -579,7 +579,10 @@ static void knob_events(int ev, uint32_t now)
             dp_bump(&s_dp, dp_clock(), brt_level(s_vk.bi == BRT_STEPS ? s_vk.bi - BRT_BOUNCE_STEPS : s_vk.bi + BRT_BOUNCE_STEPS));
         }
     }
-    if (ev & (VK_EV_ARM | VK_EV_VOL | VK_EV_BRT_ARM | VK_EV_BRT | VK_EV_BRT_STOP)) {
+    if (ev & VK_EV_OVER) {
+        av_over(&s_av, s_vk.over);
+    }
+    if (ev & (VK_EV_ARM | VK_EV_VOL | VK_EV_BRT_ARM | VK_EV_BRT | VK_EV_BRT_STOP | VK_EV_OVER)) {
         dp_activity(&s_dp, dp_clock(), DP_CAUSE_TOUCH);
     }
     if (ev & (VK_EV_COMMIT | VK_EV_CANCEL)) {
@@ -734,17 +737,37 @@ static void arc_put(int kind, uint32_t e, int quad, int v)
     ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = kind == AV_BRT ? s_barc_col[volarc_seg_class(t, v)] : s_arc_col[volarc_class(t, v)];
 }
 
-static int arc_invalidate(int kind, int quad, int lo, int hi)
+static const volarc_t *over_table(int kind)
 {
-    volarc_rect_t r[VOLARC_MAX_AREAS];
-    int chunk = kind == AV_BRT ? BRT_ARC_CHUNK_CELLS : VOL_ARC_CHUNK_THR;
-    int n = volarc_areas_chunk(arc_table(kind), quad, lo, hi, chunk, r, VOLARC_MAX_AREAS);
+    return &s_over[kind == AV_BRT ? 1 : 0];
+}
+
+static int arc_chunk(int kind)
+{
+    return kind == AV_BRT ? BRT_ARC_CHUNK_CELLS : VOL_ARC_CHUNK_THR;
+}
+
+static int arc_inv_rects(const volarc_rect_t *r, int n)
+{
     lv_display_t *disp = lv_obj_get_display(s_canvas);
     for (int i = 0; i < n; i++) {
         lv_area_t a = {r[i].x1 + CANVAS_OFF, r[i].y1 + CANVAS_OFF, r[i].x2 + CANVAS_OFF, r[i].y2 + CANVAS_OFF};
         lv_inv_area(disp, &a);
     }
     return n;
+}
+
+static int arc_invalidate(int kind, int quad, int lo, int hi)
+{
+    volarc_rect_t r[VOLARC_MAX_AREAS];
+    return arc_inv_rects(r, volarc_areas_chunk(arc_table(kind), quad, lo, hi, arc_chunk(kind), r, VOLARC_MAX_AREAS));
+}
+
+/* Whole-meter frame: the lit stretch shares the rectangle of the end chunk it touches. */
+static int arc_invalidate_whole(int kind, int quad, int stretch)
+{
+    volarc_rect_t r[VOLARC_MAX_AREAS];
+    return arc_inv_rects(r, volarc_whole_areas(arc_table(kind), over_table(kind), quad, arc_chunk(kind), stretch, r, VOLARC_MAX_AREAS));
 }
 
 static int arc_paint(int kind, int quad, int v, int lo, int hi)
@@ -754,6 +777,19 @@ static int arc_paint(int kind, int quad, int v, int lo, int hi)
         arc_put(kind, t->e[i], quad, v);
     }
     return arc_invalidate(kind, quad, lo, hi);
+}
+
+/* Paints the end-cue cells with threshold in (lo, hi] lit or black for stretch over; blank blacks them all. */
+static void over_put(int kind, int quad, int lo, int hi, int over, bool blank)
+{
+    const volarc_t *t = over_table(kind);
+    uint16_t col = kind == AV_BRT ? s_barc_col[volarc_over_class(1, over)] : s_arc_col[volarc_over_class(0, over)];
+    for (int i = t->cnt[lo]; i < t->cnt[hi]; i++) {
+        int x, y;
+        volarc_xy(t->e[i], quad, &x, &y);
+        bool lit = !blank && volarc_over_lit(volarc_thr(t->e[i]), over);
+        ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = lit ? col : 0;
+    }
 }
 
 /* Returns the number of areas invalidated; the ring waits for a frame with more than VOLARC_RING_MAX_AREAS. */
@@ -768,10 +804,16 @@ static int arc_update(uint32_t now)
             volarc_xy(t->e[i], a.old_quad, &x, &y);
             ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = 0;
         }
-        areas += arc_invalidate(a.old_kind, a.old_quad, 0, t->steps);
+        over_put(a.old_kind, a.old_quad, 0, 2 * ARC_OVER_CELLS, a.old_over, true);
+        areas += arc_invalidate_whole(a.old_kind, a.old_quad, a.old_over);
     }
     if ((a.flags & AV_DRAW_NEW) && arc_table(a.kind)->n > 0) {
-        areas += arc_paint(a.kind, a.quad, a.val, 0, arc_table(a.kind)->steps);
+        const volarc_t *t = arc_table(a.kind);
+        for (int i = 0; i < t->n; i++) {
+            arc_put(a.kind, t->e[i], a.quad, a.val);
+        }
+        over_put(a.kind, a.quad, 0, 2 * ARC_OVER_CELLS, a.over_to, false);
+        areas += arc_invalidate_whole(a.kind, a.quad, a.over_to);
     }
     if ((a.flags & AV_DIFF) && arc_table(a.kind)->n > 0) {
         int lo, hi;
@@ -781,6 +823,14 @@ static int arc_update(uint32_t now)
             volarc_change_range(a.from, a.to, &lo, &hi);
         }
         areas += arc_paint(a.kind, a.quad, a.to, lo, hi);
+    }
+    if ((a.flags & AV_OVER) && arc_table(a.kind)->n > 0) {
+        int lo[2], hi[2], k = volarc_over_ranges(a.over_from, a.over_to, lo, hi);
+        for (int i = 0; i < k; i++) {
+            over_put(a.kind, a.quad, lo[i], hi[i], a.over_to, false);
+        }
+        volarc_rect_t r[2];
+        areas += arc_inv_rects(r, volarc_over_areas(over_table(a.kind), a.quad, a.over_from, a.over_to, r));
     }
     return areas;
 }
@@ -995,6 +1045,15 @@ void ui_start(void)
     if (!barc_store || volarc_build_seg(&s_barc, barc_store, VOLARC_CAP, BRT_ARC_START_DEG, BRT_ARC_SWEEP_DEG, BRT_STEPS + 1) < 0) {
         s_barc.n = 0;
         ESP_LOGW(TAG, "brightness arc table unavailable");
+    }
+    for (int k = 0; k < 2; k++) {
+        uint32_t *store = heap_caps_malloc(VOLARC_OVER_CAP * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+        bool brt = k == AV_BRT;
+        if (!store || volarc_build_over(&s_over[k], store, VOLARC_OVER_CAP, brt ? BRT_ARC_START_DEG : VOL_ARC_START_DEG, brt ? BRT_ARC_SWEEP_DEG : VOL_SWEEP_DEG,
+                                        brt ? BRT_STEPS + 1 : 100) < 0) {
+            s_over[k].n = 0;
+            ESP_LOGW(TAG, "end-cue table %d unavailable", k);
+        }
     }
     render_masks(scr);
     s_blit_done = xSemaphoreCreateBinary();
