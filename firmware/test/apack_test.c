@@ -327,15 +327,15 @@ static void m_scale0(uint8_t *b) { b[10] = 0; }
 static void m_scale3(uint8_t *b) { b[10] = 3; }
 static void m_clips0(uint8_t *b) { b[11] = 0; }
 static void m_clips17(uint8_t *b) { b[11] = 17; }
-static void m_canvas513(uint8_t *b) { put16(b + 12, AP_CANVAS_MAX_PX + 1); }
-static void m_canvas257_x2(uint8_t *b) { b[10] = 2; put16(b + 14, AP_CANVAS_MAX_PX / 2 + 1); }
+static void m_canvas513(uint8_t *b) { put16(b + 12, 513); }
+static void m_canvas257_x2(uint8_t *b) { b[10] = 2; put16(b + 14, 257); }
 static void m_state_ge_count(uint8_t *b) { b[28 + 4] = 2; }
 static void m_state_slot7(uint8_t *b) { b[28 + 7] = 7; }
 static void m_event_slot2(uint8_t *b) { b[36 + 2] = 2; }
 static void m_crop_outside_canvas(uint8_t *b) { put16(clip_entry(b, 0), 11); }
 static void m_crop_flipped(uint8_t *b) { put16(clip_entry(b, 0), 3); }
 static void m_crop_zero_w(uint8_t *b) { put16(clip_entry(b, 0) + 4, 0); }
-static void m_reach_over_cap(uint8_t *b) { put16(clip_entry(b, 0) + 22, AP_ART_REACH_MAX_PX + 1); }
+static void m_reach_over_cap(uint8_t *b) { put16(clip_entry(b, 0) + 22, 208); }
 static void m_reach_below_edge(uint8_t *b) { put16(clip_entry(b, 0) + 22, 4); }
 static void m_reach_above_corner(uint8_t *b) { put16(clip_entry(b, 0) + 22, 9); }
 static void m_reach0(uint8_t *b) { put16(clip_entry(b, 0) + 22, 0); }
@@ -635,18 +635,18 @@ static void test_p6_token_semantics(void)
 static void test_layout_boundaries(void)
 {
     /* Canvas 414 centres on 207: the full-canvas crop has edge distance 207, so reach 207 passes and 208 breaks the cap. */
-    assert(ap_layout_ok(414, 414, 1, 0, 0, 414, 414, AP_ART_REACH_MAX_PX));
-    assert(!ap_layout_ok(414, 414, 1, 0, 0, 414, 414, AP_ART_REACH_MAX_PX + 1));
-    assert(!ap_layout_ok(414, 414, 1, 0, 0, 414, 414, AP_ART_REACH_MAX_PX - 1));
+    assert(ap_layout_ok(414, 414, 1, 0, 0, 414, 414, 207));
+    assert(!ap_layout_ok(414, 414, 1, 0, 0, 414, 414, 208));
+    assert(!ap_layout_ok(414, 414, 1, 0, 0, 414, 414, 206));
     /* Canvas 16, crop 3,4 10x6: edge distance 5, farthest corner hypot(5, 4) = 6.4, so reach 5 to 7 passes. */
     assert(ap_layout_ok(16, 16, 1, 3, 4, 10, 6, 5) && ap_layout_ok(16, 16, 1, 3, 4, 10, 6, 7));
     assert(!ap_layout_ok(16, 16, 1, 3, 4, 10, 6, 4) && !ap_layout_ok(16, 16, 1, 3, 4, 10, 6, 8) && !ap_layout_ok(16, 16, 1, 3, 4, 10, 6, 0));
     /* Canvas 250 is 500 px at scale 2: reach 104 is 208 px and fails, and passes at scale 1; reach 103 is below the edge distance. */
     assert(ap_layout_ok(250, 250, 1, 21, 21, 208, 208, 104) && !ap_layout_ok(250, 250, 2, 21, 21, 208, 208, 104));
     assert(!ap_layout_ok(250, 250, 1, 21, 21, 208, 208, 103));
-    assert(ap_layout_ok(AP_CANVAS_MAX_PX, AP_CANVAS_MAX_PX, 1, 250, 250, 12, 12, 9));
-    assert(!ap_layout_ok(AP_CANVAS_MAX_PX + 1, 200, 1, 250, 100, 1, 1, 130) && !ap_layout_ok(200, AP_CANVAS_MAX_PX + 1, 1, 100, 250, 1, 1, 130));
-    assert(!ap_layout_ok(AP_CANVAS_MAX_PX / 2 + 1, 100, 2, 0, 50, 1, 1, 100));
+    assert(ap_layout_ok(512, 512, 1, 250, 250, 12, 12, 9));
+    assert(!ap_layout_ok(513, 200, 1, 250, 100, 1, 1, 130) && !ap_layout_ok(200, 513, 1, 100, 250, 1, 1, 130));
+    assert(!ap_layout_ok(257, 100, 2, 0, 50, 1, 1, 100));
     assert(!ap_layout_ok(16, 16, 1, 10, 0, 7, 1, 8) && !ap_layout_ok(16, 16, 1, 0, 10, 1, 7, 8));
     assert(!ap_layout_ok(16, 16, 0, 0, 0, 1, 1, 8) && !ap_layout_ok(16, 16, 3, 0, 0, 1, 1, 8) && !ap_layout_ok(0, 16, 1, 0, 0, 1, 1, 8));
     assert(!ap_layout_ok(16, 16, 1, 0, 0, 0, 1, 8) && !ap_layout_ok(16, 16, 1, 0, 0, 1, 0, 8));
@@ -676,6 +676,8 @@ static void test_l1_art_reach_in_scene(void)
     assert(fabs(scene_radius(AP_ART_REACH_MAX_PX + 1, true) - 225.2) < 0.05 && scene_radius(AP_ART_REACH_MAX_PX + 1, true) > SCENE_MAX_RADIUS_PX);
     assert(fabs(scene_radius(AP_ART_REACH_MAX_PX, false) - 233.8) < 0.05 && scene_radius(AP_ART_REACH_MAX_PX, false) > SCENE_MAX_RADIUS_PX);
 }
+
+_Static_assert(AP_ART_REACH_MAX_PX == 207 && AP_CANVAS_MAX_PX == 512, "the caps the layout tests pin");
 
 #define BIG_LEN 70000u
 
