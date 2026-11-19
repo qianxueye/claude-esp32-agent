@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "apack.h"
+#include "apack_golden.h"
 #include "app_config.h"
 #include "dpower.h"
 
@@ -141,6 +142,43 @@ static int decode_all(const ap_pack_t *p)
         free(buf);
     }
     return bad;
+}
+
+static uint16_t pal_at(const ap_clip_t *c, int i)
+{
+    return (uint16_t)(c->palette[2 * i] | (c->palette[2 * i + 1] << 8));
+}
+
+/* The converter's synthetic pack: every field, and every frame decoded in order equals the converter's own decode. */
+static void test_p1_golden(void)
+{
+    uint8_t *m = dup(APACK_GOLDEN_PACK, sizeof APACK_GOLDEN_PACK);
+    ap_pack_t p;
+    assert(ap_parse(m, sizeof APACK_GOLDEN_PACK, &p) == AP_OK && ap_payload_ok(&p));
+    assert(p.total_len == sizeof APACK_GOLDEN_PACK && p.canvas_w == 16 && p.canvas_h == 16 && p.scale == 1);
+    assert(p.clip_count == 2 && p.state_clip[0] == 0 && p.state_clip[1] == 1 && p.pickup_clip == 0);
+    for (int i = 2; i < AP_STATE_SLOTS; i++) {
+        assert(p.state_clip[i] == AP_NO_CLIP);
+    }
+    const ap_clip_t *c0 = &p.clip[0], *c1 = &p.clip[1];
+    assert(c0->x == 3 && c0->y == 4 && c0->w == 10 && c0->h == 6 && c0->frames == 2 && c0->colors == 4 && c0->loop);
+    assert(c1->x == 0 && c1->y == 2 && c1->w == 16 && c1->h == 12 && c1->frames == 1 && c1->colors == 3 && !c1->loop);
+    assert(pal_at(c0, 0) == 0x1082 && pal_at(c0, 1) == 0xCA08 && pal_at(c0, 2) == 0xF79D && pal_at(c0, 3) == 0xFBCB);
+    assert(p.max_area == 192);
+    static const uint16_t MS[2][2] = {{50, 40}, {30, 0}};
+    for (int c = 0; c < p.clip_count; c++) {
+        const uint32_t area = (uint32_t)p.clip[c].w * p.clip[c].h;
+        uint8_t *buf = malloc(area);
+        assert(buf);
+        memset(buf, 0xEE, area);
+        for (int k = 0; k < p.clip[c].frames; k++) {
+            ap_frame_t f;
+            assert(ap_frame(&p, c, k, &f) && f.ms == MS[c][k] && f.key == (k == 0));
+            assert(ap_decode(&f, buf, area) && !memcmp(buf, APACK_GOLDEN_CLIPS[c] + (size_t)k * area, area));
+        }
+        free(buf);
+    }
+    free(m);
 }
 
 static void test_crc_check_value(void)
@@ -593,6 +631,7 @@ static void test_l1_safe_box_in_scene(void)
 int main(void)
 {
     test_crc_check_value();
+    test_p1_golden();
     test_built_pack_parses();
     test_p2_empty_and_foreign();
     test_p3_index_rules();
