@@ -519,6 +519,160 @@ static void test_g16_glue(void)
     assert((g.sw.ev & VK_EV_BRT_COMMIT) && g.s.user == 64 && vs_needs_save(&g.s) && vs_save_due(&g.s, g.sw.t, g.sw.t - VOL_SAVE_MIN_MS, true));
 }
 
+/* Presses at (u, l) from the centre in the UI frame of angle deg: travel along UI-up and UI-right. */
+static void sw_press_ui(sw_t *s, double u, double l, int deg, int bi0)
+{
+    double a = deg * 3.14159265358979323846 / 180.0, ux = round(sin(a)), uy = -round(cos(a));
+    sw_press(s, (int)lround(CTR + u * ux - l * uy), (int)lround(CTR + u * uy + l * ux), deg, false, bi0);
+}
+
+/* Red proof for G17 and G20: the cone alone, without the inward test. */
+static bool wrong_cone_only(double up_peak, double lat_peak)
+{
+    return up_peak >= BRT_ARM_PX && !(lat_peak > BRT_LAT_PX && lat_peak * BRT_CONE_DEN > up_peak * BRT_CONE_NUM);
+}
+
+static void test_g17_rim_split_by_direction(void)
+{
+    const int radii[2] = {190, 225}, alpha[6] = {0, 20, 40, 50, 70, 90};
+    for (int q = 0; q < 4; q++) {
+        for (int j = 0; j < 2; j++) {
+            for (int i = 0; i < 6; i++) {
+                for (int end = -1; end <= 1; end += 2) {
+                    sw_t s;
+                    double a = alpha[i] * 3.14159265358979323846 / 180.0;
+                    sw_press_ui(&s, -end * radii[j] * cos(a), radii[j] * sin(a), QUADS[q], 16);
+                    assert(s.k.cls == VK_EDGE);
+                    sw_slide(&s, end * 100, 0, 25, 16);
+                    int rel = vk_release(&s.k, s.t);
+                    if (alpha[i] <= 40) {
+                        assert((s.ev & VK_EV_BRT_ARM) && rel == VK_EV_BRT_COMMIT && s.k.cls == VK_EDGE);
+                    } else {
+                        assert(!(s.ev & BRT_ANY) && !(rel & BRT_ANY) && s.k.swhy == VK_WHY_TANGENT);
+                    }
+                    if (alpha[i] == 90) {
+                        assert(wrong_cone_only(s.k.up_peak, s.k.lat_peak));
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void test_g18_knob_turns_never_brighten(void)
+{
+    const int radii[5] = {160, 190, 199, 219, 230};
+    bool wrong_first = false;
+    for (int q = 0; q < 4; q++) {
+        for (int j = 0; j < 5; j++) {
+            for (int start = 0; start < 360; start += 5) {
+                for (int dir = -1; dir <= 1; dir += 2) {
+                    for (int drift = 0; drift <= 8; drift += 8) {
+                        volknob_t k;
+                        uint32_t t = 1000;
+                        int ev = 0;
+                        double r0 = radii[j], th = start * 3.14159265358979323846 / 180.0;
+                        vk_press(&k, (int)lround(CTR + r0 * cos(th)), (int)lround(CTR + r0 * sin(th)), t, false, 50);
+                        vk_swipe_frame(&k, (float)QUADS[q]);
+                        for (int i = 1; i <= 18; i++) {
+                            double a = th + dir * i * 3.14159265358979323846 / 180.0, r = r0 - drift * i / 18.0;
+                            int before = ev;
+                            ev |= vk_move(&k, (int)lround(CTR + r * cos(a)), (int)lround(CTR + r * sin(a)), t += 16);
+                            double lat = (k.lx - k.x0) * -k.uy + (k.ly - k.y0) * k.ux;
+                            if (!(before & VK_EV_ARM) && q == 0 && start == 0 && j == 1 && drift == 0) {
+                                wrong_first |= fabs(k.up) >= BRT_ARM_PX && !(fabs(lat) > BRT_LAT_PX && fabs(lat) * BRT_CONE_DEN > fabs(k.up) * BRT_CONE_NUM);
+                            }
+                        }
+                        ev |= vk_release(&k, t);
+                        assert((ev & VK_EV_ARM) && (ev & VK_EV_COMMIT) && !(ev & BRT_ANY));
+                        if (start % 90 == 0 && radii[j] == 190 && drift == 0) {
+                            assert(k.swhy == VK_WHY_TANGENT || k.swhy == VK_WHY_LATERAL);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /* Without the inward test the 3 o'clock turn reaches the arming travel inside the cone before the knob arms: the red proof. */
+    assert(wrong_first);
+}
+
+/* Red proof for G19: a dropped candidate that kills the touch. */
+static int wrong_drop_kills(int state, int swhy)
+{
+    return swhy != VK_WHY_NONE ? VK_DEAD : state;
+}
+
+static void test_g19_dropped_candidate_keeps_knob_and_tap(void)
+{
+    volknob_t k;
+    int ev = 0;
+    vk_press(&k, 413, 232, 0, false, 50);
+    vk_swipe_frame(&k, 0);
+    for (int x = 413, t = 16; x >= 53; x -= 10, t += 16) { ev |= vk_move(&k, x, 232, (uint32_t)t); }
+    assert(!ev && k.state == VK_EDGE && k.why == VK_WHY_ZONE && k.swhy == VK_WHY_LATERAL);
+    assert(wrong_drop_kills(k.state, k.swhy) == VK_DEAD);
+
+    uint32_t t = 0;
+    ev = 0;
+    vk_press(&k, (int)lround(CTR + 152), (int)lround(CTR), t, false, 50);
+    vk_swipe_frame(&k, 0);
+    ev |= vk_move(&k, (int)lround(CTR + 147), (int)lround(CTR), t += 16);
+    ev |= vk_move(&k, (int)lround(CTR + 152), (int)lround(CTR), t += 16);
+    for (int a = 1; a <= 30; a++) {
+        double r = a * 3.14159265358979323846 / 180.0;
+        ev |= vk_move(&k, (int)lround(CTR + 152 * cos(r)), (int)lround(CTR + 152 * sin(r)), t += 16);
+    }
+    assert(!ev && k.state == VK_EDGE && k.why == VK_WHY_ZONE && k.swhy == VK_WHY_TANGENT && vk_release(&k, t) == 0);
+
+    for (int q = 0; q < 4; q++) {
+        sw_t s;
+        sw_press_ui(&s, -152, 0, QUADS[q], 16);
+        assert(s.k.cls == VK_EDGE);
+        sw_at(&s, 3, 0, 50);
+        assert(!s.ev && vk_release(&s.k, s.t + 50) == VK_EV_TAP);
+    }
+}
+
+static void test_g20_outward_rim_stroke_never_arms(void)
+{
+    for (int q = 0; q < 4; q++) {
+        for (int end = -1; end <= 1; end += 2) {
+            sw_t s;
+            sw_press_ui(&s, end * 160, 0, QUADS[q], 16);
+            assert(s.k.cls == VK_EDGE);
+            sw_slide(&s, end * 60, 0, 15, 16);
+            assert(!s.ev && vk_release(&s.k, s.t) == 0 && s.k.swhy == VK_WHY_TANGENT);
+            assert(wrong_cone_only(s.k.up_peak, s.k.lat_peak));
+        }
+    }
+}
+
+/* Red proof for G21: the box rule drops any sample sideways beyond the floor. */
+static bool wrong_box(double lat)
+{
+    return fabs(lat) > BRT_LAT_PX;
+}
+
+static void test_g21_coarse_samples_in_the_cone_arm(void)
+{
+    for (int q = 0; q < 4; q++) {
+        for (int sign = -1; sign <= 1; sign += 2) {
+            sw_t s;
+            centre(&s, QUADS[q], 16);
+            sw_at(&s, sign * 10, 0, 16);
+            sw_at(&s, sign * 150, 26, 33);
+            assert((s.ev & VK_EV_BRT_ARM) && s.k.state == VK_BRIGHT && s.k.ku == sign * 150 && s.k.kl == 26);
+            assert(wrong_box(s.k.kl));
+
+            centre(&s, QUADS[q], 16);
+            sw_at(&s, sign * 10, 0, 16);
+            sw_at(&s, sign * 30, 26, 33);
+            assert(!(s.ev & BRT_ANY) && s.k.state == VK_DEAD && s.k.why == VK_WHY_LATERAL && s.k.swhy == VK_WHY_LATERAL);
+        }
+    }
+}
+
 int main(void)
 {
     test_g2_tap_and_long_rotated();
@@ -536,6 +690,11 @@ int main(void)
     test_g14_jump();
     test_g15_lost();
     test_g16_glue();
+    test_g17_rim_split_by_direction();
+    test_g18_knob_turns_never_brighten();
+    test_g19_dropped_candidate_keeps_knob_and_tap();
+    test_g20_outward_rim_stroke_never_arms();
+    test_g21_coarse_samples_in_the_cone_arm();
     puts("ok");
     return 0;
 }
