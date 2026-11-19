@@ -274,3 +274,65 @@ async def test_relay_speaks_from_qwen_engine():
         assert len(h.dev.spk) > 2 * 12800
     finally:
         await h.down()
+
+
+@needs_afconvert
+async def test_warmup_uses_ready_timeout():
+    seen = []
+
+    def handler(req):
+        seen.append(req.extensions["timeout"]["read"])
+        return httpx.Response(200, content=wav24k())
+
+    q, say = engine(Server(handler), tts_timeout_s=5.0, qwen_ready_timeout_s=77.0)
+    await q.start()
+    await q.synth("好。")
+    assert seen == [77.0, 5.0]
+    assert say.texts == []
+
+
+@needs_afconvert
+async def test_slow_warmup_longer_than_tts_timeout_is_ready():
+    async def slow(req):
+        await asyncio.sleep(0.4)
+        return httpx.Response(200, content=wav24k())
+
+    q, say = engine(slow, tts_timeout_s=0.1, qwen_ready_timeout_s=5.0)
+    await q.start()
+    assert q._http is not None and q._skip_until == 0.0
+
+
+async def test_own_server_failed_warmup_drops_client(tmp_path):
+    srv = tmp_path / "srv.py"
+    srv.write_text(
+        "import sys, http.server\n"
+        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
+        "class H(http.server.BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n        self.send_response(200); self.end_headers()\n"
+        "    def do_POST(self):\n        self.send_response(500); self.end_headers()\n"
+        "    def log_message(self, *x): pass\n"
+        "http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()\n"
+    )
+    cfg = dataclasses.replace(
+        Config(), tts_engine="qwen3", qwen_server_cmd=[sys.executable, str(srv)], log_dir=str(tmp_path),
+        qwen_ready_timeout_s=20.0, qwen_skip_s=0.0,
+    )
+    say = FakeSay()
+    q = QwenTts(cfg, say)
+    await q.start()
+    assert q._http is None and q._proc is None
+    assert await q.synth("好。") == SAY_PCM
+
+
+@needs_afconvert
+async def test_url_mode_failed_warmup_retries_after_skip():
+    server = Server(failures()["status"])
+    q, say = engine(server, qwen_skip_s=0.2)
+    await q.start()
+    assert q._http is not None
+    n = len(server.requests)
+    await q.synth("一。")
+    assert len(server.requests) == n
+    server.handler = lambda req: httpx.Response(200, content=wav24k())
+    await asyncio.sleep(0.25)
+    assert await q.synth("二。") != SAY_PCM
