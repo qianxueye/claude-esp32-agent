@@ -68,6 +68,11 @@
 #define VOL_ARC_MUTE_THR 3 /* plain configuration: pixels shown red at 0 percent */
 #define VOL_ARC_CHUNK_THR 10 /* plain configuration: percent covered by one invalidated area */
 #define VOL_ARC_LINGER_MS 800 /* plain configuration: the arc stays this long after release */
+#define ARC_OVER_CELLS 3 /* plain configuration: most cells either rim arc reaches past an end */
+#define ARC_OVER_C_NUM 1 /* mathematical model, placeholder: with ARC_OVER_C_DEN, stretch gain at the end relative to the in-range rate */
+#define ARC_OVER_C_DEN 1 /* mathematical model, placeholder: see ARC_OVER_C_NUM */
+#define ARC_SPRING_STEP_MS 60 /* plain configuration: time per cell while the stretch springs back */
+#define ARC_OV_LOG_MAX 999999 /* plain configuration: log cap on the ov counters */
 #define VOL_SAVE_MIN_MS 5000 /* mathematical model: flash wear, docs/protocol.md "Volume" */
 #define VOL_NVS_NAMESPACE "clawd"
 #define VOL_NVS_KEY "vol"

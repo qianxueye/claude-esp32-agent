@@ -75,6 +75,38 @@ static void kill(volknob_t *k, int why)
     }
 }
 
+int vk_over_cells(double steps)
+{
+    const int d = ARC_OVER_CELLS + 1;
+    int n = 0;
+    for (int j = 1; j <= ARC_OVER_CELLS; j++) {
+        n += steps * ARC_OVER_C_NUM * (d - j) >= (double)j * d * ARC_OVER_C_DEN;
+    }
+    return n;
+}
+
+/* Tracks the peak push at the end the level rests at; end is -1, 0 or +1 and past the steps pushed this sample. */
+static int over_track(volknob_t *k, int end, double past, bool level_changed)
+{
+    if (end == 0) {
+        k->opush = 0;
+    } else {
+        k->opush = (level_changed ? 0 : k->opush) + (past > 0 ? past : 0);
+    }
+    int over = end * vk_over_cells(k->opush);
+    int ev = over != k->over ? VK_EV_OVER : 0;
+    k->over = over;
+    return ev;
+}
+
+static int over_clear(volknob_t *k)
+{
+    int ev = k->over != 0 ? VK_EV_OVER : 0;
+    k->over = 0;
+    k->opush = 0;
+    return ev;
+}
+
 /* One brightness ladder step per sample travel quantum; edges saturate and count the push. */
 static int brt_step(volknob_t *k)
 {
@@ -91,12 +123,15 @@ static int brt_step(volknob_t *k)
     n = k->bacc < 0 ? -n : n;
     k->bacc -= n * pitch;
     int nb = k->bi + n;
+    double past = 0;
     if (nb > BRT_STEPS || (nb == BRT_STEPS && k->bacc > 0)) {
-        k->push += nb - BRT_STEPS + k->bacc / pitch;
+        past = nb - BRT_STEPS + k->bacc / pitch;
+        k->push += past;
         nb = BRT_STEPS;
         k->bacc = 0;
     } else if (nb < 0 || (nb == 0 && k->bacc < 0)) {
-        k->push += -nb - k->bacc / pitch;
+        past = -nb - k->bacc / pitch;
+        k->push += past;
         nb = 0;
         k->bacc = 0;
     } else if (dir != 0) {
@@ -106,6 +141,7 @@ static int brt_step(volknob_t *k)
         k->bumped = false;
     }
     int ev = nb != k->bi ? VK_EV_BRT : 0;
+    ev |= over_track(k, nb == BRT_STEPS ? 1 : nb == 0 ? -1 : 0, past, nb != k->bi);
     k->bi = nb;
     if (k->push >= 1.0 && !k->bumped) {
         k->bumped = true;
@@ -149,6 +185,7 @@ static int arm_bright(volknob_t *k, uint32_t t_ms)
     k->up_last = k->up;
     k->arm_ms = (int)(t_ms - k->t_moved);
     k->bi = k->bi0;
+    over_clear(k);
     return VK_EV_BRT_ARM;
 }
 
@@ -159,7 +196,7 @@ static int swipe_move(volknob_t *k, int x, int y, bool jump, double lat, uint32_
         if (jump) {
             k->bi = k->bi0;
             kill(k, VK_WHY_JUMP);
-            return VK_EV_BRT_CANCEL;
+            return VK_EV_BRT_CANCEL | over_clear(k);
         }
         return brt_step(k);
     }
@@ -271,7 +308,7 @@ int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
         if (k->state == VK_ARMED) {
             k->v = k->v0;
             kill(k, VK_WHY_JUMP);
-            return VK_EV_CANCEL;
+            return VK_EV_CANCEL | over_clear(k);
         }
         kill(k, VK_WHY_JUMP);
         return 0;
@@ -285,12 +322,14 @@ int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
         k->armed_ever = true;
         k->acc = 0;
         k->v = k->v0;
+        over_clear(k);
         return VK_EV_ARM;
     }
     k->travel += d;
     k->acc += VOL_CW_SIGN * d * 100.0 / VOL_SWEEP_DEG;
     int n = (int)k->acc, nv = clamp_v(k->v + n);
     k->acc -= n;
+    double past = nv >= 100 ? k->v + n - 100 + k->acc : nv <= 0 ? -(k->v + n) - k->acc : 0;
     if (nv >= 100 && k->acc > 0) {
         k->acc = 0;
     }
@@ -298,6 +337,7 @@ int vk_move(volknob_t *k, int x, int y, uint32_t t_ms)
         k->acc = 0;
     }
     int ev = nv != k->v ? VK_EV_VOL : 0;
+    ev |= over_track(k, nv >= 100 ? 1 : nv <= 0 ? -1 : 0, past, nv != k->v);
     k->v = nv;
     return ev;
 }
