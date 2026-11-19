@@ -699,17 +699,19 @@ typedef struct {
     int kind, val, over;
 } st_t;
 
-static st_t g_st[64];
+static st_t g_st[160];
 static int g_nst;
 
-static void build_states(void)
+/* full: every level of both meters; else a sample of levels around the ends, the chunk edges and the middle. */
+static void build_states(bool full)
 {
     static const int vv[] = {0, 1, 2, 3, 4, 5, 10, 11, 50, 89, 90, 91, 99, 100}, bv[] = {0, 1, 2, 8, 9, 10, 16, 23, 24, 31, 32};
     g_nst = 0;
     for (int kind = AV_VOL; kind <= AV_BRT; kind++) {
-        int n = kind == AV_BRT ? (int)(sizeof(bv) / sizeof(bv[0])) : (int)(sizeof(vv) / sizeof(vv[0])), top = kind == AV_BRT ? BRT_STEPS : 100;
+        int top = kind == AV_BRT ? BRT_STEPS : 100;
+        int n = full ? top + 1 : kind == AV_BRT ? (int)(sizeof(bv) / sizeof(bv[0])) : (int)(sizeof(vv) / sizeof(vv[0]));
         for (int i = 0; i < n; i++) {
-            int val = kind == AV_BRT ? bv[i] : vv[i];
+            int val = full ? i : kind == AV_BRT ? bv[i] : vv[i];
             int lo = val == 0 ? -ARC_OVER_CELLS : 0, hi = val == top ? ARC_OVER_CELLS : 0;
             for (int o = lo; o <= hi; o++) {
                 g_st[g_nst++] = (st_t){kind, val, o};
@@ -720,6 +722,7 @@ static void build_states(void)
 }
 
 static uint16_t g_buf[LCD_SIZE * LCD_SIZE], g_fresh[LCD_SIZE * LCD_SIZE];
+static int g_paint = 1; /* 0 counts areas only */
 
 typedef struct {
     int p;
@@ -733,6 +736,9 @@ static uint16_t pxv(int kind, int cls) { return (uint16_t)(1 + kind * 3 + cls); 
 
 static void put(uint16_t *buf, int x, int y, uint16_t v)
 {
+    if (!g_paint) {
+        return;
+    }
     if (buf == g_buf) {
         g_wr[g_nwr].p = y * LCD_SIZE + x;
         g_wr[g_nwr++].old = buf[y * LCD_SIZE + x];
@@ -765,15 +771,13 @@ static void paint_over(uint16_t *buf, int kind, int quad, int over, int lo, int 
     }
 }
 
-static void paint_over_black(uint16_t *buf, int kind, int quad, int over)
+static void blank_over(uint16_t *buf, int kind, int quad)
 {
     const volarc_t *o = &g_ov[kind];
     for (int i = 0; i < o->n; i++) {
-        if (volarc_over_lit(volarc_thr(o->e[i]), over)) {
-            int x, y;
-            volarc_xy(o->e[i], quad, &x, &y);
-            put(buf, x, y, 0);
-        }
+        int x, y;
+        volarc_xy(o->e[i], quad, &x, &y);
+        put(buf, x, y, 0);
     }
 }
 
@@ -828,6 +832,9 @@ static int expected_whole(int kind, int quad, int stretch, volarc_rect_t *out)
 
 static void expect_whole(int kind, int quad, int stretch, const volarc_rect_t *got, int n)
 {
+    if (!g_paint) {
+        return;
+    }
     volarc_rect_t want[VOLARC_MAX_AREAS];
     assert(expected_whole(kind, quad, stretch, want) == n);
     for (int i = 0; i < n; i++) {
@@ -849,7 +856,7 @@ static void mirror_frame(arcvis_t *v, uint32_t now, int quad, frame_t *f)
             volarc_xy(m->e[i], a.old_quad, &x, &y);
             put(g_buf, x, y, 0);
         }
-        paint_over_black(g_buf, a.old_kind, a.old_quad, a.old_over);
+        blank_over(g_buf, a.old_kind, a.old_quad);
         int n = volarc_whole_areas(m, &g_ov[a.old_kind], a.old_quad, chunk_of(a.old_kind), a.old_over, r, VOLARC_MAX_AREAS);
         expect_whole(a.old_kind, a.old_quad, a.old_over, r, n);
         inv(f, r, n);
@@ -992,13 +999,13 @@ static void go(arcvis_t *v, const st_t *a, const st_t *b, int quad, uint32_t *no
     }
 }
 
-static void test_a12_a13_a16_frames(void)
+static void run_frames(bool full)
 {
     setup_tables();
-    build_states();
+    build_states(full);
     g_worst_skip = g_worst_ring = g_worst_total = g_worst_wrong = g_frames = 0;
-    for (int q1 = 0; q1 < 4; q1++) {
-        for (int q2 = 0; q2 < 4; q2++) {
+    for (int q1 = 0; q1 < (full ? 1 : 4); q1++) {
+        for (int q2 = 0; q2 < (full ? 1 : 4); q2++) {
             for (int i = 0; i < g_nst; i++) {
                 if (g_st[i].kind < 0) {
                     continue;
@@ -1015,19 +1022,32 @@ static void test_a12_a13_a16_frames(void)
                     arm_state(&v, &g_st[i], q1);
                     mirror_frame(&v, now, q1, &f);
                     check_frame(&f);
-                    expect_equals_fresh(&g_st[i], q1, q2);
+                    if (g_paint) {
+                        expect_equals_fresh(&g_st[i], q1, q2);
+                    }
                     go(&v, &g_st[i], &g_st[j], q2, &now);
                     mirror_frame(&v, now, q2, &f);
                     check_frame(&f);
                     int qq = g_st[j].kind == AV_BRT && g_st[i].kind == AV_BRT ? q1 : q2;
-                    expect_equals_fresh(&g_st[j], qq, q1);
+                    if (g_paint) {
+                        expect_equals_fresh(&g_st[j], qq, q1);
+                    }
                 }
             }
         }
     }
-    printf("area budget over %d frames: ring skipped at most %d arc areas (limit %d), ring updated at most %d (limit %d), worst total %d of 32, ring judged per part would reach %d\n",
-           g_frames, g_worst_skip, 2 * VOLARC_MAX_AREAS, g_worst_ring, VOLARC_RING_MAX_AREAS, g_worst_total, g_worst_wrong);
+    printf("area budget (%d frames, %s): ring skipped at most %d arc areas (limit %d), ring updated at most %d (limit %d), worst total %d of 32, ring judged per part would reach %d\n",
+           g_frames, full ? "count-only, every level, quadrant 0," : "painted, sampled levels, four quadrants,", g_worst_skip, 2 * VOLARC_MAX_AREAS, g_worst_ring, VOLARC_RING_MAX_AREAS, g_worst_total, g_worst_wrong);
     assert(g_worst_wrong > 32 && g_worst_skip > VOLARC_MAX_AREAS);
+}
+
+static void test_a12_a13_a16_frames(void)
+{
+    g_paint = 1;
+    run_frames(false);
+    g_paint = 0;
+    run_frames(true);
+    g_paint = 1;
 }
 
 /* Takeover while stretched and during the spring, both directions. */

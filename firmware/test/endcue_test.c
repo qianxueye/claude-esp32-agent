@@ -320,7 +320,7 @@ static int ref_knob_step(refk_t *k, int x, int y)
 
 static void test_e4_outcomes_unchanged(void)
 {
-    srand(20261119);
+    srand(73);
     int over_events = 0;
     for (int run = 0; run < 2000; run++) {
         int quad = QUADS[run & 3];

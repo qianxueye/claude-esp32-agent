@@ -28,7 +28,7 @@ void bright_test_pin(int pct);
 void bright_set(int pct);
 void bright_count_slide(void);
 void bright_count_stop(void);
-/* A stretch of cells (1 to ARC_OVER_CELLS) was shown. */
+/* The stretch reached cells (1 to ARC_OVER_CELLS). */
 void bright_count_over(int cells);
 /* A change is due for writing under the shared clock. */
 bool bright_save_due(uint32_t now_ms, bool quiet);

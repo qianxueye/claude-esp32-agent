@@ -1057,7 +1057,7 @@ void ui_start(void)
         bool brt = k == AV_BRT;
         if (!store || volarc_build_over(&s_over[k], store, VOLARC_OVER_CAP, brt ? BRT_ARC_START_DEG : VOL_ARC_START_DEG, brt ? BRT_ARC_SWEEP_DEG : VOL_SWEEP_DEG,
                                         brt ? BRT_STEPS + 1 : 100) < 0) {
-            s_over[k].n = 0;
+            memset(&s_over[k], 0, sizeof(s_over[k]));
             ESP_LOGW(TAG, "end-cue table %d unavailable", k);
         }
     }

@@ -25,7 +25,7 @@ int volume_knob_arm(void);
 void volume_knob_set(int v);
 void volume_knob_end(bool cancel);
 void volume_count_edge(void);
-/* A stretch of cells (1 to ARC_OVER_CELLS) was shown. */
+/* The stretch reached cells (1 to ARC_OVER_CELLS). */
 void volume_count_over(int cells);
 /* A change is due for writing under the shared clock. */
 bool volume_save_due(uint32_t now_ms, bool quiet);
