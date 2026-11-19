@@ -11,6 +11,12 @@ void aplay_init(aplay_t *a, const ap_pack_t *pack)
     a->base = -1;
 }
 
+void aplay_set_ready(aplay_t *a, int (*ready)(void *ctx, int clip), void *ctx)
+{
+    a->ready = ready;
+    a->ready_ctx = ctx;
+}
+
 void aplay_enable(aplay_t *a, bool on)
 {
     a->enabled = on && a->pack != NULL;
@@ -51,6 +57,7 @@ static void start(aplay_t *a, int clip, uint32_t now)
 {
     a->clip = clip;
     a->frame = 0;
+    a->stalled = false;
     a->due = now + frame_ms(a);
 }
 
@@ -59,6 +66,12 @@ static void step(aplay_t *a, uint32_t now)
 {
     const ap_clip_t *c = &a->pack->clip[a->clip];
     if (a->frame + 1 < c->frames) {
+        if (a->ready && a->ready(a->ready_ctx, a->clip) <= a->frame + 1) {
+            a->starve += a->stalled ? 0 : 1;
+            a->stalled = true;
+            return;
+        }
+        a->stalled = false;
         a->frame++;
     } else if (a->once) {
         a->once = false;

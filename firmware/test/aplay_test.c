@@ -461,6 +461,30 @@ static void test_random_sequences_never_skip(void)
     }
 }
 
+static int g_ready;
+
+static int ready_cb(void *ctx, int clip)
+{
+    (void)ctx;
+    (void)clip;
+    return g_ready;
+}
+
+/* S11: the player holds before an unready frame, counts the stall once, and rebases on arrival. */
+static void test_s11_ready_gate(void)
+{
+    aplay_t a;
+    aplay_init(&a, pack());
+    aplay_set_ready(&a, ready_cb, NULL);
+    g_ready = 3;
+    uint32_t t = 0;
+    aplay_tick(&a, t, ST_LISTENING, APS_ACTIVE);
+    assert(is(run(&a, &t, 250, ST_LISTENING, APS_ACTIVE), C_TALK, 2) && a.starve == 1 && a.late == 0);
+    assert(is(run(&a, &t, 400, ST_LISTENING, APS_ACTIVE), C_TALK, 2) && a.starve == 1);
+    g_ready = 6;
+    assert(is(aplay_tick(&a, t += TICK, ST_LISTENING, APS_ACTIVE), C_TALK, 3) && a.late == 1 && a.starve == 1);
+}
+
 int main(void)
 {
     test_s1_state_to_clip();
@@ -476,6 +500,7 @@ int main(void)
     test_clip_without_loop_holds_last_frame();
     test_pin();
     test_random_sequences_never_skip();
+    test_s11_ready_gate();
     puts("aplay_test ok");
     return 0;
 }
