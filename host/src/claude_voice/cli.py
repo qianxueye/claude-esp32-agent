@@ -19,6 +19,7 @@ from .link import Link, Opener, SerialTransport, list_boards, serial_opener
 from .pairing import PairError, current_ssid, forget, pair
 from .relay import Relay
 from .stt import WhisperStt
+from .qwen_tts import QwenTts
 from .tts import SayTts
 from .wifi import WifiServer, load_keys
 
@@ -79,7 +80,8 @@ async def start_wifi(cfg: config_mod.Config, link: Link, store: PskStore) -> Wif
 async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
     stt = WhisperStt(cfg)
     agent = ClaudeAgent(cfg)
-    relay = Relay(cfg, stt, agent, SayTts(cfg))
+    tts = QwenTts(cfg, SayTts(cfg)) if cfg.tts_engine == "qwen3" else SayTts(cfg)
+    relay = Relay(cfg, stt, agent, tts)
     link = Link(cfg, opener or serial_opener(cfg), relay)
     relay.attach(link)
     tasks: list[asyncio.Task] = []
@@ -87,6 +89,8 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
     try:
         logging.info("starting whisper-server (first start may take a while)")
         await stt.start()
+        if isinstance(tts, QwenTts):
+            await tts.start()
         agent.start()
         server = await start_wifi(cfg, link, keychain(cfg))
         tasks = [asyncio.create_task(link.run()), asyncio.create_task(relay.idle_reset_loop())]
@@ -98,6 +102,8 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
             await server.close()
         with contextlib.suppress(Exception):
             await agent.close()
+        if isinstance(tts, QwenTts):
+            await tts.close()
         await stt.close()
 
 
