@@ -135,33 +135,23 @@ void rotblit(const uint8_t *src, int S, const uint16_t *pal, uint16_t *dst, int 
     }
 }
 
-static bool span_d(double base, double a, double lo, double hi, double *d0, double *d1)
+void rotblit_cos_sin(int tenths, float *c, float *s)
 {
-    if (fabs(a) < 1e-9) {
-        return base >= lo && base <= hi;
-    }
-    double t0 = (lo - base) / a, t1 = (hi - base) / a;
-    if (t0 > t1) {
-        double t = t0;
-        t0 = t1;
-        t1 = t;
-    }
-    *d0 = fmax(*d0, t0);
-    *d1 = fmin(*d1, t1);
-    return *d0 <= *d1;
+    sincos_tenths(tenths, s, c);
 }
 
 void rotblit_spans_nearest(const irect_t *rect, int S, int OUT, int tenths, xspan_t *spans)
 {
-    float sf, cf;
-    sincos_tenths(tenths, &sf, &cf);
-    const double s = sf, c = cf, hs = S / 2.0, hd = OUT / 2.0, in = ROTBLIT_NEAREST_INSET;
-    const double ulo = rect->x0 + in, uhi = rect->x1 - in, vlo = rect->y0 + in, vhi = rect->y1 - in;
+    float s, c;
+    sincos_tenths(tenths, &s, &c);
+    const float hs = S / 2.0f, hd = OUT / 2.0f;
+    const float ulo = (float)rect->x0 + ROTBLIT_NEAREST_INSET, uhi = (float)rect->x1 - ROTBLIT_NEAREST_INSET;
+    const float vlo = (float)rect->y0 + ROTBLIT_NEAREST_INSET, vhi = (float)rect->y1 - ROTBLIT_NEAREST_INSET;
     for (int y = 0; y < OUT; y++) {
-        const double dy = y + 0.5 - hd;
-        double d0 = -1e9, d1 = 1e9;
-        bool ok = span_d(dy * s + hs, c, ulo, uhi, &d0, &d1) && span_d(dy * c + hs, -s, vlo, vhi, &d0, &d1);
-        int xa = ok ? (int)ceil(d0 + hd - 0.5) : 0, xb = ok ? (int)floor(d1 + hd - 0.5) + 1 : 0;
+        const float dy = y + 0.5f - hd;
+        float d0 = -1e9f, d1 = 1e9f;
+        bool ok = span(dy * s + hs, c, ulo, uhi, &d0, &d1) && span(dy * c + hs, -s, vlo, vhi, &d0, &d1);
+        int xa = ok ? (int)ceilf(d0 + hd - 0.5f) : 0, xb = ok ? (int)floorf(d1 + hd - 0.5f) + 1 : 0;
         xa = xa < 0 ? 0 : xa;
         xb = xb > OUT ? OUT : xb;
         spans[y].x0 = xa < xb ? (int16_t)xa : 0;

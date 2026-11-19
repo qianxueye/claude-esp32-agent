@@ -25,3 +25,6 @@ void rotblit(const uint8_t *src, int src_size, const uint16_t *palette, uint16_t
  * ROTBLIT_NEAREST_INSET; the rectangle may lie partly outside the source square, which only fixes the rotation centre.
  */
 void rotblit_spans_nearest(const irect_t *src_rect, int src_size, int dst_size, int tenths, xspan_t *spans);
+
+/* The cosine and sine of the rotation, exact at right angles, as every function above steps them. */
+void rotblit_cos_sin(int tenths, float *c, float *s);

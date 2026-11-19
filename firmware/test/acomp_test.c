@@ -10,6 +10,7 @@
 #include "apack_golden.h"
 #include "app_config.h"
 #include "rotblit.h"
+#include "scenepal.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -19,7 +20,9 @@
 #define OUT SCENE_OUT_PX
 #define SENTINEL 255
 #define SENTINEL_COLOR 0xABCD
-#define TOL_PX (1.0 / 64.0) /* the span inset, as the boundary allowance */
+#define TOL_PX (1.0 / 64.0) /* mathematical model: the span inset, used as the boundary allowance */
+#define MISS_PX (1.0 / 32.0) /* plain configuration: a pixel this deep inside the crop must be listed */
+#define GUARD_PX 4 /* plain configuration: sentinel ring width, wider than the one texel an overrun can reach */
 
 static uint16_t g_pal[256];
 static uint16_t g_dst[OUT * OUT], g_ref[OUT * OUT], g_whole[OUT * OUT];
@@ -240,8 +243,8 @@ static long g_used, g_near, g_px, g_lit;
 
 static void x4_config(int w, int h, int scale, int ox, int oy, uint32_t seed)
 {
-    art_buf_t b = make_art(w, h, 4, seed);
-    const double lim = 1.0 / 32.0;
+    art_buf_t b = make_art(w, h, GUARD_PX, seed);
+    const double lim = MISS_PX;
     for (int t = 0; t < 3600; t++) {
         const acomp_art_t a = {b.buf, w, h, b.stride, scale, ox, oy, t, SCENE, OUT};
         memset(g_dst, 0, sizeof g_dst);
@@ -396,6 +399,18 @@ static void step(const state_t *prev, const state_t *next, bool use_union)
     flush(next, r, n);
 }
 
+static void step_rows(const state_t *prev, const state_t *next)
+{
+    xspan_t d[OUT];
+    acomp_dirty(prev->sp, next->sp, d, OUT);
+    for (int y = 0; y < OUT; y++) {
+        if (d[y].x0 < d[y].x1) {
+            const irect_t r = {d[y].x0, y, d[y].x1, y + 1};
+            flush(next, &r, 1);
+        }
+    }
+}
+
 static int g_stale_controls;
 
 static void transition(const state_t *a, const state_t *b)
@@ -412,8 +427,8 @@ static void transition(const state_t *a, const state_t *b)
     assert(memcmp(g_panel, g_want, sizeof g_panel));
     g_stale_controls++;
     memcpy(g_panel, before, sizeof before);
-    step(a, b, true);
-    full(b);
+    step_rows(a, b);
+    assert(!memcmp(g_want, g_panel, sizeof g_want));
 }
 
 /* X6: flushing only the dirty rows over a scene-only frame gives the panel a full recomposition gives. */
@@ -481,9 +496,9 @@ static void x7(void)
         assert(col[i].c != 0);
         printf("X7:   %-38s %-13s 0x%04X\n", col[i].name, col[i].where, col[i].c);
     }
-    static uint16_t s_pal_bg;
-    assert(s_pal_bg == 0 && g_pal[0] == 0);
-    printf("X7: %zu overlay colours non-zero, background entry 0 (ui.c:88)\n", sizeof col / sizeof col[0]);
+    assert(PAL_BG == 0 && g_pal[PAL_BG] == 0);
+    printf("X7: %zu overlay colours non-zero; background entry PAL_BG is 0 (by inspection ui.c:88,197,356,1152-1155 never write it)\n",
+           sizeof col / sizeof col[0]);
 }
 
 /* The strip loop of ui.c present(), transcribed as the oracle for acomp_bands. */

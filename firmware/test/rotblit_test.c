@@ -38,14 +38,15 @@ static void fixture(void)
 
 typedef struct {
     int tenths;
-    uint32_t spans, pixels;
+    uint32_t spans, pixels, pixels_unfused;
 } pin_t;
 
-/* Pinned from rotblit.c as it stands; any change to a covered function body fails here. */
+/* Pinned from rotblit.c as it stands; the bilinear pixels differ between fused and unfused multiply-add, so both are pinned. */
 static const pin_t PINS[] = {
-    {0, 0x4553142Du, 0xBFA2AAEFu},    {450, 0x947E97B8u, 0x18833890u},  {900, 0x609FD81Du, 0xF93B25F7u},
-    {1234, 0xE09060DBu, 0xFC2D8F84u}, {1800, 0x0D952DEDu, 0xBE8A9C67u}, {2700, 0xEA03DF9Du, 0xB6663387u},
-    {3599, 0x5707DC1Du, 0xCE86B296u},
+    {0, 0x4553142Du, 0xBFA2AAEFu, 0xBFA2AAEFu},    {450, 0x947E97B8u, 0x18833890u, 0x3B40D268u},
+    {900, 0x609FD81Du, 0xF93B25F7u, 0xF93B25F7u},  {1234, 0xE09060DBu, 0xFC2D8F84u, 0x2B6C9D27u},
+    {1800, 0x0D952DEDu, 0xBE8A9C67u, 0xBE8A9C67u}, {2700, 0xEA03DF9Du, 0xB6663387u, 0xB6663387u},
+    {3599, 0x5707DC1Du, 0xCE86B296u, 0xF2AAEF4Bu},
 };
 
 static void r1(void)
@@ -62,7 +63,7 @@ static void r1(void)
         memset(g_dst, 0, sizeof g_dst);
         rotblit(g_src, S, g_pal, g_dst, OUT, OUT, t, g_draw, g_clear, 0, OUT);
         const uint32_t hp = fnv(2166136261u, g_dst, sizeof g_dst);
-        assert(hs == PINS[i].spans && hp == PINS[i].pixels);
+        assert(hs == PINS[i].spans && (hp == PINS[i].pixels || hp == PINS[i].pixels_unfused));
     }
     printf("R1: %d angles pinned\n", n);
 }
@@ -91,15 +92,16 @@ static void exact_uv(int tenths, int x, int y, double *u, double *v)
     *v = -dx * s + dy * c + S / 2.0;
 }
 
-/* One row end read through the 16.16 stepping a blitter uses; true when it stays inside the rectangle. */
+/* One row end read through the same 16.16 stepping the composer uses; true when it stays inside the rectangle. */
 static bool stepped_inside(const irect_t *r, int tenths, int y, int xa, int n, double *worst)
 {
-    double sd, cd;
-    exact_cs(tenths, &sd, &cd);
-    const int32_t dudx = (int32_t)lroundf((float)cd * 65536.0f), dvdx = (int32_t)lroundf((float)-sd * 65536.0f);
+    float c, s;
+    rotblit_cos_sin(tenths, &c, &s);
+    const int32_t dudx = (int32_t)lroundf(c * 65536.0f), dvdx = (int32_t)lroundf(-s * 65536.0f);
+    const float hs = S / 2.0f, hd = OUT / 2.0f, dy = y + 0.5f - hd, dx0 = xa + 0.5f - hd;
+    const int64_t U = (int32_t)lroundf((dx0 * c + dy * s + hs) * 65536.0f) + (int64_t)(n - 1) * dudx;
+    const int64_t V = (int32_t)lroundf((-dx0 * s + dy * c + hs) * 65536.0f) + (int64_t)(n - 1) * dvdx;
     double u, v;
-    exact_uv(tenths, xa, y, &u, &v);
-    const int64_t U = llround(u * 65536.0) + (int64_t)(n - 1) * dudx, V = llround(v * 65536.0) + (int64_t)(n - 1) * dvdx;
     exact_uv(tenths, xa + n - 1, y, &u, &v);
     const double e = fmax(fabs((double)U / 65536.0 - u), fabs((double)V / 65536.0 - v));
     *worst = fmax(*worst, e);
@@ -108,8 +110,10 @@ static bool stepped_inside(const irect_t *r, int tenths, int y, int xa, int n, d
 
 static void r2(void)
 {
+    /* Per step: the rounded 16.16 increment and one float ulp of the trig value; at the start: four float operations on
+       values below 2048, whose half ulp is 2^-13 / 2, and the trig error over half the output width. */
     const double step_err = OUT * (0.5 / 65536.0 + 1.0 / 8388608.0);
-    const double start_err = 0.5 / 65536.0 + (OUT / 2.0) * 2.0 / 8388608.0;
+    const double start_err = 0.5 / 65536.0 + 4.0 * 0.5 / 8192.0 + (OUT / 2.0) * 2.0 / 8388608.0;
     const double bound = step_err + start_err;
     assert((double)ROTBLIT_NEAREST_INSET > bound);
     const irect_t rects[] = {{40, 60, 440, 420}, {-30, -10, 150, 200}, {235, 235, 251, 247}, {300, 100, 700, 600}};
