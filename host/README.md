@@ -56,6 +56,7 @@ uv run claude-voice [--config config.toml]
 - `qwen_lang_code`（`chinese` 或 `japanese`）和 `qwen_voice` 由配置决定，不自动识别语言；`qwen_voices` 可按语言指定不同的声音。
 - 服务返回 24 kHz 音频，中继用 `afconvert` 转成 16 kHz。
 - 服务启动失败或没有就绪时，中继在日志里记一条错误，并继续使用 `say`。某一句合成失败时，这一句改用 `say`，日志记一条警告，之后 `qwen_skip_s` 秒内的句子直接用 `say`，不再等待超时。
+- 用 `qwen_url` 连接的服务失败后，中继在 `qwen_skip_s` 秒后再次尝试连接；由中继自己启动的服务一旦失败，不会重启，中继保持使用 `say`，直到重新启动中继。
 - 服务日志写在日志目录的 `qwen-tts-server.log`。
 
 ## 操作

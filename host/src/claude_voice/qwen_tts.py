@@ -44,16 +44,19 @@ class QwenTts:
             elif cfg.qwen_url:
                 base = cfg.qwen_url
             else:
-                log.error("qwen3 语音未启用：请设置 qwen_url 或 qwen_server_cmd，现用 say")
+                log.error("qwen3 speech off: set qwen_url or qwen_server_cmd; using say")
                 return
             self._http = self._client(base)
             t0 = time.monotonic()
-            await self._request(WARMUP_TEXT)
+            await self._request(WARMUP_TEXT, timeout=cfg.qwen_ready_timeout_s)
             log.info("qwen3 speech server ready, warm-up %.1f s", time.monotonic() - t0)
         except Exception as e:
-            log.error("qwen3 语音服务不可用，现用 say：%r", e)
+            log.error("qwen3 speech server unavailable; using say: %r", e)
             await self._stop_server()
-            self._mark_failed()
+            if cfg.qwen_server_cmd:
+                await self._drop_client()
+            else:
+                self._mark_failed()
 
     def _client(self, base: str) -> httpx.AsyncClient:
         t = httpx.Timeout(self._cfg.tts_timeout_s, connect=self._cfg.qwen_connect_timeout_s)
@@ -74,9 +77,9 @@ class QwenTts:
         async with httpx.AsyncClient(timeout=1.0) as probe:
             while True:
                 if self._proc.poll() is not None:
-                    raise TtsError(f"服务进程已退出（{self._proc.returncode}），见 qwen-tts-server.log")
+                    raise TtsError(f"server exited with {self._proc.returncode} (see qwen-tts-server.log)")
                 if time.monotonic() - t0 > cfg.qwen_ready_timeout_s:
-                    raise TtsError("服务在限定时间内没有就绪")
+                    raise TtsError("server not ready in time")
                 try:
                     if (await probe.get(base + "/")).status_code < 500:
                         return base
@@ -84,10 +87,13 @@ class QwenTts:
                     pass
                 await asyncio.sleep(0.5)
 
+    async def _drop_client(self) -> None:
+        http, self._http = self._http, None
+        if http is not None:
+            await http.aclose()
+
     async def close(self) -> None:
-        if self._http is not None:
-            await self._http.aclose()
-            self._http = None
+        await self._drop_client()
         await self._stop_server()
 
     async def _stop_server(self) -> None:
@@ -115,14 +121,14 @@ class QwenTts:
             pcm = await self._request(text)
         except Exception as e:
             if not self._failing:
-                log.warning("qwen3 合成失败，改用 say：%r", e)
+                log.warning("qwen3 synthesis failed; using say for the next %g s: %r", self._cfg.qwen_skip_s, e)
             self._mark_failed()
             return await self._fallback.synth(text)
         self._failing = False
         log.debug("qwen3 synth %d chars in %.2f s", len(text), time.monotonic() - t0)
         return pcm
 
-    async def _request(self, text: str) -> bytes:
+    async def _request(self, text: str, timeout: float | None = None) -> bytes:
         cfg = self._cfg
         assert self._http is not None
         lang = cfg.qwen_lang_code
@@ -133,11 +139,12 @@ class QwenTts:
             "lang_code": lang,
             "response_format": "wav",
         }
-        r = await self._http.post("/v1/audio/speech", json=body)
+        extra = {} if timeout is None else {"timeout": httpx.Timeout(timeout, connect=cfg.qwen_connect_timeout_s)}
+        r = await self._http.post("/v1/audio/speech", json=body, **extra)
         r.raise_for_status()
         pcm = await self._to_16k(r.content)
         if not pcm:
-            raise TtsError("服务返回了空音频")
+            raise TtsError("server returned empty audio")
         return pcm
 
     async def _to_16k(self, wav: bytes) -> bytes:

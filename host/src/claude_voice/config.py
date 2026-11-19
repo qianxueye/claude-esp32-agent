@@ -140,5 +140,5 @@ def load(path: Path | str | None = None) -> Config:
     if not 0 <= cfg.volume <= 100:
         raise ValueError(f"volume must be 0-100, got {cfg.volume} in {p}")
     if cfg.tts_engine not in ("say", "qwen3"):
-        raise ValueError(f'tts_engine 只能是 "say" 或 "qwen3"，现为 {cfg.tts_engine!r}（{p}）')
+        raise ValueError(f'tts_engine must be "say" or "qwen3", got {cfg.tts_engine!r} in {p}')
     return cfg
