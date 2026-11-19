@@ -371,27 +371,36 @@ static void anim_reset_held(void)
 static void draw_anim(const scene_t *s)
 {
     const ap_pack_t *p = s_ap.pack;
-    const ap_clip_t *c = &p->clip[s->anim_clip];
+    int shown = s->anim_clip;
     if (s_held.clip != s->anim_clip || s_held.frame != s->anim_frame) {
         const int64_t t0 = esp_timer_get_time();
-        if (!ag_bring(p, s->anim_clip, s->anim_frame, s_abuf, &s_held)) {
+        const ag_bring_t br = ag_bring(p, s->anim_clip, s->anim_frame, p->clip[s->anim_clip].frames, s_abuf, &s_held);
+        if (br == AG_FAIL) {
             skin_fail(AP_DECODE_ERROR);
             aplay_init(&s_ap, NULL);
             anim_reset_held();
             return;
         }
-        const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
-        s_dec_sum += us;
-        s_dec_max = us > s_dec_max ? us : s_dec_max;
-        s_work_t0 = t0;
-        s_work_stage = 1;
+        if (br == AG_NOT_READY) {
+            if (s_held.clip < 0) {
+                return;
+            }
+            shown = s_held.clip;
+        } else {
+            const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+            s_dec_sum += us;
+            s_dec_max = us > s_dec_max ? us : s_dec_max;
+            s_work_t0 = t0;
+            s_work_stage = 1;
+        }
     }
-    if (s_pal_clip != s->anim_clip) {
+    const ap_clip_t *c = &p->clip[shown];
+    if (s_pal_clip != shown) {
         for (int i = 0; i < c->colors; i++) {
             s_pal[PAL_PACK_FIRST + i] = (uint16_t)(c->palette[2 * i] | (c->palette[2 * i + 1] << 8));
             s_pal_be[PAL_PACK_FIRST + i] = __builtin_bswap16(s_pal[PAL_PACK_FIRST + i]);
         }
-        s_pal_clip = s->anim_clip;
+        s_pal_clip = shown;
     }
     const ag_place_t pl = ag_sticker_place(p, c, s->gx, s->gy, SCENE);
     s_art = (acomp_art_t){s_abuf, c->w, c->h, c->w, p->scale, pl.ox, pl.oy, 0, SCENE, SCENE_OUT_PX};

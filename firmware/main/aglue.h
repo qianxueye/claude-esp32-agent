@@ -24,9 +24,11 @@ typedef struct {
     uint32_t frames, seeks;  /* frames brought in, and how many of them needed a decode from frame 0 */
 } ag_held_t;
 
+typedef enum { AG_OK, AG_NOT_READY, AG_FAIL } ag_bring_t;
+
 /* Brings buf to (clip, frame): nothing when held, one delta for the next frame, else forward from key frame 0.
-   False on a malformed frame; the buffer then holds nothing. */
-bool ag_bring(const ap_pack_t *p, int clip, int frame, uint8_t *buf, ag_held_t *held);
+   AG_NOT_READY (frame >= ready) leaves buf and held untouched; AG_FAIL is a malformed frame and the buffer then holds nothing. */
+ag_bring_t ag_bring(const ap_pack_t *p, int clip, int frame, int ready, uint8_t *buf, ag_held_t *held);
 
 typedef struct {
     int ox, oy;         /* scene position of the crop's top-left pixel before clipping */

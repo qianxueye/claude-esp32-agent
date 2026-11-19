@@ -272,25 +272,50 @@ static void test_bring_follows_the_decode_rules(void)
     memset(buf, 0xEE, sizeof buf);
     ag_held_t h = {-1, -1, 0, 0};
     const uint32_t a0 = (uint32_t)g.clip[0].w * g.clip[0].h;
-    assert(ag_bring(&g, 0, 0, buf, &h) && !memcmp(buf, GOLDEN_CLIPS[0], a0) && h.frames == 1 && h.seeks == 0);
-    assert(ag_bring(&g, 0, 1, buf, &h) && !memcmp(buf, GOLDEN_CLIPS[0] + a0, a0) && h.frames == 2);
+    assert(ag_bring(&g, 0, 0, g.clip[0].frames, buf, &h) == AG_OK && !memcmp(buf, GOLDEN_CLIPS[0], a0) && h.frames == 1 && h.seeks == 0);
+    assert(ag_bring(&g, 0, 1, g.clip[0].frames, buf, &h) == AG_OK && !memcmp(buf, GOLDEN_CLIPS[0] + a0, a0) && h.frames == 2);
     /* Held frame: nothing decoded, the buffer stays. */
     buf[0] ^= 0x55;
-    assert(ag_bring(&g, 0, 1, buf, &h) && h.frames == 2);
+    assert(ag_bring(&g, 0, 1, g.clip[0].frames, buf, &h) == AG_OK && h.frames == 2);
     buf[0] ^= 0x55;
     /* Loop wrap and clip change start at key frame 0. */
-    assert(ag_bring(&g, 0, 0, buf, &h) && !memcmp(buf, GOLDEN_CLIPS[0], a0) && h.seeks == 0);
-    assert(ag_bring(&g, 1, 0, buf, &h) && !memcmp(buf, GOLDEN_CLIPS[1], 192) && h.clip == 1);
+    assert(ag_bring(&g, 0, 0, g.clip[0].frames, buf, &h) == AG_OK && !memcmp(buf, GOLDEN_CLIPS[0], a0) && h.seeks == 0);
+    assert(ag_bring(&g, 1, 0, g.clip[1].frames, buf, &h) == AG_OK && !memcmp(buf, GOLDEN_CLIPS[1], 192) && h.clip == 1);
     /* A jump into the middle of a clip decodes forward from frame 0 and counts a seek. */
     memset(buf, 0xEE, sizeof buf);
-    assert(ag_bring(&g, 0, 1, buf, &h) && !memcmp(buf, GOLDEN_CLIPS[0] + a0, a0) && h.seeks == 1);
+    assert(ag_bring(&g, 0, 1, g.clip[0].frames, buf, &h) == AG_OK && !memcmp(buf, GOLDEN_CLIPS[0] + a0, a0) && h.seeks == 1);
     /* Red proof: applying only the wanted delta over another clip's buffer shows a wrong picture. */
     memcpy(buf, GOLDEN_CLIPS[1], 192);
     ap_frame_t f;
     assert(ap_frame(&g, 0, 1, &f) && ap_decode(&f, buf, a0) && memcmp(buf, GOLDEN_CLIPS[0] + a0, a0) != 0);
     /* A bad request leaves nothing held, so the next one decodes from frame 0. */
-    assert(!ag_bring(&g, 0, 5, buf, &h) && h.clip == -1 && h.frame == -1);
-    assert(!ag_bring(&g, 7, 0, buf, &h) && !ag_bring(NULL, 0, 0, buf, &h));
+    assert(ag_bring(&g, 0, 5, g.clip[0].frames, buf, &h) != AG_OK && h.clip == -1 && h.frame == -1);
+    assert(ag_bring(&g, 7, 0, 1, buf, &h) != AG_OK && ag_bring(NULL, 0, 0, 1, buf, &h) != AG_OK);
+}
+
+/* G1: a frame at or past the ready count is not brought in; the held image and the buffer stay. */
+static void test_g1_bring_not_ready(void)
+{
+    static const uint8_t base[1];
+    static uint8_t tbl[4 * AP_FRAME_ENTRY_BYTES];
+    ap_pack_t p;
+    memset(&p, 0, sizeof p);
+    p.base = base;
+    p.clip_count = 1;
+    p.clip[0].w = p.clip[0].h = 1;
+    p.clip[0].frames = 4;
+    p.clip[0].frame_tbl = tbl;
+    for (int i = 0; i < 4; i++) {
+        tbl[i * AP_FRAME_ENTRY_BYTES + 12] = 1;
+        tbl[i * AP_FRAME_ENTRY_BYTES + 13] = i == 0 ? 0x80 : 0;
+    }
+    uint8_t buf[1] = {0xEE};
+    ag_held_t h = {-1, -1, 0, 0};
+    assert(ag_bring(&p, 0, 0, 2, buf, &h) == AG_OK && ag_bring(&p, 0, 1, 2, buf, &h) == AG_OK && h.frame == 1 && h.frames == 2);
+    buf[0] = 0x5A;
+    assert(ag_bring(&p, 0, 2, 2, buf, &h) == AG_NOT_READY && h.clip == 0 && h.frame == 1 && h.frames == 2 && buf[0] == 0x5A);
+    assert(ag_bring(&p, 0, 3, 0, buf, &h) == AG_NOT_READY && h.frame == 1 && buf[0] == 0x5A);
+    assert(ag_bring(&p, 0, 2, 3, buf, &h) == AG_OK && h.frame == 2);
 }
 
 /* A wrong rule for the red proof: the stage cast as is, so the fade before display-off hides the layer. */
@@ -547,6 +572,7 @@ int main(void)
     test_b3_bub_y_snap_and_edge();
     test_b4_top_bubble_unchanged();
     test_bring_follows_the_decode_rules();
+    test_g1_bring_not_ready();
     test_stage_map();
     test_imu_bits();
     test_pickup_glue();

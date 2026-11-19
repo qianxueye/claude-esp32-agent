@@ -21,28 +21,31 @@ aplay_stage_t ag_stage(bool panel_on, dp_stage_t stage, bool dim_plays)
     return stage == DP_ACTIVE || dim_plays ? APS_ACTIVE : APS_DIM;
 }
 
-bool ag_bring(const ap_pack_t *p, int clip, int frame, uint8_t *buf, ag_held_t *held)
+ag_bring_t ag_bring(const ap_pack_t *p, int clip, int frame, int ready, uint8_t *buf, ag_held_t *held)
 {
     if (held->clip == clip && held->frame == frame) {
-        return true;
+        return AG_OK;
+    }
+    if (p && clip >= 0 && clip < p->clip_count && frame >= 0 && frame < p->clip[clip].frames && frame >= ready) {
+        return AG_NOT_READY;
     }
     const int from = held->clip == clip && frame == held->frame + 1 ? frame : 0;
     held->clip = held->frame = -1;
     if (!p || clip < 0 || clip >= p->clip_count || frame < 0 || frame >= p->clip[clip].frames) {
-        return false;
+        return AG_FAIL;
     }
     const uint32_t area = (uint32_t)p->clip[clip].w * p->clip[clip].h;
     for (int f = from; f <= frame; f++) {
         ap_frame_t fr;
         if (!ap_frame(p, clip, f, &fr) || !ap_decode(&fr, buf, area)) {
-            return false;
+            return AG_FAIL;
         }
     }
     held->clip = clip;
     held->frame = frame;
     held->frames++;
     held->seeks += from == 0 && frame > 0 ? 1 : 0;
-    return true;
+    return AG_OK;
 }
 
 ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int scene)
