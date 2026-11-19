@@ -200,16 +200,18 @@ uint32_t ag_window_mean(uint32_t prev_sum, uint32_t prev_n, uint32_t sum, uint32
     return dn ? (sum - prev_sum) / dn : 0;
 }
 
-void ag_work_refresh(ag_work_t *w, bool pending, uint32_t frame_us)
+int ag_work_refresh(ag_work_t *w, int stage, uint32_t tick_us, uint32_t refr_us)
 {
     if (!w->armed) {
         w->armed = true;
-        w->boot_us = frame_us;
-        return;
+        w->boot_us = (stage == 2 ? tick_us : 0) + refr_us;
+        return 0;
     }
-    if (pending) {
-        ag_acc_add(&w->work, frame_us);
+    if (stage == 2) {
+        ag_acc_add(&w->work, tick_us + refr_us);
+        return 0;
     }
+    return stage;
 }
 
 uint32_t ag_work_boot_ms(const ag_work_t *w)

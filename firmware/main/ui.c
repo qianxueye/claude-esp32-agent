@@ -38,7 +38,7 @@ static const char *TAG = "ui";
 #define U BUBBLE_UNIT_PX
 #define C MASCOT_CELL_PX
 #define SCENE SCENE_SIZE_PX
-#define TEXT_ROWS_PX 48
+#define TEXT_ROWS_PX AG_TEXT_ROWS_PX
 #define CANVAS_OFF ((LCD_SIZE - SCENE_OUT_PX) / 2)
 _Static_assert(CANVAS_OFF == 0, "the flush hook and the snapshot compose in panel coordinates");
 
@@ -838,10 +838,7 @@ static void refr_cb(lv_event_t *e)
             s_refr_worst_ms = d;
         }
         const int64_t t = esp_timer_get_time();
-        const bool first = !s_work.armed;
-        const uint32_t refr_us = (uint32_t)(t - s_refr_t0_us);
-        ag_work_refresh(&s_work, s_work_stage == 2, (s_work_stage == 2 ? (uint32_t)s_work_tick_us : 0) + refr_us);
-        s_work_stage = first || s_work_stage == 2 ? 0 : s_work_stage;
+        s_work_stage = ag_work_refresh(&s_work, s_work_stage, (uint32_t)s_work_tick_us, (uint32_t)(t - s_refr_t0_us));
         if (s_patch_acc_us) {
             ag_acc_add(&s_patch, s_patch_acc_us);
             s_patch_acc_us = 0;

@@ -107,7 +107,8 @@ typedef struct {
     uint32_t boot_us;
     ag_acc_t work;
 } ag_work_t;
-/* Folds one finished refresh: frame_us is the decoded art's time from decode to the end of the refresh (the refresh alone when none was pending). The first call only records boot_us; later calls add a sample when pending. */
-void ag_work_refresh(ag_work_t *w, bool pending, uint32_t frame_us);
+/* Folds one finished refresh and returns the frame's next stage (0 none, 1 decoded, 2 presented). stage 2 carries tick_us, the time from decode to the end of its tick; refr_us is the refresh itself.
+   The first call only records the boot frame and clears the stage, so a decode made before it never reaches a sample; later calls add a sample for stage 2. */
+int ag_work_refresh(ag_work_t *w, int stage, uint32_t tick_us, uint32_t refr_us);
 /* The boot frame's time in milliseconds, rounded to nearest; 0 before it. */
 uint32_t ag_work_boot_ms(const ag_work_t *w);

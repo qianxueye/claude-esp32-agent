@@ -144,11 +144,13 @@ static void test_b1_side_bubble_table(void)
                                 assert(b.n_cells == 0 && !b.spinner && b.n_dots == 0 && b.mask.w == 0);
                                 continue;
                             }
+                            assert(rect_in_box(b.mask, (irect_t){b.body.x, b.body.y, b.body.x + b.body.w, b.body.y + b.body.h}));
                             assert(rect_in_scene(b.mask) && rect_in_box(b.mask, box) && b.mask.w == bc->content.glyphs * 48 && b.mask.h == 48);
                             assert(b.spinner == bc->content.spinner && b.n_dots == (bc->content.dots ? 3 : 0));
-                            assert(!b.spinner || (rect_in_scene(b.spin) && rect_in_box(b.spin, box)));
+                            const irect_t in_body = {b.body.x, b.body.y, b.body.x + b.body.w, b.body.y + b.body.h};
+                            assert(!b.spinner || (rect_in_scene(b.spin) && rect_in_box(b.spin, box) && rect_in_box(b.spin, in_body)));
                             for (int k = 0; k < b.n_dots; k++) {
-                                assert(rect_in_scene(b.dots[k]) && rect_in_box(b.dots[k], box));
+                                assert(rect_in_scene(b.dots[k]) && rect_in_box(b.dots[k], box) && rect_in_box(b.dots[k], in_body));
                             }
                             cells += 1 + b.spinner + b.n_dots;
                         }
@@ -462,24 +464,25 @@ static void test_bf1_boot_frame(void)
 {
     ag_work_t w;
     memset(&w, 0, sizeof w);
-    ag_work_refresh(&w, true, 81800);
-    assert(w.armed && w.boot_us == 81800 && ag_work_boot_ms(&w) == 82 && w.work.n == 0 && w.work.max == 0 && w.work.sum == 0);
-    ag_work_refresh(&w, true, 26000);
-    assert(w.work.n == 1 && w.work.max == 26000 && w.work.sum == 26000 && w.boot_us == 81800);
-    ag_work_refresh(&w, false, 17000);
-    ag_work_refresh(&w, true, 30000);
-    assert(w.work.n == 2 && w.work.max == 30000 && w.work.sum == 56000);
-    /* A boot refresh with no pending decode is the boot frame too, and the rounding is to nearest. */
+    /* The boot decode and its idle gap (stage 1) is dropped at the first refresh, so the next sample starts clean. */
+    assert(ag_work_refresh(&w, 1, 0, 32500) == 0);
+    assert(w.armed && w.boot_us == 32500 && w.work.n == 0 && w.work.max == 0);
+    assert(ag_work_refresh(&w, 0, 0, 17000) == 0 && w.work.n == 0);
+    assert(ag_work_refresh(&w, 1, 0, 17000) == 1 && w.work.n == 0);
+    assert(ag_work_refresh(&w, 2, 9000, 17000) == 0 && w.work.n == 1 && w.work.max == 26000 && w.work.sum == 26000);
+    assert(ag_work_refresh(&w, 2, 13000, 17000) == 0 && w.work.n == 2 && w.work.max == 30000 && w.work.sum == 56000);
+    assert(w.boot_us == 32500);
+    /* A boot refresh that already holds a presented frame counts the tick part too; the rounding is to nearest. */
     memset(&w, 0, sizeof w);
-    ag_work_refresh(&w, false, 17499);
-    assert(w.armed && ag_work_boot_ms(&w) == 17 && w.work.n == 0);
-    ag_work_refresh(&w, true, 500);
-    assert(w.work.n == 1 && w.work.max == 500);
-    assert(ag_work_boot_ms(&(ag_work_t){true, 17500, {0, 0, 0}}) == 18 && ag_work_boot_ms(&(ag_work_t){0}) == 0);
-    /* Red proof: sampling the boot refresh like any other puts 81.8 ms in the maximum. */
-    ag_acc_t wrong = {0, 0, 0};
-    ag_acc_add(&wrong, 81800);
-    assert(wrong.max == 81800);
+    assert(ag_work_refresh(&w, 2, 64800, 17000) == 0);
+    assert(w.boot_us == 81800 && ag_work_boot_ms(&w) == 82 && w.work.n == 0 && w.work.max == 0);
+    assert(ag_work_boot_ms(&(ag_work_t){true, 17499, {0, 0, 0}}) == 17 && ag_work_boot_ms(&(ag_work_t){true, 17500, {0, 0, 0}}) == 18);
+    assert(ag_work_boot_ms(&(ag_work_t){0}) == 0);
+    /* Red proof: the same refresh on an already armed state is a sample and raises the maximum to 81.8 ms. */
+    memset(&w, 0, sizeof w);
+    w.armed = true;
+    ag_work_refresh(&w, 2, 64800, 17000);
+    assert(w.work.max == 81800 && w.boot_us == 0);
     /* The window mean over two reads, also across a wrap of the sum. */
     assert(ag_window_mean(1000, 10, 4000, 13) == 1000 && ag_window_mean(5, 5, 9, 5) == 0);
     assert(ag_window_mean(0xFFFFFF00u, 100, 0x100u + 0x400u, 102) == 0x300u);
