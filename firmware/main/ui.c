@@ -867,7 +867,7 @@ static void tick_cb(lv_timer_t *t)
     } else if (s_bench == UI_BENCH_SCREEN) {
         lv_obj_invalidate(lv_screen_active());
     }
-    if (arc_update(now) <= 1) {
+    if (arc_update(now) <= VOLARC_RING_MAX_AREAS) {
         update_ring();
     }
     if ((s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK)) {

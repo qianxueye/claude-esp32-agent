@@ -8,15 +8,15 @@ _Static_assert(VOL_ARC_R_IN_PX > LISTEN_RING_DIAMETER / 2 + 1, "arc must lie out
 _Static_assert(VOL_ARC_R_OUT_PX < LCD_SIZE / 2, "arc must lie inside the glass");
 _Static_assert(VOL_ARC_R_IN_PX < VOL_ARC_R_OUT_PX, "arc band must not be empty");
 
-static int thr_at(int x, int y)
+static int thr_at(int x, int y, double start_deg, double sweep_deg, int steps)
 {
     double a = atan2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D;
-    double t = a - VOL_ARC_START_DEG;
+    double t = a - start_deg;
     t -= 360.0 * floor(t / 360.0);
-    if (t >= VOL_SWEEP_DEG) {
+    if (t >= sweep_deg) {
         return 0;
     }
-    return (int)floor(t * 100.0 / VOL_SWEEP_DEG) + 1;
+    return (int)floor(t * steps / sweep_deg) + 1;
 }
 
 static int in_band(int x, int y)
@@ -27,13 +27,19 @@ static int in_band(int x, int y)
 
 int volarc_build(volarc_t *a, uint32_t *storage, int cap)
 {
+    return volarc_build_seg(a, storage, cap, VOL_ARC_START_DEG, VOL_SWEEP_DEG, 100);
+}
+
+int volarc_build_seg(volarc_t *a, uint32_t *storage, int cap, double start_deg, double sweep_deg, int steps)
+{
     int count[101] = {0};
     a->e = storage;
     a->n = 0;
+    a->steps = steps;
     for (int y = 0; y < LCD_SIZE; y++) {
         for (int x = 0; x < LCD_SIZE; x++) {
             if (in_band(x, y)) {
-                int t = thr_at(x, y);
+                int t = thr_at(x, y, start_deg, sweep_deg, steps);
                 if (t > 0) {
                     count[t]++;
                 }
@@ -42,7 +48,10 @@ int volarc_build(volarc_t *a, uint32_t *storage, int cap)
     }
     a->cnt[0] = 0;
     int total = 0, pos[101];
-    for (int t = 1; t <= 100; t++) {
+    for (int t = steps + 1; t <= 100; t++) {
+        a->cnt[t] = 0;
+    }
+    for (int t = 1; t <= steps; t++) {
         pos[t] = total;
         total += count[t];
         a->cnt[t] = total;
@@ -53,7 +62,7 @@ int volarc_build(volarc_t *a, uint32_t *storage, int cap)
     for (int y = 0; y < LCD_SIZE; y++) {
         for (int x = 0; x < LCD_SIZE; x++) {
             if (in_band(x, y)) {
-                int t = thr_at(x, y);
+                int t = thr_at(x, y, start_deg, sweep_deg, steps);
                 if (t > 0) {
                     a->e[pos[t]++] = ((uint32_t)t << 20) | ((uint32_t)y << 10) | (uint32_t)x;
                 }
@@ -98,11 +107,27 @@ void volarc_change_range(int a, int b, int *lo, int *hi)
     }
 }
 
+int volarc_seg_class(int thr, int bi)
+{
+    return volarc_class(thr, bi + 1);
+}
+
+void volarc_seg_change_range(int a, int b, int *lo, int *hi)
+{
+    *lo = (a < b ? a : b) + 1;
+    *hi = (a < b ? b : a) + 1;
+}
+
 int volarc_areas(const volarc_t *a, int quad, int lo, int hi, volarc_rect_t *out, int max)
 {
+    return volarc_areas_chunk(a, quad, lo, hi, VOL_ARC_CHUNK_THR, out, max);
+}
+
+int volarc_areas_chunk(const volarc_t *a, int quad, int lo, int hi, int chunk, volarc_rect_t *out, int max)
+{
     int n = 0;
-    for (int from = lo; from < hi && n < max; from += VOL_ARC_CHUNK_THR) {
-        int to = from + VOL_ARC_CHUNK_THR < hi ? from + VOL_ARC_CHUNK_THR : hi;
+    for (int from = lo; from < hi && n < max; from += chunk) {
+        int to = from + chunk < hi ? from + chunk : hi;
         volarc_rect_t r = {LCD_SIZE, LCD_SIZE, -1, -1};
         for (int i = a->cnt[from]; i < a->cnt[to]; i++) {
             int x, y;

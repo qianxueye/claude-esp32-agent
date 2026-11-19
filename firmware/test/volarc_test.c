@@ -253,6 +253,169 @@ static void test_quadrant_and_force(void)
     assert(av_frame(&v, 1, 0).flags == AV_CLEAR_OLD);
 }
 
+static uint32_t g_seg_store[VOLARC_CAP];
+static volarc_t g_seg;
+
+/* Smallest visible cell: 60 px in the 222-230 band, scaled with the band area for other bands. */
+#define SEG_CELL_MIN_PX (60 * (VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX) / (230 * 230 - 222 * 222))
+
+static int seg_build(volarc_t *a, uint32_t *store, int steps)
+{
+    return volarc_build_seg(a, store, VOLARC_CAP, BRT_ARC_START_DEG, BRT_ARC_SWEEP_DEG, steps);
+}
+
+static void test_a4_segment_geometry(void)
+{
+    int n = seg_build(&g_seg, g_seg_store, BRT_STEPS + 1);
+    printf("brightness arc: %d px", n);
+    assert(n > 0 && g_seg.steps == BRT_STEPS + 1 && g_seg.cnt[BRT_STEPS + 1] == n);
+    static unsigned char seen[LCD_SIZE][LCD_SIZE];
+    int prev = 0, min_cell = n, bx1 = LCD_SIZE, by1 = LCD_SIZE, bx2 = -1, by2 = -1;
+    for (int i = 0; i < n; i++) {
+        int x, y, t = volarc_thr(g_seg.e[i]);
+        volarc_xy(g_seg.e[i], 0, &x, &y);
+        int d2 = d2_of(x, y);
+        double a = atan2(2.0 * y - LAST, 2.0 * x - LAST) * 180.0 / PI_D;
+        a += a < 0 ? 360.0 : 0.0;
+        assert(d2 >= 4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX && d2 <= 4 * VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX);
+        assert(a >= BRT_ARC_START_DEG && a < BRT_ARC_START_DEG + BRT_ARC_SWEEP_DEG && t >= prev && t >= 1 && t <= BRT_STEPS + 1 && !seen[y][x]);
+        seen[y][x] = 1;
+        prev = t;
+        bx1 = x < bx1 ? x : bx1;
+        by1 = y < by1 ? y : by1;
+        bx2 = x > bx2 ? x : bx2;
+        by2 = y > by2 ? y : by2;
+    }
+    for (int t = 1; t <= BRT_STEPS + 1; t++) {
+        int c = g_seg.cnt[t] - g_seg.cnt[t - 1];
+        min_cell = c < min_cell ? c : min_cell;
+    }
+    printf(", smallest cell %d px, box x %d-%d y %d-%d\n", min_cell, bx1, bx2, by1, by2);
+    assert(min_cell >= SEG_CELL_MIN_PX);
+    int x_lo, y_lo, x_hi, y_hi;
+    volarc_xy(g_seg.e[0], 0, &x_lo, &y_lo);
+    volarc_xy(g_seg.e[n - 1], 0, &x_hi, &y_hi);
+    assert(x_lo < LCD_SIZE / 2 && x_hi < LCD_SIZE / 2 && y_lo > y_hi);
+    for (int q = 1; q < 4; q++) {
+        static unsigned char map[LCD_SIZE][LCD_SIZE];
+        memset(map, 0, sizeof(map));
+        for (int i = 0; i < n; i++) {
+            int x0, y0, x, y;
+            volarc_xy(g_seg.e[i], 0, &x0, &y0);
+            volarc_xy(g_seg.e[i], q, &x, &y);
+            assert(!map[y][x] && d2_of(x, y) == d2_of(x0, y0));
+            map[y][x] = 1;
+        }
+    }
+    /* One cell per percent over the same sweep leaves cells too small to see: the red proof. */
+    static uint32_t wrong_store[VOLARC_CAP];
+    volarc_t wrong;
+    seg_build(&wrong, wrong_store, 100);
+    int wrong_min = n;
+    for (int t = 1; t <= 100; t++) {
+        int c = wrong.cnt[t] - wrong.cnt[t - 1];
+        wrong_min = c < wrong_min ? c : wrong_min;
+    }
+    assert(wrong_min < SEG_CELL_MIN_PX);
+}
+
+/* Red proof for A5: fill up to the index itself. */
+static int wrong_seg_class(int thr, int bi)
+{
+    return thr <= bi ? VOLARC_FILL : VOLARC_TRACK;
+}
+
+static void test_a5_minimum_is_visible(void)
+{
+    for (int bi = 0; bi <= BRT_STEPS; bi++) {
+        int fill = 0;
+        for (int t = 1; t <= BRT_STEPS + 1; t++) {
+            int c = volarc_seg_class(t, bi);
+            assert(c == VOLARC_FILL || c == VOLARC_TRACK);
+            fill += c == VOLARC_FILL;
+            assert((c == VOLARC_FILL) == (t <= bi + 1));
+        }
+        assert(fill == bi + 1);
+    }
+    assert(volarc_seg_class(1, 0) == VOLARC_FILL && volarc_seg_class(2, 0) == VOLARC_TRACK && volarc_seg_class(BRT_STEPS + 1, BRT_STEPS) == VOLARC_FILL);
+    for (int a = 0; a <= BRT_STEPS; a++) {
+        for (int b = 0; b <= BRT_STEPS; b++) {
+            int lo, hi;
+            volarc_seg_change_range(a, b, &lo, &hi);
+            for (int t = 1; t <= BRT_STEPS + 1; t++) {
+                assert((volarc_seg_class(t, a) != volarc_seg_class(t, b)) == (t > lo && t <= hi));
+            }
+        }
+    }
+    assert(wrong_seg_class(1, 0) == VOLARC_TRACK);
+}
+
+static int seg_areas(const volarc_t *a, int quad, int lo, int hi, int chunk, int *px)
+{
+    volarc_rect_t r[BRT_STEPS + 1];
+    int n = volarc_areas_chunk(a, quad, lo, hi, chunk, r, BRT_STEPS + 1);
+    *px = rounded_px(r, n);
+    return n;
+}
+
+/* Areas of one frame as ui.c spends them: the arc, the scene's 10, and the ring's 21 only when the arc has at most VOLARC_RING_MAX_AREAS. */
+static int frame_total(int arc)
+{
+    return arc + 10 + (arc <= VOLARC_RING_MAX_AREAS ? 21 : 0);
+}
+
+static void test_a6_segment_budget(void)
+{
+    volarc_build(&g_arc, g_store, VOLARC_CAP);
+    seg_build(&g_seg, g_seg_store, BRT_STEPS + 1);
+    int px, step_px = 0, worst = 0;
+    int whole = seg_areas(&g_seg, 0, 0, BRT_STEPS + 1, BRT_ARC_CHUNK_CELLS, &px);
+    printf("brightness arc: whole %d areas %d px", whole, px);
+    assert(whole <= 4 && frame_total(whole) <= 32);
+    for (int q = 0; q < 4; q++) {
+        assert(seg_areas(&g_seg, q, 0, BRT_STEPS + 1, BRT_ARC_CHUNK_CELLS, &px) == whole);
+        for (int bi = 0; bi < BRT_STEPS; bi++) {
+            int lo, hi;
+            volarc_seg_change_range(bi, bi + 1, &lo, &hi);
+            assert(seg_areas(&g_seg, q, lo, hi, BRT_ARC_CHUNK_CELLS, &px) == 1);
+            step_px = px > step_px ? px : step_px;
+        }
+        for (int a = 0; a <= BRT_STEPS; a++) {
+            for (int b = 0; b <= BRT_STEPS; b++) {
+                int lo, hi;
+                volarc_seg_change_range(a, b, &lo, &hi);
+                int t = frame_total(seg_areas(&g_seg, q, lo, hi, BRT_ARC_CHUNK_CELLS, &px));
+                worst = t > worst ? t : worst;
+            }
+        }
+    }
+    int vol_whole = frame_areas(0, 0, 100, &px);
+    int takeover = vol_whole + whole;
+    printf("; 1 step 1 area, at most %d px; any step at most %d of 32; takeover %d (+10 scene = %d of 32)\n", step_px, worst, takeover, takeover + 10);
+    assert(worst <= 32 && frame_total(takeover) <= 32 && takeover <= 22);
+    /* One area per cell breaks the takeover sum: the red proof. */
+    assert(vol_whole + seg_areas(&g_seg, 0, 0, BRT_STEPS + 1, 1, &px) > 22);
+}
+
+/* Every volume change in one frame, however many chunks it crosses, stays inside LVGL's 32 areas. */
+static void test_volume_multi_step_budget(void)
+{
+    volarc_build(&g_arc, g_store, VOLARC_CAP);
+    int worst = 0, px;
+    for (int q = 0; q < 4; q++) {
+        for (int a = 0; a <= 100; a++) {
+            for (int b = a + 1; b <= 100; b++) {
+                int lo, hi;
+                volarc_change_range(a, b, &lo, &hi);
+                int t = frame_total(frame_areas(q, lo, hi, &px));
+                worst = t > worst ? t : worst;
+            }
+        }
+    }
+    printf("volume arc: any step at most %d of 32\n", worst);
+    assert(worst <= 32);
+}
+
 int main(void)
 {
     test_a1_band_and_order();
@@ -263,6 +426,10 @@ int main(void)
     test_rearm_takes_over();
     test_cancel_shows_restored_value();
     test_quadrant_and_force();
+    test_a4_segment_geometry();
+    test_a5_minimum_is_visible();
+    test_a6_segment_budget();
+    test_volume_multi_step_budget();
     puts("ok");
     return 0;
 }
