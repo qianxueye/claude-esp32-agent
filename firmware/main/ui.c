@@ -890,10 +890,11 @@ static void tick_cb(lv_timer_t *t)
         uint32_t n = s_refr_count, worst = s_refr_worst_ms, sum = s_refr_sum_ms;
         s_refr_count = s_refr_worst_ms = s_refr_sum_ms = 0;
         if (last_log) {
-            ESP_LOGI(TAG, "fps=%u refr=%u/%u ang=%d b=%d blit=%u px=%u cover=%u/%u te=%u edges=%u [%s]",
+            ESP_LOGI(TAG, "fps=%u refr=%u/%u ang=%d b=%d blit=%u px=%u cover=%u/%u te=%u edges=%u stk=%u [%s]",
                      (unsigned)(n * 1000 / (now - last_log)), (unsigned)(n ? sum / n : 0), (unsigned)worst, s_shown_rot, s_bench,
                      (unsigned)(s_blit_n ? s_blit_us / s_blit_n : 0),
-                     (unsigned)(s_blit_n ? s_blit_px / s_blit_n : 0), (unsigned)s_cover_frames, (unsigned)s_cover_viol, (unsigned)s_te_missed, (unsigned)s_te_edges, s_miss);
+                     (unsigned)(s_blit_n ? s_blit_px / s_blit_n : 0), (unsigned)s_cover_frames, (unsigned)s_cover_viol, (unsigned)s_te_missed, (unsigned)s_te_edges,
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL), s_miss);
             s_te_edges = 0;
             s_miss[0] = 0;
             s_redraw_us = s_blit_us = s_redraw_n = s_blit_n = s_blit_px = 0;

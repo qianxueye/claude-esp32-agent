@@ -194,12 +194,6 @@ static void test_g5_deadline(void)
     }
 }
 
-/* Red proof for G6: a rule that enters the swipe from a centre start only. */
-static bool wrong_centre_only(int cls)
-{
-    return cls == VK_CENTRE;
-}
-
 static void test_g6_rim_starts_arm_inward(void)
 {
     const int radii[3] = {152, 176, 200};
@@ -209,14 +203,19 @@ static void test_g6_rim_starts_arm_inward(void)
                 sw_t s;
                 double a = QUADS[q] * 3.14159265358979323846 / 180.0;
                 int x = (int)lround(CTR - end * radii[j] * round(sin(a))), y = (int)lround(CTR + end * radii[j] * round(cos(a)));
+                sw_t wrong;
                 sw_press(&s, x, y, QUADS[q], false, 16);
+                sw_press(&wrong, x, y, QUADS[q], false, 16);
+                /* An edge touch that never enters the swipe path, fed the same samples: the red proof. */
+                wrong.k.rim_dead = true;
                 assert(s.k.cls == VK_EDGE);
                 for (int i = 1; i <= 75; i++) {
                     sw_at(&s, end * 2 * i, 0, 8);
+                    sw_at(&wrong, end * 2 * i, 0, 8);
                 }
                 assert((s.ev & VK_EV_BRT_ARM) && s.k.cls == VK_EDGE && s.k.bi == (end > 0 ? 29 : 3));
                 assert(vk_release(&s.k, s.t) == VK_EV_BRT_COMMIT);
-                assert(!wrong_centre_only(s.k.cls));
+                assert(!(wrong.ev & BRT_ANY) && !(vk_release(&wrong.k, wrong.t) & BRT_ANY));
             }
         }
     }
@@ -424,6 +423,7 @@ static void test_g14_jump(void)
         s.ev = 0;
         sw_at(&s, s.fu - 200, -200, 200);
         assert((s.ev & VK_EV_BRT_CANCEL) && s.k.bi == 10 && s.k.bi0 == 10 && vk_release(&s.k, s.t + 10) == 0);
+        assert(s.k.swhy == VK_WHY_JUMP && s.k.bright_ever);
         assert(wrong_no_limit(before, -200) != 10);
 
         centre(&s, QUADS[q], 10);
