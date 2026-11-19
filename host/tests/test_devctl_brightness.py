@@ -56,8 +56,8 @@ def test_brightness_sends_brt_set_and_prints_the_bright_line(capsys):
     assert "bright lvl=49" in capsys.readouterr().out
 
 
-def bright_line(lvl, arms=3, slides=4):
-    return b"I (5000) app: bright lvl=%d eff=%d panel=%d set=1 arms=%d rim=1 cancels=0 slides=%d stops=1 saves=1" % (lvl, lvl, lvl, arms, slides)
+def bright_line(lvl, arms=3, slides=4, ms=5000):
+    return b"I (%d) app: bright lvl=%d eff=%d panel=%d set=1 arms=%d rim=1 cancels=0 slides=%d stops=1 saves=1" % (ms, lvl, lvl, lvl, arms, slides)
 
 
 def test_ladder_constants_match_the_firmware():
@@ -89,7 +89,7 @@ def fast(monkeypatch):
 
 
 def test_swipecheck_exits_nonzero_on_fail_and_releases_the_pin(fast, capsys):
-    link = TimedLink([(0.0, bright_line(49, arms=3)), (0.2, bright_line(49, arms=4))])
+    link = TimedLink([(0.0, bright_line(49, arms=3)), (0.2, bright_line(49, arms=4, ms=5200))])
     with pytest.raises(SystemExit) as e:
         devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="grip"))
     assert e.value.code == 1 and "swipecheck grip FAIL" in capsys.readouterr().out
@@ -97,7 +97,7 @@ def test_swipecheck_exits_nonzero_on_fail_and_releases_the_pin(fast, capsys):
 
 
 def test_swipecheck_pass_returns_normally(fast, capsys):
-    link = TimedLink([(0.0, bright_line(49)), (0.2, bright_line(49))])
+    link = TimedLink([(0.0, bright_line(49)), (0.2, bright_line(49, ms=5200))])
     devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="wipe"))
     assert "swipecheck wipe PASS" in capsys.readouterr().out
 
@@ -197,7 +197,8 @@ def test_swipecheck_final_sample_catches_a_late_arm(monkeypatch, capsys):
     """An arm after the last bright line inside the window shows in the final line; the pin is released after it."""
     monkeypatch.setattr(devctl, "SWIPE_FINAL_GUARD_S", 0.2)
     monkeypatch.setattr(devctl, "BRIGHT_WAIT_S", 1.0)
-    link = TimedLink([(0.0, bright_line(49)), (0.1, bright_line(49)), (0.25, bright_line(49, arms=3, slides=5)), (0.6, bright_line(49, arms=4, slides=5))])
+    link = TimedLink([(0.0, bright_line(49)), (0.1, bright_line(49, ms=5100)), (0.25, bright_line(49, arms=3, slides=5, ms=5250)),
+                      (0.6, bright_line(49, arms=4, slides=5, ms=5600))])
     with pytest.raises(SystemExit) as e:
         devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.2, label="grip"))
     out = capsys.readouterr().out
@@ -208,7 +209,7 @@ def test_swipecheck_final_sample_catches_a_late_arm(monkeypatch, capsys):
 
 def test_swipecheck_collects_swipe_lines_until_the_final_sample(fast, capsys):
     swipe = b"I (2) ui: swipe: end cls=edge q=0 why=none arm=1 b0=49 b=52 dx=0 dy=-60 up=60 pk=60 lat=0 arm_ms=40 r1=150 rev=0 gap=16 stp=8 ku=48 kl=0 dur=300"
-    link = TimedLink([(0.0, bright_line(49)), (0.08, swipe), (0.25, bright_line(49))])
+    link = TimedLink([(0.0, bright_line(49)), (0.08, swipe), (0.25, bright_line(49, ms=5250))])
     with pytest.raises(SystemExit):
         devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="wipe"))
     assert "armed cls edge" in capsys.readouterr().out
@@ -227,3 +228,58 @@ def test_disp_brt_arc_forces_and_releases():
     devctl.cmd_disp(link, disp_args(brt_arc="11"))
     devctl.cmd_disp(link, disp_args(brt_arc="null"))
     assert link.sent == [(devctl.T_DEBUG, b'{"brt_arc":11}'), (devctl.T_DEBUG, b'{"brt_arc":null}')]
+
+
+def host_clock_final(ms, first_ms, window_s):
+    """A wrong rule: any bright line read after the host's window counts as final, whatever its board time."""
+    return time.monotonic() >= host_clock_final.due
+
+
+class PausedHostLink(StubLink):
+    """The baseline arrives alone; the host then stalls past the window and reads one buffered batch."""
+
+    def __init__(self, batch, stall_s):
+        super().__init__([(devctl.T_LOG, bright_line(49))])
+        self.batch, self.stall_s = batch, stall_s
+
+    def poll(self):
+        if self.frames:
+            return super().poll()
+        if self.batch:
+            time.sleep(self.stall_s)
+            out, self.batch = self.batch, []
+            return [(devctl.T_LOG, p) for p in out]
+        return []
+
+
+ARMED_LINE = b"I (5060) ui: swipe: end cls=edge q=0 why=none arm=1 b0=49 b=52 dx=0 dy=-60 up=60 pk=60 lat=0 arm_ms=40 r1=150 rev=0 gap=16 stp=8 ku=48 kl=0 dur=300"
+
+
+def buffered_batch():
+    return [bright_line(49, ms=5050), ARMED_LINE, bright_line(49, ms=5300)]
+
+
+@pytest.mark.parametrize("label", ["grip", "wipe"])
+def test_buffered_batch_with_an_accidental_arm_fails(fast, capsys, label):
+    """An unchanged bright line from before the window ends, then an arm, then one from after: the arm is kept and the run fails."""
+    link = PausedHostLink(buffered_batch(), stall_s=0.2)
+    with pytest.raises(SystemExit) as e:
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label=label))
+    assert e.value.code == 1 and "armed cls edge" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("label", ["grip", "wipe"])
+def test_host_clock_rule_passes_the_buffered_batch_with_an_arm(fast, capsys, label):
+    """The red proof: judging the final line by the host's clock takes the pre-window line and passes the run."""
+    host_clock_final.due = time.monotonic() + 0.1
+    link = PausedHostLink(buffered_batch(), stall_s=0.2)
+    devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label=label), is_final=host_clock_final)
+    out = capsys.readouterr().out
+    assert "swipecheck %s PASS" % label in out and "armed cls" not in out
+
+
+def test_a_bright_line_without_a_board_time_is_never_final(fast, capsys):
+    link = TimedLink([(0.0, bright_line(49)), (0.2, bright_line(49).replace(b"I (5000) ", b""))])
+    with pytest.raises(SystemExit) as e:
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="grip"))
+    assert e.value.code == 1 and "no final" in capsys.readouterr().out

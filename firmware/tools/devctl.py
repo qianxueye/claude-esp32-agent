@@ -35,6 +35,7 @@ BRIGHT_KEYS = ("lvl", "eff", "panel", "set", "arms", "rim", "cancels", "slides",
 BRIGHT_COUNTERS = ("arms", "rim", "cancels", "slides", "stops", "saves")
 BRIGHT_LINE = re.compile(rb"bright " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in BRIGHT_KEYS))
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
+BOARD_MS = re.compile(rb"\((\d+)\) ")
 
 
 def crc16(data, crc=0xFFFF):
@@ -583,6 +584,17 @@ def parse_bright(p):
     return dict(zip(BRIGHT_KEYS, (int(v) for v in m.groups()))) if m else None
 
 
+def board_ms(p):
+    """Return the board uptime in ms from the leading 'I (<ms>) ' of a LOG line, or None."""
+    m = BOARD_MS.search(p)
+    return int(m.group(1)) if m else None
+
+
+def final_by_board(ms, first_ms, window_s):
+    """True when a bright line's board time lies at or after the baseline's board time plus the window and the guard."""
+    return ms is not None and first_ms is not None and ms >= first_ms + (window_s + SWIPE_FINAL_GUARD_S) * 1000
+
+
 def parse_swipe(p):
     """Return the fields of a 'swipe: end' LOG line as a dict (numbers as int or float), or None."""
     m = SWIPE_LINE.search(p)
@@ -664,9 +676,9 @@ def swipe_report(label, first, last, swipes):
     return lines, passed
 
 
-def cmd_swipecheck(link, args):
+def cmd_swipecheck(link, args, is_final=final_by_board):
     """Hold the screen ACTIVE for SECONDS between a baseline and a final bright line and judge the swipes in between by label."""
-    first = last = None
+    first = last = first_ms = None
     swipes = []
     next_ping, seq = 0.0, 0
 
@@ -680,7 +692,7 @@ def cmd_swipecheck(link, args):
 
     link.send(T_DEBUG, b'{"disp_force":0}')
     try:
-        final_after, end = None, time.monotonic() + BRIGHT_WAIT_S
+        end = time.monotonic() + BRIGHT_WAIT_S
         while last is None and time.monotonic() < end:
             for p in logs():
                 b, s = parse_bright(p), parse_swipe(p)
@@ -688,13 +700,12 @@ def cmd_swipecheck(link, args):
                     print(p.decode("utf-8", "replace"))
                 if first is None:
                     if b:
-                        first = b
-                        final_after = time.monotonic() + args.seconds + SWIPE_FINAL_GUARD_S
-                        end = final_after + BRIGHT_WAIT_S
+                        first, first_ms = b, board_ms(p)
+                        end = time.monotonic() + args.seconds + SWIPE_FINAL_GUARD_S + BRIGHT_WAIT_S
                 elif last is None:
                     if s:
                         swipes.append(s)
-                    if b and time.monotonic() >= final_after:
+                    if b and is_final(board_ms(p), first_ms, args.seconds):
                         last = b
     finally:
         link.send(T_DEBUG, b'{"disp_force":null}')
