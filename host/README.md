@@ -47,6 +47,17 @@ uv run claude-voice [--config config.toml]
 - 已登录的 Claude Code CLI（`claude_cli`，默认取 `PATH` 里的 `claude`）。会话用 `--safe-mode --restricted`，只开 `WebSearch`、`WebFetch`，无 MCP，工作目录 `~/.claude-voice-agent-ws`。
 - 不需要 `ANTHROPIC_API_KEY`。
 
+## 语音合成
+
+默认用 macOS `say`。把 `tts_engine` 设为 `"qwen3"`，改用 mlx-audio 语音服务上的 Qwen3-TTS（默认模型 0.6B，声音 `ono_anna`）：
+
+- `qwen_server_cmd`：服务的启动命令（参数列表）。设置后，中继在启动时选一个本机空闲端口启动服务，用一句短话预热，退出时停止服务。
+- `qwen_url`：没有设置 `qwen_server_cmd` 时，连接这个地址的服务，例如经 SSH 端口转发的另一台 Mac。
+- `qwen_lang_code`（`chinese` 或 `japanese`）和 `qwen_voice` 由配置决定，不自动识别语言；`qwen_voices` 可按语言指定不同的声音。
+- 服务返回 24 kHz 音频，中继用 `afconvert` 转成 16 kHz。
+- 服务启动失败或没有就绪时，中继在日志里记一条错误，并继续使用 `say`。某一句合成失败时，这一句改用 `say`，日志记一条警告，之后 `qwen_skip_s` 秒内的句子直接用 `say`，不再等待超时。
+- 服务日志写在日志目录的 `qwen-tts-server.log`。
+
 ## 操作
 
 - 点按屏幕、按 BOOT 或 PWR 键：开始听。说完（静音 0.8 秒）或再点一次结束。

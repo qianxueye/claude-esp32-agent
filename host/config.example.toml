@@ -6,6 +6,17 @@ effort = "low"
 tools = ["WebSearch", "WebFetch"]
 voice = "Tingting"
 rate = 0            # words per minute, 0 = voice default
+# Qwen3-TTS through an mlx-audio speech server; any failure falls back to `say` for that sentence.
+# tts_engine = "qwen3"                        # default "say"
+# qwen_server_cmd = ["/path/to/venv/bin/python", "-m", "mlx_audio.server"]   # started on a free local port
+# qwen_url = "http://127.0.0.1:8000"          # used when qwen_server_cmd is not set (e.g. an SSH-forwarded server)
+# qwen_model = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+# qwen_voice = "ono_anna"
+# qwen_lang_code = "chinese"                  # or "japanese"
+# qwen_voices = { japanese = "ono_anna" }     # per-language voice override
+# qwen_connect_timeout_s = 2.0
+# qwen_skip_s = 30.0                          # after a failure, use say for this long
+# qwen_ready_timeout_s = 180.0
 volume = 70         # initial value for a board with no stored volume
 vad_min_speech_ms = 300
 vad_end_silence_ms = 800
