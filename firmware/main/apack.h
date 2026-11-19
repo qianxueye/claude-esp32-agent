@@ -45,7 +45,8 @@ typedef struct {
     bool key;
 } ap_frame_t;
 
-/* Validates header, index and every frame entry of the avail bytes at base; the payload CRC is left to ap_payload_ok. */
+/* Validates header, index and every frame entry of the avail bytes at base; the payload CRC is left to ap_payload_ok.
+   On any status but AP_OK the view is zeroed, so a player handed it shows Clawd. */
 ap_status_t ap_parse(const uint8_t *base, uint32_t avail, ap_pack_t *out);
 /* CRC-32/IEEE, chained like zlib.crc32: pass 0 first, then the previous result. */
 uint32_t ap_crc32(uint32_t crc, const uint8_t *p, size_t n);

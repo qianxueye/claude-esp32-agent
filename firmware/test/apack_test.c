@@ -5,6 +5,7 @@
 #include <string.h>
 #include "apack.h"
 #include "apack_golden.h"
+#include "aplay.h"
 #include "app_config.h"
 #include "dpower.h"
 
@@ -343,6 +344,35 @@ static void test_p3_index_rules(void)
     assert(parse_mutated(m_crop_flipped, true) == AP_OK);
 }
 
+/* Clip shown in IDLE by a player handed the view of a mutated pack, whatever ap_parse returned. */
+static int idle_clip_of(mutate_fn fn, ap_status_t *st)
+{
+    uint8_t b[CAP];
+    const uint32_t n = base_pack(b);
+    if (fn) {
+        fn(b);
+    }
+    reseal(b, n);
+    ap_pack_t p;
+    *st = ap_parse(b, n, &p);
+    aplay_t a;
+    aplay_init(&a, &p);
+    const int clip = aplay_tick(&a, 0, 0, APS_ACTIVE).clip;
+    ap_frame_t f;
+    assert(*st == AP_OK || (!ap_payload_ok(&p) && !ap_frame(&p, 0, 0, &f) && p.clip_count == 0 && p.base == NULL));
+    return clip;
+}
+
+static void test_s2_rejected_view_gives_clawd(void)
+{
+    ap_status_t st;
+    /* One rule fails on clip 0, one on clip 1 after clip 0 has passed every check. */
+    assert(idle_clip_of(m_crop_above_safe_box, &st) == APLAY_CLAWD && st == AP_BAD_LAYOUT);
+    assert(idle_clip_of(m_frame_len_past_end, &st) == APLAY_CLAWD && st == AP_BAD_HEADER);
+    /* Red proof: the same player plays clip 0 from a populated view, so a view kept after a rejection would play. */
+    assert(idle_clip_of(NULL, &st) == 0 && st == AP_OK);
+}
+
 static ap_status_t parse_with_colors(uint16_t colors)
 {
     uint8_t b[CAP];
@@ -410,6 +440,7 @@ static void test_p4_payload(void)
     for (uint32_t i = start; i < n; i++) {
         uint8_t *m = dup(b, n);
         m[i] ^= 0x01;
+        /* Red proof: ap_parse alone accepts the flipped payload byte; only ap_payload_ok refuses it. */
         assert(ap_parse(m, n, &p) == AP_OK && !ap_payload_ok(&p));
         free(m);
         for (size_t k = 0; k < sizeof VALUES; k++) {
@@ -527,6 +558,9 @@ static void test_p6_token_semantics(void)
     for (int i = 0; i < 300; i++) {
         assert(buf[i] == 0);
     }
+    /* Red proof: the same frame decoded without its key flag keeps the stale pixels. */
+    memset(buf, 0x55, sizeof buf);
+    assert(run_tokens(SKIP_ALL, sizeof SKIP_ALL, false, buf, 300) && buf[0] == 0x55 && buf[299] == 0x55);
     memset(buf, 0x55, sizeof buf);
     static const uint8_t DELTA[] = {0x00, 0x80, 9, 0x7E, 0xC0, 4, 0x7F, 0, 0, 0xE7, 6};
     assert(run_tokens(DELTA, sizeof DELTA, false, buf, 300));
@@ -635,6 +669,7 @@ int main(void)
     test_built_pack_parses();
     test_p2_empty_and_foreign();
     test_p3_index_rules();
+    test_s2_rejected_view_gives_clawd();
     test_p3_colour_limit();
     test_p3_every_index_byte();
     test_p4_payload();

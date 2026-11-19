@@ -25,7 +25,7 @@ typedef struct {
 /* A NULL pack always gives Clawd; a valid pack starts enabled. */
 void aplay_init(aplay_t *a, const ap_pack_t *pack);
 void aplay_enable(aplay_t *a, bool on);
-/* Plays one clip in a loop whatever the state; -1 or an unknown clip releases the pin. */
+/* Plays one clip whatever the state, as its loop flag says; -1 or an unknown clip releases the pin. */
 void aplay_pin(aplay_t *a, int clip);
 /* Pickup edge; the next tick plays the pickup clip once if it finds IDLE and ACTIVE, else drops it. */
 void aplay_pickup(aplay_t *a);

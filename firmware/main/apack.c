@@ -88,9 +88,8 @@ static ap_status_t parse_clip(const ap_pack_t *p, const uint8_t *e, uint32_t tbl
     return AP_OK;
 }
 
-ap_status_t ap_parse(const uint8_t *base, uint32_t avail, ap_pack_t *out)
+static ap_status_t parse_pack(const uint8_t *base, uint32_t avail, ap_pack_t *out)
 {
-    memset(out, 0, sizeof(*out));
     if (!base || avail < AP_HEADER_BYTES) {
         return AP_BAD_HEADER;
     }
@@ -153,6 +152,16 @@ ap_status_t ap_parse(const uint8_t *base, uint32_t avail, ap_pack_t *out)
         out->max_area = area > out->max_area ? area : out->max_area;
     }
     return AP_OK;
+}
+
+ap_status_t ap_parse(const uint8_t *base, uint32_t avail, ap_pack_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    const ap_status_t st = parse_pack(base, avail, out);
+    if (st != AP_OK) {
+        memset(out, 0, sizeof(*out));
+    }
+    return st;
 }
 
 bool ap_payload_ok(const ap_pack_t *p)

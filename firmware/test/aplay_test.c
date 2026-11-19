@@ -93,6 +93,11 @@ static void test_s2_default_on_and_fallbacks(void)
     aplay_t a;
     aplay_init(&a, pack());
     assert(a.enabled && is(aplay_tick(&a, 0, ST_IDLE, APS_ACTIVE), C_IDLE, 0));
+    /* Red proof: a player that starts off until told otherwise shows Clawd with a valid pack and no stored setting. */
+    aplay_t off;
+    aplay_init(&off, pack());
+    off.enabled = false;
+    assert(aplay_tick(&off, 0, ST_IDLE, APS_ACTIVE).clip == APLAY_CLAWD);
     aplay_enable(&a, false);
     assert(aplay_tick(&a, 16, ST_IDLE, APS_ACTIVE).clip == APLAY_CLAWD);
     assert(aplay_tick(&a, 32, ST_IDLE, APS_OFF).clip == APLAY_CLAWD);
@@ -195,7 +200,7 @@ static void test_s4_cut_rules(void)
     assert(restarts(&a, &t, true) > 5);
 }
 
-/* Counts ticks that start the once-clip at frame 0 over a run in IDLE, calling aplay_pickup on the ticks in lift[]. */
+/* Counts once-clip starts over 3 s in IDLE: one pickup edge at 112 ms, or the lifted level on every tick while held. */
 static int once_starts(bool level, uint32_t lifted_ms)
 {
     aplay_t a;
@@ -280,6 +285,16 @@ static void test_s6_dim_holds(void)
     }
     assert(is(run(&a, &t, back + f.ms + TICK, ST_IDLE, APS_ACTIVE), held.clip, held.frame + 1));
     assert(a.late == 0 && a.steps == steps + 1);
+    /* Red proof: resuming without rebasing the schedule steps on the first ACTIVE tick and counts it late. */
+    aplay_t r;
+    aplay_init(&r, pack());
+    uint32_t tr = 0;
+    run(&r, &tr, 333, ST_IDLE, APS_ACTIVE);
+    run(&r, &tr, tr + 60000, ST_IDLE, APS_DIM);
+    r.dim = false;
+    const uint32_t r_steps = r.steps;
+    aplay_tick(&r, tr += TICK, ST_IDLE, APS_ACTIVE);
+    assert(r.steps == r_steps + 1 && r.late == 1);
     /* A once-clip ends at DIM entry: frame 0 of the state's clip, held. */
     aplay_pickup(&a);
     assert(is(aplay_tick(&a, t += TICK, ST_IDLE, APS_ACTIVE), C_ONCE, 0));
