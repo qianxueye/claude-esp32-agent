@@ -61,7 +61,8 @@ A pixel-style bubble above the mascot shows the state. IDLE shows no bubble.
 - Band: pixels whose centre lies between `VOL_ARC_R_IN_PX` (222) and `VOL_ARC_R_OUT_PX` (230) from the centre, written into the rotated output buffer. The inner radius stays above the listening ring's outermost rewritten radius (221) and the outer one below the glass edge (233). If the outer edge is cut off at the glass, setting `VOL_ARC_R_OUT_PX` back to 225 is the only change needed.
 - Shape: 270° sweep with the gap at gravity-bottom, starting at the lower left. A pixel is fill when its threshold (1 to 100, one per 2.7°) is at or below the volume, else track. Fill `#F4F3EE`, track `#8A877F`; at 0 % the first three thresholds show in `#D14343`. Hard edges only, no anti-aliasing.
 - The arc follows the quadrant target, not the ease: when the quadrant changes it is cleared and drawn once at the new position, also during the linger.
-- Invalidation: the arc is invalidated as one area per 10 thresholds (at most 10 for the whole arc, one for a 1 % step). LVGL keeps 32 areas per frame before repainting the screen, so a frame in which the arc invalidates more than one area skips the listening-ring update; the ring catches up in the next frame.
+- Invalidation: the arc is invalidated as one area per 10 thresholds (at most 10 for the whole arc, one for a 1 % step). LVGL keeps 32 areas per frame before repainting the screen, so a frame in which the arc invalidates more than one area skips the listening-ring update; the ring catches up in the next frame. A change of the end cue adds one area per changed end; a whole-meter frame folds the lit end cue into the end chunk instead (see End cue).
+- End cue: at 0 % and 100 % the arc stretches past its end when the knob keeps turning (see End cue).
 - `VOL_ARC_*` values are plain configuration; the table is built at start-up into PSRAM.
 
 ## Brightness arc
@@ -71,9 +72,30 @@ A pixel-style bubble above the mascot shows the state. IDLE shows no bubble.
 - Band: the volume arc's band, r 222 to 230. Angles: UI 135° to 225° clockwise from 3 o'clock, the left rim centred on 9 o'clock, so the fill grows from the bottom up.
 - Cells: 33, one per ladder level (2.73° each). Cell c (1 to 33) is fill when c ≤ index + 1, else track, so the lowest level still shows one lit cell. Fill `#F4F3EE`, track `#8A877F`, hard edges.
 - Frame: the quadrant latched when the touch started, kept while the arc shows; turning the board does not move it.
-- End cue: when a swipe pushes past either end the arc is cleared for `BRT_END_BLINK_MS` and drawn again, once per arrival at the end. A release during the blink still ends in a drawn, lingering arc.
+- End cue: at the lowest and highest level the arc stretches past its end when the swipe keeps pushing (see End cue).
 - Invalidation: one area per 9 cells, 4 for the whole arc, one for a one-level step. A frame whose arc change has more than one area skips the listening-ring update, as for the volume arc, so any change of either arc in one frame stays within LVGL's 32 areas; a host test enumerates every change in every quadrant.
 - `BRT_ARC_*` values are plain configuration; the table is built at start-up into PSRAM.
+
+## End cue
+
+At either end of either rim arc, travel past the end while the level rests there makes the arc reach past its end by up to `ARC_OVER_CELLS` (3) cells. The level and everything else the gesture reports stay as they are; the cue is drawn only.
+
+- Push: measured in level steps, brightness px / 7.5 (`BRT_TRAVEL_PX / BRT_STEPS`) and knob degrees / 2.7 (`VOL_SWEEP_DEG / 100`). It counts from the moment the level reaches the end, or from arming when the gesture arms there. The peak push is held while the level rests at the end.
+- Cells: the number of k in 1 to N with `x · ARC_OVER_C_NUM · (d − k) ≥ k · d · ARC_OVER_C_DEN`, d = N + 1, by integer comparisons, so a huge push gives N and a push of 0 or less gives 0. Cell k appears at x_k = k·d / (c·(d − k)); for c = 1 and N = 3 that is 1.33, 4 and 12 steps, which is 10, 30 and 90 px of brightness travel and 3.6°, 10.8° and 32.4° of knob travel. The arc keeps its in-range rate at the end and each further cell costs more push.
+- Hold and release of the push: the stretch holds until the first reversed level step and goes to 0 in the same sample as that level change (one event carrying the level bit and `VK_EV_OVER`), so one frame shows both. Travel back that does not yet change the level changes nothing, so finger noise does not shake the stretch.
+- Spring: after release or a lost touch the stretch springs back from the drawn count, the first step at once and then one cell per `ARC_SPRING_STEP_MS`; it ends within `(ARC_OVER_CELLS − 1) · ARC_SPRING_STEP_MS` plus one frame, well inside the linger. The spring starts from the drawn count, so a stretch that was never drawn does not appear after release. A cancel by jump, a new arming and the other meter taking over set it to 0.
+- Colour: a stretch cell takes the class of the arc's end cell at that end: fill at the volume maximum and at both brightness ends (the lit run grows from one cell), the red of the mute mark at volume 0. Unlit stretch cells are black; there is no track outside the arc.
+- Geometry: cells continue each arc's own grid (2.7° per cell on the volume arc, 2.73° on the brightness arc) in a separate table per arc, `VOLARC_OVER_CAP` entries, built at start-up into PSRAM. Cells 1 to N lie below the arc's start and N + 1 to 2N above its end, cell 1 and cell N + 1 touching the end. Both runs fit the 90° gap of the volume arc. The brightness arc's high-end cells (225° to 233°) lie on pixels of the volume arc's table, so the old stretch is cleared in the clear step, before any draw.
+- Quadrant: the brightness stretch stays at the latched quadrant; the volume stretch follows the target and re-anchors with the arc.
+- Areas: a stretch change is one area per changed end (chunk `ARC_OVER_CELLS`). A whole-meter frame (re-anchor, takeover, clear) folds the lit stretch cells' rectangle into the rectangle of the end chunk they touch (the chunk holding threshold 1 for the low end, threshold `steps` for the high end) and returns the chunk count alone. Limits, asserted over every drawn state and transition in all four quadrants (`volarc_test.c`, A12): a frame that skips the listening ring spends at most `2 · VOLARC_MAX_AREAS` (20) arc areas, a frame that updates the ring at most `VOLARC_RING_MAX_AREAS` (1), and no frame exceeds 32 with the scene's 10 and the ring's 21. A16 asserts that every changed pixel of every replayed frame lies inside that frame's invalidated areas.
+- Test aid: the DEBUG key `arc_over` stretches the forced arc (`arc` or `brt_arc`) by −3 to 3 cells; the forced level must rest at the end the sign names, else nothing shows.
+
+| Value | Class |
+|---|---|
+| `ARC_OVER_CELLS` 3 | plain configuration |
+| `ARC_OVER_C_NUM`, `ARC_OVER_C_DEN` 1 / 1 | mathematical model, placeholder fitted on the board from the `ov=` counters |
+| `ARC_SPRING_STEP_MS` 60 | plain configuration |
+| `ARC_OV_LOG_MAX` 999999 | plain configuration (log cap) |
 
 ## Screen orientation
 
