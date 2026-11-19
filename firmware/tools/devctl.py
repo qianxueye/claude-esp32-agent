@@ -36,6 +36,15 @@ BRIGHT_COUNTERS = ("arms", "rim", "cancels", "slides", "stops", "saves")
 BRIGHT_LINE = re.compile(rb"bright " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in BRIGHT_KEYS))
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 BOARD_MS = re.compile(rb"\((\d+)\) ")
+ANIM_KEYS = ("pack", "skin", "clip", "frames", "late", "cuts", "seek", "verify_ms", "iheap", "ilarge")  # AG_LINE_FMT in firmware/main/aglue.h
+ANIMT_KEYS = ("dec_us", "work_us", "cut_ms")  # AG_TIME_LINE_FMT
+AUDIO_KEYS = ("spkovf", "under", "slow", "micgap", "micdrop")  # stats line counters that gate G3 needs unchanged
+KEEPALIVE_S = 1.0  # plain configuration: below the board's 5 s host-silence timeout
+GATE_VOLUME_MAX = 30  # Owner rule: speech volume during a gate run
+GATE_VERIFY_MS_MAX = 1000  # gate G7, plain configuration, placeholder
+GATE_HEAP_DROP_MAX = 2048  # gate G5, plain configuration, placeholder until the TLS budget is known
+GATE_HEAP_LARGEST_MIN = 31744  # gate G5, plain configuration, placeholder
+VOLUME_SAVE_WAIT_S = 12.0  # plain configuration: the 5 s write gap plus amplifier off and two 2 s log periods
 
 
 def crc16(data, crc=0xFFFF):
@@ -567,15 +576,24 @@ def cmd_disp(link, args):
     """Display power test aids: speed up the timeline, pin a stage, the ACTIVE brightness or an orbit index, fill the screen with a grey."""
     fields = []
     for key, val in (("disp_scale", args.scale), ("disp_force", args.force), ("orbit", args.orbit), ("fill", args.fill), ("arc", args.arc), ("bench", args.bench),
-                     ("brt", args.brt), ("brt_arc", args.brt_arc), ("arc_over", args.arc_over)):
+                     ("brt", args.brt), ("brt_arc", args.brt_arc), ("arc_over", args.arc_over), ("anim_clip", args.anim_clip)):
         if val is not None:
             fields.append('"%s":%s' % (key, val if val == "null" else int(val)))
     link.send(T_DEBUG, ("{%s}" % ",".join(fields)).encode())
     end = time.monotonic() + args.seconds
+    sampler, samples, ping = AnimSampler(), [], Keepalive(link)
     while time.monotonic() < end:
+        ping.tick()
         for t, p in link.poll():
-            if t == T_LOG and (b"disp:" in p or b"fps=" in p or b"bright " in p or b"swipe:" in p):
+            if t == T_LOG and (b"disp:" in p or b"fps=" in p or b"bright " in p or b"swipe:" in p or b"anim" in p):
                 print(p.decode())
+            s = sampler.feed(p) if t == T_LOG else None
+            if s:
+                samples.append(s)
+    if len(samples) >= 2:
+        a, b = samples[0], samples[-1]
+        print("anim over %.1f s: frames +%d late +%d cuts +%d" % ((b["ms"] - a["ms"]) / 1000, u32_delta(a["frames"], b["frames"]),
+                                                                  u32_delta(a["late"], b["late"]), u32_delta(a["cuts"], b["cuts"])))
 
 
 def parse_bright(p):
@@ -611,6 +629,214 @@ def parse_swipe(p):
             except ValueError:
                 out[k] = v
     return out
+
+
+class Keepalive:
+    """Sends a PING every KEEPALIVE_S so the board does not go OFFLINE during a long wait."""
+
+    def __init__(self, link):
+        self.link, self.last = link, time.monotonic()
+
+    def tick(self):
+        if time.monotonic() - self.last >= KEEPALIVE_S:
+            self.link.send(T_PING, b"\0\0\0\0")
+            self.last = time.monotonic()
+
+
+def parse_kv(text):
+    """Return key=value pairs as a dict: 'a/b' values as tuples of ints, other numbers as int."""
+    out = {}
+    for kv in text.split():
+        k, _, v = kv.partition("=")
+        try:
+            out[k] = tuple(int(x) for x in v.split("/")) if "/" in v else int(v)
+        except ValueError:
+            out[k] = v
+    return out
+
+
+class AnimSampler:
+    """Pairs an 'anim:' line with the 'animt:' line printed right after it; a sample missing a half is dropped."""
+
+    def __init__(self):
+        self.pending = None
+
+    def feed(self, p):
+        m = re.search(rb"\banim: (pack=.*)", p)
+        if m:
+            d = parse_kv(m.group(1).decode("utf-8", "replace"))
+            self.pending = d if all(k in d for k in ANIM_KEYS) else None
+            if self.pending is not None:
+                self.pending["ms"] = board_ms(p)
+            return None
+        m = re.search(rb"\banimt: (dec_us=.*)", p)
+        if not m or self.pending is None:
+            return None
+        d = parse_kv(m.group(1).decode("utf-8", "replace"))
+        sample, self.pending = self.pending, None
+        if not all(k in d for k in ANIMT_KEYS):
+            return None
+        sample.update(d)
+        return sample
+
+
+def parse_stats(p):
+    """Return the audio counters of a 'stats rx=' LOG line as a dict, or None."""
+    m = re.search(rb"\bstats (rx=.*)", p)
+    if not m:
+        return None
+    d = parse_kv(m.group(1).decode("utf-8", "replace"))
+    return {k: d[k] for k in AUDIO_KEYS} if all(isinstance(d.get(k), int) for k in AUDIO_KEYS) else None
+
+
+def u32_delta(a, b):
+    """Difference of two cumulative u32 counters, safe across one wrap."""
+    return (b - a) & 0xFFFFFFFF
+
+
+def anim_report(a, b, sa, sb):
+    """Return (lines, failed) for two anim samples and two stats dicts; rules without a fixed limit print raw values only."""
+    lines, failed = [], False
+    secs = (b["ms"] - a["ms"]) / 1000 if a.get("ms") is not None and b.get("ms") is not None else 0
+    frames = u32_delta(a["frames"], b["frames"])
+    late = u32_delta(a["late"], b["late"])
+    failed |= late != 0
+    lines.append("G1 %s late +%d; frames +%d in %.1f s (%.2f/s)" % ("PASS" if late == 0 else "FAIL", late, frames, secs, frames / secs if secs else 0))
+    work = u32_delta(a["work_us"][0], b["work_us"][0])
+    dec = u32_delta(a["dec_us"][0], b["dec_us"][0])
+    lines.append("G2 work mean %d us, worst so far %d us; decode mean %d us, worst so far %d us; limits come from the pack's frame durations"
+                 % (work // frames if frames else 0, b["work_us"][1], dec // frames if frames else 0, b["dec_us"][1]))
+    if sa is None or sb is None:
+        failed = True
+        lines.append("G3 FAIL no stats line before or after")
+    else:
+        d = {k: u32_delta(sa[k], sb[k]) for k in AUDIO_KEYS}
+        bad = any(d.values())
+        failed |= bad
+        lines.append("G3 %s %s" % ("FAIL" if bad else "PASS", " ".join("%s +%d" % (k, d[k]) for k in AUDIO_KEYS)))
+    lines.append("G4 cut_ms last %d worst %d; cuts +%d" % (b["cut_ms"][0], b["cut_ms"][1], u32_delta(a["cuts"], b["cuts"])))
+    dfree = b["iheap"][0] - a["iheap"][0]
+    heap_ok = dfree >= -GATE_HEAP_DROP_MAX and b["ilarge"] >= GATE_HEAP_LARGEST_MIN
+    failed |= not heap_ok
+    lines.append("G5 %s over this run: internal free %d -> %d (%+d), lowest %d, largest block %d"
+                 % ("PASS" if heap_ok else "FAIL", a["iheap"][0], b["iheap"][0], dfree, b["iheap"][1], b["ilarge"]))
+    lines.append("G6 not measured here; run 'bench 1' and read fps=")
+    verify_ok = b["pack"] == 1 and b["verify_ms"] <= GATE_VERIFY_MS_MAX
+    failed |= not verify_ok
+    lines.append("G7 %s pack=%d verify_ms=%d" % ("PASS" if verify_ok else "FAIL", b["pack"], b["verify_ms"]))
+    lines.append("G8 not measured here; run 'disp --force 2' and 'disp --force 1', each prints its frames delta")
+    return lines, failed
+
+
+def wait_sample(link, timeout, after=None, seen=None):
+    """Return (anim sample, latest stats dict) for the first complete sample arriving after the host time 'after', or (None, stats).
+
+    Knob lines met on the way leave their save count in seen["saves"]."""
+    end = time.monotonic() + timeout
+    sampler, stats, ping = AnimSampler(), None, Keepalive(link)
+    while time.monotonic() < end:
+        ping.tick()
+        for t, p in link.poll():
+            if t != T_LOG:
+                continue
+            k = knob_line(p)
+            if k and seen is not None:
+                seen["saves"] = k[1]
+            stats = parse_stats(p) or stats
+            s = sampler.feed(p)
+            if s and (after is None or time.monotonic() > after) and stats is not None:
+                return s, stats
+    return None, stats
+
+
+def gate_volume(text):
+    """argparse type: a speech volume no louder than the gate rule allows."""
+    v = int(text)
+    if not 0 <= v <= GATE_VOLUME_MAX:
+        raise argparse.ArgumentTypeError("volume must be 0-%d for a gate run" % GATE_VOLUME_MAX)
+    return v
+
+
+def pcm16k(path):
+    """argparse type: the PCM of a 16 kHz mono 16-bit WAV file."""
+    try:
+        w = wave.open(path, "rb")
+    except (OSError, wave.Error) as e:
+        raise argparse.ArgumentTypeError("cannot read %s: %s" % (path, e))
+    with w:
+        if w.getframerate() != 16000 or w.getnchannels() != 1 or w.getsampwidth() != 2:
+            raise argparse.ArgumentTypeError("%s is not 16 kHz mono s16" % path)
+        return w.readframes(w.getnframes())
+
+
+def knob_line(p):
+    """Return (vol, saves) of a 'knob vol=' LOG line, or None."""
+    m = re.search(rb"knob vol=(\d+) .*\bsaves=(\d+)", p)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def gate_run(link, args, seen):
+    """The measured part of gate-anim; returns True when a judged rule failed or a step could not run."""
+    link.send(T_SET_STATE, bytes([STATES["speaking"]]))
+    link.send(T_SET_VOLUME, bytes([args.volume, 1]))
+    if link.wait_for(T_VOLUME, 2.0, show=False, pred=lambda p: p[:1] == bytes([args.volume])) is None:
+        print("gate-anim: the board did not confirm volume %d; not streaming" % args.volume)
+        return True
+    a, sa = wait_sample(link, 6.0, seen=seen)
+    if a is None:
+        print("gate-anim: no anim and stats lines before the run")
+        return True
+    stream_pcm(link, args.wav)
+    b, sb = wait_sample(link, 6.0, after=time.monotonic(), seen=seen)
+    if b is None:
+        print("gate-anim: no anim and stats lines after the run")
+        return True
+    lines, failed = anim_report(a, b, sa, sb)
+    for line in lines:
+        print(line)
+    return failed
+
+
+def cmd_gate_anim(link, args):
+    """Gate 0 speech run: SPEAKING at a capped stored volume, stream the WAV, restore the volume, print the anim rule deltas."""
+    h = link.hellos[-1] if link.hellos else {}
+    old = h.get("vol")
+    if not isinstance(old, int):
+        print("gate-anim: no vol in HELLO; nothing changed")
+        sys.exit(1)
+    seen = {"saves": None}
+    try:
+        failed = gate_run(link, args, seen)
+    finally:
+        restore_volume(link, old, h.get("vol_set"), seen)
+    if failed:
+        sys.exit(1)
+
+
+def restore_volume(link, old, was_set, seen):
+    """Persist the volume read from HELLO, then wait, bounded, for a knob line proving a save after it.
+
+    Saves are at least 5 s apart and only the gate's own set was pending, so two saves past the last count seen,
+    or one past the first count seen afterwards, include a save made after the restore."""
+    for t, p in link.poll():
+        k = knob_line(p) if t == T_LOG else None
+        seen["saves"] = k[1] if k else seen["saves"]
+    pre, first = seen["saves"], None
+    link.send(T_SET_VOLUME, bytes([old, 1]))
+    link.send(T_SET_STATE, bytes([STATES["idle"]]))
+    note = "" if was_set else "; the board had no stored volume and now stores %d" % old
+    end, ping = time.monotonic() + VOLUME_SAVE_WAIT_S, Keepalive(link)
+    while time.monotonic() < end:
+        ping.tick()
+        for t, p in link.poll():
+            k = knob_line(p) if t == T_LOG else None
+            if not k or k[0] != old:
+                continue
+            if (pre is not None and k[1] >= pre + 2) or (first is not None and k[1] > first):
+                print("gate-anim: volume %d restored and stored%s" % (old, note))
+                return
+            first = k[1] if first is None else first
+    print("gate-anim: volume %d sent; its storage was not confirmed within %.0f s%s" % (old, VOLUME_SAVE_WAIT_S, note))
 
 
 def brt_snap(pct):
@@ -855,10 +1081,11 @@ def main():
     s = sub.add_parser("bench"); s.add_argument("mode", type=int); s.add_argument("state", nargs="?", default="idle"); s.add_argument("seconds", type=float, nargs="?", default=8); s.set_defaults(fn=cmd_bench)
     s = sub.add_parser("perf"); s.add_argument("state"); s.add_argument("mode", type=int); s.add_argument("--angle", type=float); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_perf)
     s = sub.add_parser("imu-dump"); s.add_argument("seconds", type=int); s.add_argument("out"); s.set_defaults(fn=cmd_imu_dump)
-    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--arc"); s.add_argument("--bench"); s.add_argument("--brt"); s.add_argument("--brt-arc", dest="brt_arc"); s.add_argument("--arc-over", dest="arc_over"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
+    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--arc"); s.add_argument("--bench"); s.add_argument("--brt"); s.add_argument("--brt-arc", dest="brt_arc"); s.add_argument("--arc-over", dest="arc_over"); s.add_argument("--anim-clip", dest="anim_clip"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
     s = sub.add_parser("brightness"); s.add_argument("value", type=int, nargs="?"); s.set_defaults(fn=cmd_brightness)
     s = sub.add_parser("swipecheck"); s.add_argument("seconds", type=float); s.add_argument("--label", choices=("grip", "wipe", "free"), required=True); s.set_defaults(fn=cmd_swipecheck)
     s = sub.add_parser("v3check"); s.set_defaults(fn=cmd_v3check)
+    s = sub.add_parser("gate-anim"); s.add_argument("--wav", type=pcm16k, required=True); s.add_argument("--volume", type=gate_volume, required=True); s.set_defaults(fn=cmd_gate_anim)
     args = ap.parse_args()
     link = Link(args.port, args.serial)
     try:
