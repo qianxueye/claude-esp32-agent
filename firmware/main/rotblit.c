@@ -57,6 +57,10 @@ static void limits(const irect_t *r, int S, bool exact, float *ulo, float *uhi, 
 
 void rotblit_spans(const irect_t *rect, int S, int OUT, int tenths, xspan_t *spans)
 {
+    if (rect->x1 <= rect->x0 || rect->y1 <= rect->y0) {
+        memset(spans, 0, sizeof(xspan_t) * (size_t)OUT);
+        return;
+    }
     float s, c;
     sincos_tenths(tenths, &s, &c);
     const bool exact = is_exact(tenths);

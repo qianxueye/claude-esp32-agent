@@ -606,7 +606,7 @@ static void present(int tenths)
 
 static bool bench_spins(void)
 {
-    return s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK || s_bench == UI_BENCH_SPIN_SERIAL;
+    return s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK;
 }
 
 /* Composes the art into a packed, byte-swapped flush chunk, the rows split over both cores unless the bench forces one. */
@@ -618,7 +618,7 @@ static void patch_chunk(uint16_t *chunk, int x0, int y0, int x1, int y1)
     }
     const int w = x1 - x0;
     uint16_t *top = chunk + (size_t)(ya - y0) * w;
-    if (s_bench == UI_BENCH_SPIN_SERIAL || yb - ya < 2) {
+    if (s_bench == UI_BENCH_SERIAL || yb - ya < 2) {
         run_patch(&(blit_job_t){.y0 = ya, .y1 = yb, .dst = top, .stride = w, .x0 = x0, .x1 = x1});
         return;
     }

@@ -102,10 +102,18 @@ static void clawd_sweep(void)
             who = s;
         }
     }
+    /* A scene with no content hands present() the inverted margin; it must cover no row at any angle. */
+    for (int t = 0; t < 3600; t++) {
+        scene_spans((irect_t){SCENE, SCENE, 0, 0}, t, sp);
+        assert(count(sp) == 0);
+        for (int y = 0; y < OUT; y++) {
+            assert(sp[y].x0 >= sp[y].x1);
+        }
+    }
     /* Red proof: the whole scene as the rectangle exceeds the limit, so the assertion above can fail. */
     scene_spans((irect_t){0, 0, SCENE, SCENE}, 0, sp);
     assert(count(sp) > VOLARC_RING_MAX_BANDS);
-    printf("S1: Clawd, %d states x %d points x 3600 angles: worst %d bands (state %d, tenths %d, point %d), ring limit %d\n", N_STATES, POINTS,
+    printf("W1: Clawd, %d states x %d points x 3600 angles: worst %d bands (state %d, tenths %d, point %d), ring limit %d\n", N_STATES, POINTS,
            worst, who, w[who].at_tenths, w[who].at_point, VOLARC_RING_MAX_BANDS);
 }
 
@@ -159,7 +167,7 @@ static void sticker_sweep(void)
     for (int i = 0; i < POINTS; i++) {
         int gx, gy;
         dp_orbit(i, &gx, &gy);
-        irect_t bbs[4 * 2 * 3];
+        irect_t bbs[4 * 2 * 3 + N_STATES - 1];
         int nb = 0;
         for (int wi = 0; wi < 4; wi++) {
             for (int side = 0; side < 2; side++) {
@@ -168,6 +176,12 @@ static void sticker_sweep(void)
                     bbs[nb++] = bubble_bb(&b, gx, gy);
                 }
             }
+        }
+        /* The top bubble, pop 3, with its tail or dots, is what a pack clip still gets beside the side bubble's layout. */
+        for (int s = 1; s < N_STATES; s++) {
+            const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(STATES[s].content_u), STATES[s].thought, 3, gx, gy, SCENE);
+            const int below = STATES[s].thought ? 8 : 2;
+            bbs[nb++] = grown((irect_t){SCENE, SCENE, 0, 0}, t.body.x, t.body.y, t.body.x + t.body.w, t.body.y + t.body.h + below * U);
         }
         for (int t = 0; t < 3600; t++) {
             for (int k = 0; k < 4; k++) {
@@ -188,7 +202,7 @@ static void sticker_sweep(void)
     }
     int worst = 0;
     for (int k = 0; k < 4; k++) {
-        printf("S2: sticker %s over %ld cases: worst %d bands (tenths %d, point %d), %d cases above the ring limit %d\n", names[k], w[k].cases,
+        printf("W2: sticker %s over %ld cases: worst %d bands (tenths %d, point %d), %d cases above the ring limit %d\n", names[k], w[k].cases,
                w[k].worst, w[k].at_tenths, w[k].at_point, w[k].over_ring, VOLARC_RING_MAX_BANDS);
         worst = w[k].worst > worst ? w[k].worst : worst;
     }

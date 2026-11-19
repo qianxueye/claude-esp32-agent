@@ -519,8 +519,15 @@ static void tick_case(const state_t *a, bool active, const acomp_art_t *art_arg,
     memset(&g_ctl, 0, sizeof g_ctl);
     const int nc = a->on ? acomp_step(&g_ctl, active, art_arg, NULL) : 0;
     flush(b, g_ctl.bands, nc);
-    const bool differs = memcmp(g_panel, g_want, sizeof g_panel) != 0;
-    assert(differs);
+    assert(memcmp(g_panel, g_want, sizeof g_panel) != 0);
+    if (with_scene) {
+        /* Red proof: the same tick with the previous spans kept but no scene strip misses the strip's rows. */
+        memcpy(g_panel, before, sizeof before);
+        memset(&g_ctl, 0, sizeof g_ctl);
+        acomp_step(&g_ctl, a->on, &a->a, NULL);
+        flush(b, g_ctl.bands, acomp_step(&g_ctl, active, art_arg, NULL));
+        assert(memcmp(g_panel, g_want, sizeof g_panel) != 0);
+    }
     g_tick_cases++;
     memcpy(g_sout, sout_a, sizeof sout_a);
 }

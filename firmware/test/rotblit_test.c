@@ -152,9 +152,33 @@ static void r2(void)
            (double)ROTBLIT_NEAREST_INSET, bound, step_err, start_err, worst, rows, pix_in);
 }
 
+/* R3: a rectangle with no area covers no output row at any angle, while a one-pixel rectangle still covers some. */
+static void r3(void)
+{
+    static xspan_t sp[OUT];
+    const irect_t none[3] = {{S, S, 0, 0}, {10, 10, 10, 20}, {479, 479, 1, 1}};
+    long one_px_rows = 0;
+    for (int t = 0; t < 3600; t++) {
+        for (int k = 0; k < 3; k++) {
+            rotblit_spans(&none[k], S, OUT, t, sp);
+            for (int y = 0; y < OUT; y++) {
+                assert(sp[y].x0 >= sp[y].x1);
+            }
+        }
+        const irect_t px = {240, 240, 241, 241};
+        rotblit_spans(&px, S, OUT, t, sp);
+        for (int y = 0; y < OUT; y++) {
+            one_px_rows += sp[y].x0 < sp[y].x1;
+        }
+    }
+    assert(one_px_rows > 0);
+    printf("R3: empty rectangles cover no row at 3600 angles; a one-pixel rectangle covers %ld rows in all\n", one_px_rows);
+}
+
 int main(void)
 {
     r1();
     r2();
+    r3();
     return 0;
 }
