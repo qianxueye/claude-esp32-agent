@@ -5,7 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "arcvis.h"
+#include "bright.h"
 #include "volknob.h"
+#include "volume.h"
 
 #define PI_D 3.14159265358979323846
 #define CTR 232.5
@@ -508,6 +510,28 @@ static void test_e9_both_ends_in_one_sample(void)
     assert(vk_over_cells(carried + 2.0) == N);
 }
 
+/* Wrong rule for E10: the ov counters printed without the cap. */
+static int wrong_uncapped_bright(char *out, size_t cap, const uint32_t *ov)
+{
+    return snprintf(out, cap, BRIGHT_LINE_FMT, 100, 100, 100, 1, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, ov[0], ov[1], ov[2]);
+}
+
+static void test_e10_line_width(void)
+{
+    /* Widest ESP_LOGI prefix and suffix: colour codes, a 10-digit timestamp and the app tag. */
+    const size_t frame = strlen("\033[0;32mI (4294967295) app: ") + strlen("\033[0m");
+    const uint32_t big[3] = {UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    char line[512];
+    int n = snprintf(line, sizeof(line), BRIGHT_LINE_FMT, 100, 100, 100, 1, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, vk_ov_log(big[0]),
+                     vk_ov_log(big[1]), vk_ov_log(big[2]));
+    printf("widest bright line %d + log frame %zu = %zu of %d\n", n, frame, n + frame, LOG_LINE_MAX_BYTES - 1);
+    assert(n + frame <= LOG_LINE_MAX_BYTES - 1 && strstr(line, " ov=999999/999999/999999"));
+    assert(wrong_uncapped_bright(line, sizeof(line), big) + frame > LOG_LINE_MAX_BYTES - 1);
+    n = snprintf(line, sizeof(line), VOLUME_LINE_FMT, 100, 100, 1, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, vk_ov_log(big[0]), vk_ov_log(big[1]), vk_ov_log(big[2]));
+    assert(n + frame <= LOG_LINE_MAX_BYTES - 1);
+    assert(vk_ov_log(ARC_OV_LOG_MAX) == ARC_OV_LOG_MAX && vk_ov_log(ARC_OV_LOG_MAX + 1) == ARC_OV_LOG_MAX && vk_ov_log(7) == 7);
+}
+
 typedef struct {
     const char *name;
     void (*fn)(void);
@@ -519,7 +543,7 @@ int main(int argc, char **argv)
     static const case_t CASES[] = {
         {"e1", test_e1_bounds_monotone}, {"e2", test_e2_brightness_push}, {"e2b", test_e2_events_only_on_change}, {"e3", test_e3_knob_push},
         {"e4", test_e4_outcomes_unchanged}, {"e5", test_e5_hold_with_noise}, {"e6", test_e6_first_reversed_step}, {"e7", test_e7_cancel},
-        {"e8", test_e8_release}, {"e9", test_e9_both_ends_in_one_sample},
+        {"e8", test_e8_release}, {"e9", test_e9_both_ends_in_one_sample}, {"e10", test_e10_line_width},
     };
     for (size_t i = 0; i < sizeof(CASES) / sizeof(CASES[0]); i++) {
         if (argc < 2 || strcmp(argv[1], CASES[i].name) == 0) {

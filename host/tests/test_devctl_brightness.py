@@ -44,7 +44,7 @@ class TimedLink(StubLink):
 
 
 def disp_args(**kw):
-    base = dict(scale=None, force=None, orbit=None, fill=None, arc=None, bench=None, brt=None, brt_arc=None, seconds=0)
+    base = dict(scale=None, force=None, orbit=None, fill=None, arc=None, bench=None, brt=None, brt_arc=None, arc_over=None, seconds=0)
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -58,6 +58,31 @@ def test_brightness_sends_brt_set_and_prints_the_bright_line(capsys):
 
 def bright_line(lvl, arms=3, slides=4, ms=5000):
     return b"I (%d) app: bright lvl=%d eff=%d panel=%d set=1 arms=%d rim=1 cancels=0 slides=%d stops=1 saves=1" % (ms, lvl, lvl, lvl, arms, slides)
+
+
+def bright_line_ov(*args, **kw):
+    return bright_line(*args, **kw) + b" ov=1/2/3"
+
+
+def test_ov_counters_change_neither_the_parse_nor_the_verdict(fast, capsys):
+    assert devctl.parse_bright(BRIGHT + b" ov=1/2/3") == devctl.parse_bright(BRIGHT)
+    assert "ov" not in devctl.BRIGHT_KEYS and "ov" not in devctl.BRIGHT_COUNTERS
+    for lines, verdict in ((bright_line, "PASS"), (bright_line_ov, "PASS")):
+        link = TimedLink([(0.0, lines(49)), (0.2, lines(49, ms=5200))])
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="wipe"))
+        assert "swipecheck wipe %s" % verdict in capsys.readouterr().out
+    for lines in (bright_line, bright_line_ov):
+        link = TimedLink([(0.0, lines(49, arms=3)), (0.2, lines(49, arms=4, ms=5200))])
+        with pytest.raises(SystemExit):
+            devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="grip"))
+        assert "swipecheck grip FAIL" in capsys.readouterr().out
+
+
+def test_disp_arc_over_sends_the_aid():
+    link = StubLink()
+    devctl.cmd_disp(link, disp_args(arc="100", arc_over="-3"))
+    devctl.cmd_disp(link, disp_args(arc_over="null"))
+    assert link.sent == [(devctl.T_DEBUG, b'{"arc":100,"arc_over":-3}'), (devctl.T_DEBUG, b'{"arc_over":null}')]
 
 
 def test_ladder_constants_match_the_firmware():
@@ -149,8 +174,9 @@ def counters_only_verdict(first, last):
 
 
 def test_bright_keys_follow_the_firmware_line():
-    fmt = re.search(r'"bright (lvl=[^"]*)"', (FIRMWARE / "main.c").read_text()).group(1)
-    assert tuple(kv.split("=")[0] for kv in fmt.split()) == devctl.BRIGHT_KEYS
+    fmt = re.search(r'#define BRIGHT_LINE_FMT "bright (lvl=[^"]*)"', (FIRMWARE / "bright.h").read_text()).group(1)
+    keys = tuple(kv.split("=")[0] for kv in fmt.split())
+    assert keys == devctl.BRIGHT_KEYS + ("ov",)
     fmt = re.search(r'#define VK_SWIPE_LINE_FMT "swipe: end ([^"]*)"', (FIRMWARE / "volknob.h").read_text()).group(1)
     assert [kv.split("=")[0] for kv in fmt.split()][-5:] == ["gap", "stp", "ku", "kl", "dur"]
 

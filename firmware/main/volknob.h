@@ -34,6 +34,11 @@ typedef struct {
 
 /* Cells (0 to ARC_OVER_CELLS) a peak push of steps level steps past an end reaches. */
 int vk_over_cells(double steps);
+/* A log counter capped at ARC_OV_LOG_MAX so the 2 s lines fit LOG_LINE_MAX_BYTES, checked by endcue_test. */
+static inline unsigned vk_ov_log(uint32_t n)
+{
+    return n > ARC_OV_LOG_MAX ? ARC_OV_LOG_MAX : (unsigned)n;
+}
 void vk_init(volknob_t *k);
 int vk_press(volknob_t *k, int x, int y, uint32_t t_ms, bool dark, uint8_t user_vol);
 /* Sets the UI angle the swipe is read in; call right after vk_press. Ignored once the point has changed. */

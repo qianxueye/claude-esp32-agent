@@ -12,7 +12,7 @@ static const char *TAG = "bright";
 /* Leaf lock: taken after the display lock, never before it. */
 static SemaphoreHandle_t s_mtx;
 static volst_t s_st;
-static uint32_t s_arms, s_rim, s_cancels, s_slides, s_stops, s_saves;
+static uint32_t s_arms, s_rim, s_cancels, s_slides, s_stops, s_saves, s_over[3];
 
 void bright_init(void)
 {
@@ -87,6 +87,13 @@ void bright_count_stop(void)
     s_stops++;
 }
 
+void bright_count_over(int cells)
+{
+    if (cells >= 1 && cells <= 3) {
+        s_over[cells - 1]++;
+    }
+}
+
 bool bright_save_due(uint32_t now_ms, bool quiet)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -134,4 +141,7 @@ void bright_stats(bright_stats_t *out)
     out->slides = s_slides;
     out->stops = s_stops;
     out->saves = s_saves;
+    for (int i = 0; i < 3; i++) {
+        out->over[i] = s_over[i];
+    }
 }

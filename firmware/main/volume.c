@@ -13,7 +13,7 @@ static const char *TAG = "volume";
 
 static SemaphoreHandle_t s_mtx;
 static volst_t s_st;
-static uint32_t s_arms, s_cancels, s_edge, s_saves;
+static uint32_t s_arms, s_cancels, s_edge, s_saves, s_over[3];
 
 static void apply_locked(void)
 {
@@ -100,6 +100,13 @@ void volume_count_edge(void)
     s_edge++;
 }
 
+void volume_count_over(int cells)
+{
+    if (cells >= 1 && cells <= 3) {
+        s_over[cells - 1]++;
+    }
+}
+
 bool volume_save_due(uint32_t now_ms, bool quiet)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -145,4 +152,7 @@ void volume_stats(volume_stats_t *out)
     out->cancels = s_cancels;
     out->edge = s_edge;
     out->saves = s_saves;
+    for (int i = 0; i < 3; i++) {
+        out->over[i] = s_over[i];
+    }
 }

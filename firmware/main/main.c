@@ -14,6 +14,7 @@
 #include "keydebounce.h"
 #include "bright.h"
 #include "nvstore.h"
+#include "volknob.h"
 #include "volstate.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -131,6 +132,10 @@ static void handle_debug(const proto_frame_t *f)
     v = json_value(json, "brt_arc");
     if (v) {
         ui_set_brt_arc(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "arc_over");
+    if (v) {
+        ui_set_arc_over(strncmp(v, "null", 4) == 0 ? 0 : atoi(v));
     }
     v = json_value(json, "fill");
     if (v) {
@@ -353,12 +358,12 @@ static void life_task(void *arg)
                      (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)s_pwr_read_errors);
             volume_stats_t vs;
             volume_stats(&vs);
-            ESP_LOGI(TAG, "knob vol=%d eff=%d set=%d arms=%u cancels=%u edge=%u saves=%u", vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms,
-                     (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves);
+            ESP_LOGI(TAG, VOLUME_LINE_FMT, vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms, (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves,
+                     vk_ov_log(vs.over[0]), vk_ov_log(vs.over[1]), vk_ov_log(vs.over[2]));
             bright_stats_t bs;
             bright_stats(&bs);
-            ESP_LOGI(TAG, "bright lvl=%d eff=%d panel=%d set=%d arms=%u rim=%u cancels=%u slides=%u stops=%u saves=%u", bs.user, bs.effective,
-                     ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels, (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves);
+            ESP_LOGI(TAG, BRIGHT_LINE_FMT, bs.user, bs.effective, ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels,
+                     (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves, vk_ov_log(bs.over[0]), vk_ov_log(bs.over[1]), vk_ov_log(bs.over[2]));
         }
     }
 }

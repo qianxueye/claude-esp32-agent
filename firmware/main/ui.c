@@ -581,6 +581,12 @@ static void knob_events(int ev, uint32_t now)
     }
     if (ev & VK_EV_OVER) {
         av_over(&s_av, s_vk.over);
+        int cells = s_vk.over < 0 ? -s_vk.over : s_vk.over;
+        if (s_vk.state == VK_BRIGHT) {
+            bright_count_over(cells);
+        } else if (s_vk.state == VK_ARMED) {
+            volume_count_over(cells);
+        }
     }
     if (ev & (VK_EV_ARM | VK_EV_VOL | VK_EV_BRT_ARM | VK_EV_BRT | VK_EV_BRT_STOP | VK_EV_OVER)) {
         dp_activity(&s_dp, dp_clock(), DP_CAUSE_TOUCH);
@@ -1101,6 +1107,13 @@ void ui_set_brt_arc(int index)
 {
     bsp_display_lock(-1);
     av_force_kind(&s_av, AV_BRT, index > BRT_STEPS ? BRT_STEPS : index);
+    bsp_display_unlock();
+}
+
+void ui_set_arc_over(int cells)
+{
+    bsp_display_lock(-1);
+    av_force_over(&s_av, cells > ARC_OVER_CELLS ? ARC_OVER_CELLS : cells < -ARC_OVER_CELLS ? -ARC_OVER_CELLS : cells);
     bsp_display_unlock();
 }
 
