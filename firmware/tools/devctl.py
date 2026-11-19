@@ -676,39 +676,55 @@ def swipe_report(label, first, last, swipes):
     return lines, passed
 
 
+def drain(link):
+    """Read and discard everything the link holds until a poll returns nothing, at most BRIGHT_WAIT_S."""
+    end = time.monotonic() + BRIGHT_WAIT_S
+    while link.poll() and time.monotonic() < end:
+        pass
+
+
 def cmd_swipecheck(link, args, is_final=final_by_board):
-    """Hold the screen ACTIVE for SECONDS between a baseline and a final bright line and judge the swipes in between by label."""
+    """Hold the screen ACTIVE for SECONDS between a baseline and a final bright line and judge the swipes in between by label; only lines after the board answers a marker ping sent behind the pin count."""
     first = last = first_ms = None
     swipes = []
-    next_ping, seq = 0.0, 0
-
-    def logs():
-        nonlocal next_ping, seq
-        if time.monotonic() >= next_ping:
-            seq += 1
-            link.send(T_PING, struct.pack("<I", seq))
-            next_ping = time.monotonic() + 1.0
-        return [p for t, p in link.poll() if t == T_LOG]
-
+    marker = time.monotonic_ns() & 0xFFFFFFFF
+    seq, marked = marker, False
+    drain(link)
     link.send(T_DEBUG, b'{"disp_force":0}')
+    link.send(T_PING, struct.pack("<I", marker))
+    next_ping = time.monotonic() + 1.0
     try:
         end = time.monotonic() + BRIGHT_WAIT_S
         while last is None and time.monotonic() < end:
-            for p in logs():
+            if time.monotonic() >= next_ping:
+                seq = (seq + 1) & 0xFFFFFFFF
+                link.send(T_PING, struct.pack("<I", seq))
+                next_ping = time.monotonic() + 1.0
+            for t, p in link.poll():
+                if not marked:
+                    if t == T_PONG and len(p) == 4 and struct.unpack("<I", p)[0] == marker:
+                        marked = True
+                        end = time.monotonic() + BRIGHT_WAIT_S
+                    continue
+                if t != T_LOG or last is not None:
+                    continue
                 b, s = parse_bright(p), parse_swipe(p)
-                if (b or s) and last is None:
+                if b or s:
                     print(p.decode("utf-8", "replace"))
                 if first is None:
                     if b:
                         first, first_ms = b, board_ms(p)
                         end = time.monotonic() + args.seconds + SWIPE_FINAL_GUARD_S + BRIGHT_WAIT_S
-                elif last is None:
+                else:
                     if s:
                         swipes.append(s)
                     if b and is_final(board_ms(p), first_ms, args.seconds):
                         last = b
     finally:
         link.send(T_DEBUG, b'{"disp_force":null}')
+    if not marked:
+        print("swipecheck %s: the board did not answer the marker ping within %.0f s; FAIL" % (args.label, BRIGHT_WAIT_S))
+        sys.exit(1)
     lines, passed = swipe_report(args.label, first, last, swipes)
     print("\n".join(lines))
     if not passed:

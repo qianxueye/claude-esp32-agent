@@ -1,5 +1,6 @@
 import importlib.util
 import re
+import struct
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,21 +27,45 @@ class StubLink:
         return out
 
 
-class TimedLink(StubLink):
-    """Delivers each (seconds after the first poll, payload) LOG frame once its time has come; the board's lines arrive over time."""
+class MarkerLink(StubLink):
+    """Answers the first PING with its PONG; frames before that ping are pre-command input."""
+
+    def __init__(self):
+        super().__init__()
+        self.marker, self.ponged = None, False
+
+    def send(self, ftype, payload=b""):
+        super().send(ftype, payload)
+        if ftype == devctl.T_PING and self.marker is None:
+            self.marker = payload
+
+    def pong(self):
+        out = [(devctl.T_PONG, self.marker)] if self.marker is not None and not self.ponged else []
+        self.ponged = self.ponged or bool(out)
+        return out
+
+
+class TimedLink(MarkerLink):
+    """After the marker ping, delivers the PONG and then each (seconds after that ping, payload) LOG frame once its time has come."""
 
     def __init__(self, timed=()):
         super().__init__()
         self.timed = sorted(timed, key=lambda f: f[0])
         self.start = None
 
+    def send(self, ftype, payload=b""):
+        super().send(ftype, payload)
+        if ftype == devctl.T_PING and self.start is None:
+            self.start = time.monotonic()
+
     def poll(self):
+        time.sleep(0.002)
+        if self.start is None:
+            return []
         now = time.monotonic()
-        self.start = self.start or now
         due = [f for f in self.timed if f[0] <= now - self.start]
         self.timed = self.timed[len(due):]
-        time.sleep(0.002)
-        return [(devctl.T_LOG, p) for _, p in due]
+        return self.pong() + [(devctl.T_LOG, p) for _, p in due]
 
 
 def disp_args(**kw):
@@ -261,16 +286,20 @@ def host_clock_final(ms, first_ms, window_s):
     return time.monotonic() >= host_clock_final.due
 
 
-class PausedHostLink(StubLink):
-    """The baseline arrives alone; the host then stalls past the window and reads one buffered batch."""
+class PausedHostLink(MarkerLink):
+    """The marker answer and the baseline arrive alone; the host then stalls past the window and reads one buffered batch."""
 
     def __init__(self, batch, stall_s):
-        super().__init__([(devctl.T_LOG, bright_line(49))])
+        super().__init__()
+        self.base = [(devctl.T_LOG, bright_line(49))]
         self.batch, self.stall_s = batch, stall_s
 
     def poll(self):
-        if self.frames:
-            return super().poll()
+        if self.marker is None:
+            return []
+        if self.base:
+            out, self.base = self.base, []
+            return self.pong() + out
         if self.batch:
             time.sleep(self.stall_s)
             out, self.batch = self.batch, []
@@ -309,3 +338,124 @@ def test_a_bright_line_without_a_board_time_is_never_final(fast, capsys):
     with pytest.raises(SystemExit) as e:
         devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="grip"))
     assert e.value.code == 1 and "no final" in capsys.readouterr().out
+
+
+class StaleLink(MarkerLink):
+    """Holds stale input from before the command, then after the marker ping answers it and delivers fresh lines in one batch."""
+
+    def __init__(self, stale, fresh, answer=True):
+        super().__init__()
+        self.stale, self.fresh, self.answer = stale, fresh, answer
+
+    def poll(self):
+        out = [(devctl.T_LOG, p) for p in self.stale]
+        self.stale = []
+        if self.marker is not None and self.fresh is not None:
+            out += (self.pong() if self.answer else []) + [(devctl.T_LOG, p) for p in self.fresh]
+            self.fresh = None
+        time.sleep(0.002)
+        return out
+
+
+def pre_marker_swipecheck(link, args, is_final=devctl.final_by_board):
+    """A wrong rule: the earlier swipecheck, which takes the first bright line it reads as the baseline whatever came before the command."""
+    first = last = first_ms = None
+    swipes = []
+    next_ping, seq = 0.0, 0
+
+    def logs():
+        nonlocal next_ping, seq
+        if time.monotonic() >= next_ping:
+            seq += 1
+            link.send(devctl.T_PING, struct.pack("<I", seq))
+            next_ping = time.monotonic() + 1.0
+        return [p for t, p in link.poll() if t == devctl.T_LOG]
+
+    link.send(devctl.T_DEBUG, b'{"disp_force":0}')
+    try:
+        end = time.monotonic() + devctl.BRIGHT_WAIT_S
+        while last is None and time.monotonic() < end:
+            for p in logs():
+                b, s = devctl.parse_bright(p), devctl.parse_swipe(p)
+                if first is None:
+                    if b:
+                        first, first_ms = b, devctl.board_ms(p)
+                        end = time.monotonic() + args.seconds + devctl.SWIPE_FINAL_GUARD_S + devctl.BRIGHT_WAIT_S
+                elif last is None:
+                    if s:
+                        swipes.append(s)
+                    if b and is_final(devctl.board_ms(p), first_ms, args.seconds):
+                        last = b
+    finally:
+        link.send(devctl.T_DEBUG, b'{"disp_force":null}')
+    return devctl.swipe_report(args.label, first, last, swipes)[1]
+
+
+def stale_scenario():
+    """Stale unchanged lines spanning the window sit in the buffer before the command; after the marker come a baseline, an armed swipe inside the window and a final line."""
+    stale = [bright_line(49, ms=4000), bright_line(49, ms=4300)]
+    fresh = [bright_line(49, ms=5000), ARMED_LINE, bright_line(49, arms=4, ms=5300)]
+    return stale, fresh
+
+
+@pytest.mark.parametrize("label", ["grip", "wipe"])
+def test_stale_lines_before_the_marker_are_not_the_baseline(fast, capsys, label):
+    """Pre-command lines are dropped and the arm after the marker is caught."""
+    link = StaleLink(*stale_scenario())
+    with pytest.raises(SystemExit) as e:
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label=label))
+    out = capsys.readouterr().out
+    assert e.value.code == 1 and "armed cls edge" in out and "swipecheck %s FAIL" % label in out
+    assert "(4000)" not in out and "(4300)" not in out
+    assert link.sent[0] == (devctl.T_DEBUG, b'{"disp_force":0}') and link.sent[1][0] == devctl.T_PING and link.sent[-1] == (devctl.T_DEBUG, b'{"disp_force":null}')
+
+
+@pytest.mark.parametrize("label", ["grip", "wipe"])
+def test_pre_marker_rule_passes_the_stale_scenario(fast, label):
+    """The red proof: taking the first bright line read as the baseline reports PASS on the reviewer's scenario."""
+    stale, fresh = stale_scenario()
+    link = StaleLink([], stale + fresh)
+    assert pre_marker_swipecheck(link, SimpleNamespace(seconds=0.05, label=label)) is True
+
+
+def test_lines_between_the_pin_and_the_marker_answer_are_ignored(fast, capsys):
+    """A line that arrives after the pin but before the marker answer is dropped too."""
+    link = StaleLink([], [bright_line(49, ms=4900), None, bright_line(49, ms=5000), bright_line(49, arms=4, ms=5300)])
+    link.poll = lambda: [] if link.marker is None else [(devctl.T_LOG, link.fresh[0]), *link.pong(), (devctl.T_LOG, link.fresh[2]), (devctl.T_LOG, link.fresh[3])] if link.fresh else []
+    with pytest.raises(SystemExit):
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="grip"))
+    out = capsys.readouterr().out
+    assert "(4900)" not in out and "arms +1" in out
+
+
+class SilentLink(MarkerLink):
+    """Never answers the marker ping; optionally delivers a PONG of another sequence number and bright lines."""
+
+    def __init__(self, other_pong):
+        super().__init__()
+        self.other_pong = other_pong
+
+    def poll(self):
+        time.sleep(0.002)
+        if self.marker is None or not self.other_pong:
+            return []
+        return [(devctl.T_PONG, struct.pack("<I", 7)), (devctl.T_LOG, bright_line(49, ms=5000)), (devctl.T_LOG, bright_line(49, ms=5300))]
+
+
+@pytest.mark.parametrize("other_pong", [False, True])
+def test_no_marker_answer_fails_without_a_pass(fast, capsys, other_pong):
+    """No PONG, or a PONG of another sequence number, ends non-zero and releases the pin."""
+    link = SilentLink(other_pong)
+    with pytest.raises(SystemExit) as e:
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="wipe"))
+    out = capsys.readouterr().out
+    assert e.value.code == 1 and "did not answer the marker ping" in out and "PASS" not in out
+    assert link.sent[-1] == (devctl.T_DEBUG, b'{"disp_force":null}')
+
+
+def test_keep_alive_pings_use_other_sequence_numbers(monkeypatch, capsys):
+    monkeypatch.setattr(devctl, "SWIPE_FINAL_GUARD_S", 0.05)
+    link = TimedLink([(0.0, bright_line(49)), (1.3, bright_line(49, ms=6300))])
+    devctl.cmd_swipecheck(link, SimpleNamespace(seconds=1.2, label="wipe"))
+    seqs = [struct.unpack("<I", p)[0] for t, p in link.sent if t == devctl.T_PING]
+    assert len(seqs) >= 2 and len(set(seqs)) == len(seqs)
