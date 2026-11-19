@@ -10,7 +10,7 @@ SPEC = importlib.util.spec_from_file_location("devctl", Path(__file__).parents[2
 devctl = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(devctl)
 
-BRIGHT = b"I (5000) app: bright lvl=49 eff=49 panel=49 set=1 arms=3 rim=1 cancels=0 slides=4 stops=1 saves=1 in=2"
+BRIGHT = b"I (5000) app: bright lvl=49 eff=49 panel=49 set=1 arms=3 rim=1 cancels=0 slides=4 stops=1 saves=1"
 
 
 class StubLink:
@@ -57,7 +57,7 @@ def test_brightness_sends_brt_set_and_prints_the_bright_line(capsys):
 
 
 def bright_line(lvl, arms=3, slides=4):
-    return b"I (5000) app: bright lvl=%d eff=%d panel=%d set=1 arms=%d rim=1 cancels=0 slides=%d stops=1 saves=1 in=2" % (lvl, lvl, lvl, arms, slides)
+    return b"I (5000) app: bright lvl=%d eff=%d panel=%d set=1 arms=%d rim=1 cancels=0 slides=%d stops=1 saves=1" % (lvl, lvl, lvl, arms, slides)
 
 
 def test_ladder_constants_match_the_firmware():
@@ -119,7 +119,7 @@ def test_disp_brt_pins_and_releases():
 
 
 def test_parse_lines():
-    assert devctl.parse_bright(BRIGHT) == dict(lvl=49, eff=49, panel=49, set=1, arms=3, rim=1, cancels=0, slides=4, stops=1, saves=1, **{"in": 2})
+    assert devctl.parse_bright(BRIGHT) == dict(lvl=49, eff=49, panel=49, set=1, arms=3, rim=1, cancels=0, slides=4, stops=1, saves=1)
     s = devctl.parse_swipe(b"I (1) ui: swipe: end cls=centre q=1 why=lateral arm=0 b0=-1 b=-1 dx=30 dy=-2 up=30 pk=30 lat=25 arm_ms=-1 r1=31 rev=0 "
                            b"gap=17 stp=12 ku=30 kl=-25 dur=200")
     assert s["cls"] == "centre" and s["why"] == "lateral" and s["arm"] == 0 and s["lat"] == 25 and s["b0"] == -1

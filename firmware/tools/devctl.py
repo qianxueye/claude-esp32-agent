@@ -31,8 +31,8 @@ CHUNK = 4096
 BRIGHT_WAIT_S = 5.0
 BRT_MIN_PERCENT, BRT_STEPS = 20, 32  # firmware/main/app_config.h; a host test compares them
 SWIPE_FINAL_GUARD_S = 0.5  # plain configuration: the final bright line must start this long after the window
-BRIGHT_KEYS = ("lvl", "eff", "panel", "set", "arms", "rim", "cancels", "slides", "stops", "saves", "in")
-BRIGHT_COUNTERS = ("arms", "rim", "cancels", "slides", "stops", "saves", "in")
+BRIGHT_KEYS = ("lvl", "eff", "panel", "set", "arms", "rim", "cancels", "slides", "stops", "saves")
+BRIGHT_COUNTERS = ("arms", "rim", "cancels", "slides", "stops", "saves")
 BRIGHT_LINE = re.compile(rb"bright " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in BRIGHT_KEYS))
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 
@@ -638,8 +638,8 @@ def swipe_report(label, first, last, swipes):
     if first is None or last is None:
         return ["swipecheck %s: no %s 'bright lvl=' line; FAIL" % (label, "baseline" if first is None else "final")], False
     d = {k: last[k] - first[k] for k in BRIGHT_COUNTERS}
-    lines = ["swipecheck %s: arms +%d rim +%d cancels +%d slides +%d stops +%d in +%d lvl %d -> %d"
-             % (label, d["arms"], d["rim"], d["cancels"], d["slides"], d["stops"], d["in"], first["lvl"], last["lvl"])]
+    lines = ["swipecheck %s: arms +%d rim +%d cancels +%d slides +%d stops +%d lvl %d -> %d"
+             % (label, d["arms"], d["rim"], d["cancels"], d["slides"], d["stops"], first["lvl"], last["lvl"])]
     unarmed = [s for s in swipes if not s.get("arm")]
     armed = [s for s in swipes if s.get("arm")]
     by_why = {}

@@ -110,7 +110,6 @@ static int s_applied_level = DISP_ACTIVE_PERCENT, s_time_scale = 1, s_orbit_forc
 static dp_stage_t s_logged_stage = DP_ACTIVE;
 static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
-static volatile uint32_t s_inputs;
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
 static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown"};
 
@@ -547,12 +546,6 @@ static void ui_set_state_locked(dev_state_t s)
     }
 }
 
-static void send_input(uint8_t code)
-{
-    s_inputs++;
-    transport_send(T_INPUT, &code, 1);
-}
-
 /* (Re)starts the power timeline at the current brightness. */
 static void dp_start(void)
 {
@@ -562,12 +555,6 @@ static void dp_start(void)
 
 static void knob_events(int ev, uint32_t now)
 {
-    if (ev & VK_EV_TAP) {
-        send_input(1);
-    }
-    if (ev & VK_EV_LONG) {
-        send_input(2);
-    }
     if (ev & VK_EV_ARM) {
         vk_rebase(&s_vk, volume_knob_arm());
         av_arm(&s_av, s_vk.v);
@@ -1143,11 +1130,6 @@ void ui_set_brightness(int pct)
 int ui_panel_level(void)
 {
     return __atomic_load_n(&s_applied_level, __ATOMIC_RELAXED);
-}
-
-uint32_t ui_inputs_sent(void)
-{
-    return s_inputs;
 }
 
 void ui_wake_counts(uint32_t out[DP_CAUSE_N])

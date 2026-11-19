@@ -357,9 +357,8 @@ static void life_task(void *arg)
                      (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves);
             bright_stats_t bs;
             bright_stats(&bs);
-            ESP_LOGI(TAG, "bright lvl=%d eff=%d panel=%d set=%d arms=%u rim=%u cancels=%u slides=%u stops=%u saves=%u in=%u", bs.user, bs.effective,
-                     ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels, (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves,
-                     (unsigned)ui_inputs_sent());
+            ESP_LOGI(TAG, "bright lvl=%d eff=%d panel=%d set=%d arms=%u rim=%u cancels=%u slides=%u stops=%u saves=%u", bs.user, bs.effective,
+                     ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels, (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves);
         }
     }
 }
