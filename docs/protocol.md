@@ -66,7 +66,7 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0x01` | HELLO           | JSON `{"proto":3,"fw":"<version>","rate":16000,"reason":"boot"|"reply"|"resume","link":"usb"|"wifi","paired":true|false,"vol":0-100,"vol_set":true|false}`. `vol` is the user volume; `vol_set` says a user volume exists (from storage, the knob, or a persist or seed SET_VOLUME). |
 | `0x02` | LOG             | UTF-8 log line. |
 | `0x10` | MIC_AUDIO       | 640 bytes of PCM (20 ms). Sent only while the state is LISTENING. |
-| `0x20` | INPUT           | `u8` code: `1` TAP, `2` LONG_PRESS, `3` BOOT_BUTTON (BOOT or PWR key). |
+| `0x20` | INPUT           | `u8` code: `3` BOOT_BUTTON (BOOT or PWR key). Codes `1` TAP and `2` LONG_PRESS are no longer sent; the host logs and ignores them. |
 | `0x21` | SPK_STATUS      | `u32` bytes queued, `u8` flags (bit0 playing, bit1 drained after SPK_END), `u32` consumed total. |
 | `0x22` | VOLUME          | `u8` user volume. Sent when a knob release changed it and after a persist or applied seed SET_VOLUME. Best effort; HELLO resynchronises. Never sent during a drag or for a transient set. |
 | `0x30` | PONG            | `u32` nonce copied from PING. |
@@ -116,9 +116,9 @@ The host owns the state. The device changes state only on SET_STATE, except for 
 
 ## Input
 
-- A touch is classified when it starts: on a dark screen it is dead; starting 150 px or more from the centre it is an edge touch; otherwise a centre touch. A touch that moves more than 13 px is neither a TAP nor a LONG_PRESS. A centre touch that moves more than 13 px before LONG_PRESS was sent may become a brightness swipe, and so may an edge touch whose stroke runs inward from the top or bottom rim (`display-power.md`, User brightness).
-- TAP: touch released within 600 ms, anywhere on the screen, without moving more than 13 px. A touch that began while the screen was dim or off only wakes it and sends no TAP, LONG_PRESS, volume or brightness change.
-- LONG_PRESS: a centre touch held for 1500 ms; sent once when the threshold is reached. An edge touch never sends it.
+- A touch is classified when it starts: on a dark screen it is dead; starting 150 px or more from the centre it is an edge touch; otherwise a centre touch. A touch sends no INPUT. A centre touch that moves more than 13 px before the 1500 ms long-press threshold may become a brightness swipe, and so may an edge touch whose stroke runs inward from the top or bottom rim (`display-power.md`, User brightness).
+- Touch only wakes the screen, turns the volume knob and swipes the brightness; the classifier still tells a tap (released within 600 ms, moved at most 13 px) and a 1500 ms hold of a centre touch from a swipe, but neither sends an INPUT. A touch that began while the screen was dim or off only wakes it and changes no volume or brightness.
+- Voice starts, ends and is interrupted only by BOOT_BUTTON. The protocol version stays 3: the host ignores codes 1 and 2 and the firmware never sends them.
 - The volume knob and the brightness swipe send no INPUT.
 - BOOT_BUTTON: the BOOT key (GPIO0) or the PWR key (IO expander pin 4) pressed; both send the same code.
 

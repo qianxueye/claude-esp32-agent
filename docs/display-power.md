@@ -38,7 +38,7 @@ Activity restarts the hold and returns the stage to ACTIVE at once. Sources:
 - a change into or out of LISTENING, THINKING, SPEAKING or ERROR;
 - boot.
 
-A touch that begins while the stage is DIM or OFF only wakes the screen: it sends no TAP on release, no LONG_PRESS at 1500 ms and no volume or brightness change however far it moves. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`); a tap after the wake is sent as usual. The BOOT and PWR keys are always sent.
+A touch that begins while the stage is DIM or OFF only wakes the screen: it changes no volume or brightness however far it moves. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`). The BOOT and PWR keys are always sent.
 
 Not activity: PING and other host frames, a SET_STATE that repeats the current state, any change with OFFLINE at either end (including the OFFLINE to IDLE resume), and playback outside SPEAKING. A sleeping host would otherwise keep the screen lit overnight.
 
@@ -52,7 +52,7 @@ The ACTIVE level is a user setting kept on the board. A vertical swipe on a lit 
 
 Gesture (`volknob.c`, the one touch classifier):
 
-- Start, centre: a centre touch (start radius below `VOL_R_MIN_PX`) on a lit screen that moves more than `TOUCH_SLOP_PX` before LONG_PRESS was sent becomes a swipe candidate instead of being dropped. A touch that moves after LONG_PRESS is still dropped (`why=moved`). A dark press only wakes.
+- Start, centre: a centre touch (start radius below `VOL_R_MIN_PX`) on a lit screen that moves more than `TOUCH_SLOP_PX` before the 1500 ms long-press threshold becomes a swipe candidate instead of being dropped. A touch that moves after the threshold is still dropped (`why=moved`). A dark press only wakes.
 - Start, rim: an edge touch on a lit screen keeps its knob path unchanged and, once it has moved more than `TOUCH_SLOP_PX`, also carries a rim candidate. The candidate is tested on each changed sample before the knob, while the knob has not armed. It arms with the same tests as a centre candidate plus one: with `d` the displacement from the press point and `r̂0` the unit vector from the centre to the press point, the inward travel `−d·r̂0` must be at least the travel along the rim `|d × r̂0|`, otherwise it drops with `why=tangent`. A dropped rim candidate never ends the touch: the knob, its zone rule and the edge tap run as before. An armed rim swipe is the same armed swipe as a centre one and keeps `cls=edge`.
 - Which rim starts arm: a stroke in the cone that starts on the top or bottom rim and runs inward arms brightness; a stroke along the rim, an outward stroke, and an up–down stroke that starts on the left or right rim (more than about 45° from the UI's vertical axis) stay with the knob. The swipe arms after 48 px of travel, before a knob turn from that start has swept 15°.
 - Frame: "up" is the top of the UI as drawn, read once at press from the quadrant target (`orient_target`), not from the eased angle. With UI angle φ, UI-up in the touch frame is `(sin φ, −cos φ)`, taken from a table at the four quadrants; this is the inverse of the transform `rotblit` draws with. Travel `up` and sideways `lat` are measured from the press point in that frame. A UI rotation during the touch changes nothing: re-projecting would turn the same motion on the glass into sideways motion mid-gesture.
