@@ -15,16 +15,14 @@ _Static_assert(2 * ARC_OVER_CELLS * BRT_ARC_SWEEP_DEG * VOL_ARC_R_IN_PX + 90 * (
                "the end-cue runs and their round caps must fit outside the brightness arc");
 _Static_assert(BRT_ARC_SWEEP_DEG * 100 * 10 <= (BRT_STEPS + 1) * VOL_SWEEP_DEG * 11, "VOLARC_OVER_CAP must hold the brightness cell pitch");
 
-static int thr_at(int x, int y, double start_deg, double sweep_deg, int steps)
-{
-    double a = atan2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D;
-    double t = a - start_deg;
-    t -= 360.0 * floor(t / 360.0);
-    if (t >= sweep_deg) {
-        return 0;
-    }
-    return (int)floor(t * steps / sweep_deg) + 1;
-}
+#ifdef VOLARC_COUNT_TRIG
+volarc_trig_t volarc_trig;
+#define V_ATAN2(y, x) (volarc_trig.atan2_calls++, atan2((y), (x)))
+#define V_COSSIN(a, c, s) (volarc_trig.cossin_calls++, (c) = cos(a), (s) = sin(a))
+#else
+#define V_ATAN2(y, x) atan2((y), (x))
+#define V_COSSIN(a, c, s) ((c) = cos(a), (s) = sin(a))
+#endif
 
 static int in_band(int x, int y)
 {
@@ -38,35 +36,55 @@ int volarc_build(volarc_t *a, uint32_t *storage, int cap)
 }
 
 typedef struct {
-    double start, sweep;
+    double start, sweep, pitch, run;
     int steps;
+    double cx[2][ARC_OVER_CELLS + 1], cy[2][ARC_OVER_CELLS + 1]; /* cap centres in doubled coordinates, [high][k] */
 } geom_t;
+
+static void geom_init(geom_t *g, double start, double sweep, int steps)
+{
+    double mid = VOL_ARC_R_IN_PX + VOL_ARC_R_OUT_PX, w = VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX;
+    g->start = start;
+    g->sweep = sweep;
+    g->steps = steps;
+    g->pitch = sweep / steps;
+    g->run = ARC_OVER_CELLS * g->pitch;
+    for (int high = 0; high < 2; high++) {
+        for (int k = 0; k <= ARC_OVER_CELLS; k++) {
+            double th = (start + (high ? sweep + k * g->pitch : -k * g->pitch)) * PI_D / 180.0, c, s;
+            V_COSSIN(th, c, s);
+            g->cx[high][k] = mid * c;
+            g->cy[high][k] = mid * s;
+        }
+    }
+    /* A pixel of a cap lies within asin(w / mid) of the cap's centre angle; the slack keeps the prefilter a superset. */
+    g->run += asin(w / mid) * 180.0 / PI_D * 1.01 + 0.01;
+}
 
 static double rel_t(int x, int y, double start)
 {
-    double t = atan2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D - start;
+    double t = V_ATAN2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D - start;
     return t - 360.0 * floor(t / 360.0);
 }
 
 /* Round cap, mathematical model: half the band width closes the band with a half-disc of that radius on the arc's middle radius. */
-static int in_cap(int x, int y, const geom_t *g, int high, int k)
+static int in_cap(int x, int y, const geom_t *g, double t, int high, int k)
 {
-    double pitch = g->sweep / g->steps, t = rel_t(x, y, g->start);
-    double th = (g->start + (high ? g->sweep + k * pitch : -k * pitch)) * PI_D / 180.0;
-    double mid = VOL_ARC_R_IN_PX + VOL_ARC_R_OUT_PX, w = VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX;
-    double ex = 2 * x - C2 - mid * cos(th), ey = 2 * y - C2 - mid * sin(th);
-    int outward = high ? t >= g->sweep + k * pitch : (t > 180.0 ? t - 360.0 : t) < -k * pitch;
+    double w = VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX, ex = 2 * x - C2 - g->cx[high][k], ey = 2 * y - C2 - g->cy[high][k];
+    int outward = high ? t >= g->sweep + k * g->pitch : (t > 180.0 ? t - 360.0 : t) < -k * g->pitch;
     return outward && ex * ex + ey * ey <= w * w;
 }
 
-/* The end cap k cells past the meter end that holds the pixel, as 1 + k at the low end and 1 + ARC_OVER_CELLS + k at the high end; 0 for none. */
-static int cap_of(int x, int y, const geom_t *g)
+/* The end cap k cells past the meter end that holds the pixel at angle t, as 1 + k at the low end and 1 + ARC_OVER_CELLS + k at the high end; 0 for none. */
+static int cap_of(int x, int y, const geom_t *g, double t)
 {
+    int high = t >= g->sweep && t < g->sweep + g->run;
+    if (!high && !(t > 360.0 - g->run)) {
+        return 0;
+    }
     for (int k = 0; k <= ARC_OVER_CELLS; k++) {
-        for (int high = 0; high < 2; high++) {
-            if (in_cap(x, y, g, high, k)) {
-                return 1 + high * (1 + ARC_OVER_CELLS) + k;
-            }
+        if (in_cap(x, y, g, t, high, k)) {
+            return 1 + high * (1 + ARC_OVER_CELLS) + k;
         }
     }
     return 0;
@@ -74,20 +92,19 @@ static int cap_of(int x, int y, const geom_t *g)
 
 static int thr_over_at(int x, int y, const geom_t *g)
 {
-    int cap = cap_of(x, y, g);
+    double t = rel_t(x, y, g->start);
+    int cap = cap_of(x, y, g, t);
     if (cap) {
         int high = cap > 1 + ARC_OVER_CELLS, k = cap - 1 - high * (1 + ARC_OVER_CELLS);
         return k == 0 ? 0 : (high ? ARC_OVER_CELLS : 0) + k;
     }
-    double a = atan2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D, t = a - g->start;
-    t -= 360.0 * floor(t / 360.0);
-    double pitch = g->sweep / g->steps, run = ARC_OVER_CELLS * pitch;
+    double run = ARC_OVER_CELLS * g->pitch;
     if (t >= g->sweep && t - g->sweep < run) {
-        int j = (int)floor((t - g->sweep) / pitch) + 1;
+        int j = (int)floor((t - g->sweep) / g->pitch) + 1;
         return ARC_OVER_CELLS + (j > ARC_OVER_CELLS ? ARC_OVER_CELLS : j);
     }
     if (t > 0 && 360.0 - t < run) {
-        int k = (int)floor((360.0 - t) / pitch) + 1;
+        int k = (int)floor((360.0 - t) / g->pitch) + 1;
         return k > ARC_OVER_CELLS ? ARC_OVER_CELLS : k;
     }
     return 0;
@@ -95,11 +112,15 @@ static int thr_over_at(int x, int y, const geom_t *g)
 
 static int thr_main_at(int x, int y, const geom_t *g)
 {
-    int t = thr_at(x, y, g->start, g->sweep, g->steps), cap = t ? 0 : cap_of(x, y, g);
+    double t = rel_t(x, y, g->start);
+    if (t < g->sweep) {
+        return (int)floor(t * g->steps / g->sweep) + 1;
+    }
+    int cap = cap_of(x, y, g, t);
     if (cap == 1) {
         return 1;
     }
-    return cap == 2 + ARC_OVER_CELLS ? g->steps : t;
+    return cap == 2 + ARC_OVER_CELLS ? g->steps : 0;
 }
 
 static int build_table(volarc_t *a, uint32_t *storage, int cap, int nthr, const geom_t *g, int (*thr_fn)(int, int, const geom_t *))
@@ -147,13 +168,15 @@ static int build_table(volarc_t *a, uint32_t *storage, int cap, int nthr, const 
 
 int volarc_build_seg(volarc_t *a, uint32_t *storage, int cap, double start_deg, double sweep_deg, int steps)
 {
-    geom_t g = {start_deg, sweep_deg, steps};
+    geom_t g;
+    geom_init(&g, start_deg, sweep_deg, steps);
     return build_table(a, storage, cap, steps, &g, thr_main_at);
 }
 
 int volarc_build_over(volarc_t *a, uint32_t *storage, int cap, double start_deg, double sweep_deg, int steps)
 {
-    geom_t g = {start_deg, sweep_deg, steps};
+    geom_t g;
+    geom_init(&g, start_deg, sweep_deg, steps);
     return build_table(a, storage, cap, 2 * ARC_OVER_CELLS, &g, thr_over_at);
 }
 

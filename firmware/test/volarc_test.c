@@ -1427,6 +1427,53 @@ static void test_c5_tip_keeps_colour(void)
     }
 }
 
+/* Cost guard: the device builds four tables at boot without a double FPU, so a build may spend one atan2 per band pixel per pass and one cos/sin pair per cap centre. */
+static long band_px(void)
+{
+    long n = 0;
+    for (int y = 0; y < LCD_SIZE; y++) {
+        for (int x = 0; x < LCD_SIZE; x++) {
+            n += geo_in_band(x, y);
+        }
+    }
+    return n;
+}
+
+/* Wrong rule: the earlier per-pixel cap test, one atan2 and one cos/sin pair per cap candidate for every band pixel of the stretch pass. */
+static void wrong_per_pixel_caps(long *atan2_calls, long *cossin_calls)
+{
+    *atan2_calls = *cossin_calls = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int y = 0; y < LCD_SIZE; y++) {
+            for (int x = 0; x < LCD_SIZE; x++) {
+                if (geo_in_band(x, y)) {
+                    *atan2_calls += 1 + 2 * (ARC_OVER_CELLS + 1);
+                    *cossin_calls += 2 * (ARC_OVER_CELLS + 1);
+                }
+            }
+        }
+    }
+}
+
+static void test_c6_build_cost(void)
+{
+    static uint32_t st[VOLARC_CAP];
+    volarc_t t;
+    long limit_atan = 2 * band_px(), limit_cossin = 2 * (ARC_OVER_CELLS + 1);
+    for (int kind = GK_VOL; kind <= GK_BRT; kind++) {
+        for (int over = 0; over < 2; over++) {
+            volarc_trig = (volarc_trig_t){0, 0};
+            double sw = geo_sweep(kind), start = geo_start(kind);
+            int n = over ? volarc_build_over(&t, st, VOLARC_CAP, start, sw, geo_steps(kind)) : volarc_build_seg(&t, st, VOLARC_CAP, start, sw, geo_steps(kind));
+            printf("C6 kind %d %s: %d px, atan2 %ld (limit %ld), cos/sin pairs %ld (limit %ld)\n", kind, over ? "over" : "main", n, volarc_trig.atan2_calls, limit_atan, volarc_trig.cossin_calls, limit_cossin);
+            assert(n > 0 && volarc_trig.atan2_calls <= limit_atan && volarc_trig.cossin_calls <= limit_cossin);
+        }
+    }
+    long wa, wc;
+    wrong_per_pixel_caps(&wa, &wc);
+    assert(wa > limit_atan && wc > limit_cossin);
+}
+
 int main(void)
 {
     test_a1_band_and_order();
@@ -1455,6 +1502,7 @@ int main(void)
     test_c3_no_shared_pixel();
     test_c4_spring_back();
     test_c5_tip_keeps_colour();
+    test_c6_build_cost();
     puts("ok");
     return 0;
 }

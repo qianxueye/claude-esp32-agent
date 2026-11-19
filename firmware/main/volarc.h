@@ -11,6 +11,14 @@
 /* Mathematical model: the two stretch runs take 2 * ARC_OVER_CELLS percent of the sweep, either arc, plus a half-disc (pi/8 of the band width squared, bounded by 4/10, and one band width of edge pixels) at each tip. */
 #define VOLARC_OVER_CAP (VOLARC_CAP * 2 * ARC_OVER_CELLS / 100 + 2 * (((VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * 4) / 10 + (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX)))
 
+#ifdef VOLARC_COUNT_TRIG
+/* Host test build only: trigonometric calls made by the table builders. */
+typedef struct {
+    long atan2_calls, cossin_calls;
+} volarc_trig_t;
+extern volarc_trig_t volarc_trig;
+#endif
+
 typedef struct {
     uint32_t *e; /* caller storage, VOLARC_CAP entries */
     int n, steps;
