@@ -7,7 +7,7 @@
 
 #define VOLARC_CAP (((VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX) * 26) / 10 + 128)
 #define VOLARC_MAX_AREAS 10 /* one area per VOL_ARC_CHUNK_THR percent of the whole arc */
-#define VOLARC_RING_AREAS 21 /* the ring's invalidation areas, ui.c draw_ring */
+#define VOLARC_RING_AREAS 21 /* mathematical model: the areas invalidate_ring emits for the ring band at the configured diameter and band height */
 #define VOLARC_RING_MAX_AREAS 1 /* mathematical model: the ring redraws only when the arc change has at most this many areas */
 #define VOLARC_RING_MAX_BANDS (32 - VOLARC_RING_AREAS - VOLARC_RING_MAX_AREAS) /* mathematical model: LVGL's 32 areas less the ring and one arc area; the ring also needs a tick of at most this many scene bands */
 

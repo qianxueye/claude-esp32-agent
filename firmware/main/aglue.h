@@ -42,7 +42,7 @@ ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int 
 
 #define AG_BUBBLE_H_UNITS 18 /* plain configuration: bubble height in units, as ui.c draws it */
 #define AG_BUBBLE_Y_MAX_PX 96 /* plain configuration: largest bubble offset from the art centre */
-#define AG_BUBBLE_FIT_MARGIN_PX 2 /* plain configuration: corner margin of the fit circle: one pixel of border and one of rounding */
+#define AG_BUBBLE_FIT_MARGIN_PX 2 /* mathematical model: slack between a content corner and the ring clear radius, as volarc_test A2 and A2s keep it */
 
 typedef struct {
     int x, y, w, h; /* scene pixels */

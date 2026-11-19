@@ -270,7 +270,7 @@ static void test_a2s_sticker_scene_clear_of_arc(void)
     assert(!(raw_left + 2 < 211) && fabs(raw_left + 2 - 212.05) < 0.05);
 }
 
-/* A2r: the LISTENING scene in both skins, the sticker's largest bubble being the 160 px width. */
+/* A2r: the LISTENING scene in both skins; the sticker side sweeps every bub_y. */
 static void test_a2r_listening_clear_of_arc(void)
 {
     const double clawd = case_corner(&CLAWD_CASES[CASE_LISTENING]);
@@ -279,8 +279,10 @@ static void test_a2r_listening_clear_of_arc(void)
         for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
             int gx, gy;
             dp_orbit(i, &gx, &gy);
-            const ag_bubble_t b = ag_side_bubble(ag_bubble_w_units(34), 34, false, left, 0, gx, gy, 3, SCENE_SIZE_PX);
-            sticker = fmax(sticker, rect_corner(b.body));
+            for (int y = -AG_BUBBLE_Y_MAX_PX; y <= AG_BUBBLE_Y_MAX_PX; y += 4) {
+                const ag_bubble_t b = ag_side_bubble(ag_bubble_w_units(34), 34, false, left, y, gx, gy, 3, SCENE_SIZE_PX);
+                sticker = fmax(sticker, rect_corner(b.body));
+            }
         }
     }
     const double thinking = case_corner(&CLAWD_CASES[CASE_THINKING]);

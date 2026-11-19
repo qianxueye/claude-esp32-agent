@@ -115,9 +115,9 @@ static void test_sticker_place(void)
     /* On a scene smaller than the crop the origin is negative and the rectangle is not clipped to it. */
     const ag_place_t pl = ag_sticker_place(&big, &big.clip[0], -12, -4, 100);
     assert(pl.ox == 50 - 12 + 2 - 256 + 116 && pl.ox < 0 && pl.x0 == pl.ox && pl.x1 == pl.ox + 280);
-    /* Red proof: the old placement moves the same crop by the bubble shift and the raw lattice. */
-    const ag_place_t old = ag_place(&big, &big.clip[0], -12, -4, BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX, SCENE);
-    assert(old.oy != ag_sticker_place(&big, &big.clip[0], -12, -4, SCENE).oy);
+    /* Red proof: placing with the bubble shift moves the same crop. */
+    const ag_place_t shifted = ag_place(&big, &big.clip[0], -12, -4, BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX, SCENE);
+    assert(shifted.oy != ag_sticker_place(&big, &big.clip[0], -12, -4, SCENE).oy);
 }
 
 /* Bubble content in units (glyphs, dots, spinner) behind the 160, 168 and 120 px widths, and the thought variant of 160. */
@@ -240,8 +240,8 @@ static void test_b3_bub_y_snap_and_edge(void)
     assert(ag_bubble_edge(0, 36, ORBIT_HALF_X_PX - 4, ORBIT_HALF_Y_PX) == 192);
 }
 
-/* ui.c draw_bubble before the side variant: the formula the new function must reproduce. */
-static ag_rect_t today_top_bubble(int content, bool thought, int pop, int gx, int gy)
+/* Reference copy of the ui.c draw_bubble rectangle formula. */
+static ag_rect_t reference_top_bubble(int content, bool thought, int pop, int gx, int gy)
 {
     const int u = BUBBLE_UNIT_PX, c = MASCOT_CELL_PX;
     int w = content + 2 * BUBBLE_PAD_UNITS + 2;
@@ -255,7 +255,7 @@ static ag_rect_t today_top_bubble(int content, bool thought, int pop, int gx, in
     return (ag_rect_t){(cx - ws / 2) * u, (bottom_u - hs) * u, ws * u, hs * u};
 }
 
-/* B4: Clawd's top bubble equals today's formula at 48 orbit points, 5 states and every pop step. */
+/* B4: Clawd's top bubble equals the ui.c formula at 48 orbit points, 5 states and every pop step. */
 static void test_b4_top_bubble_unchanged(void)
 {
     static const struct {
@@ -268,7 +268,7 @@ static void test_b4_top_bubble_unchanged(void)
             int gx, gy;
             dp_orbit(i, &gx, &gy);
             for (int pop = 0; pop <= 3; pop++) {
-                const ag_rect_t want = today_top_bubble(STATES[s].content, STATES[s].thought, pop, gx, gy);
+                const ag_rect_t want = reference_top_bubble(STATES[s].content, STATES[s].thought, pop, gx, gy);
                 const ag_top_bubble_t got = ag_top_bubble(ag_bubble_w_units(STATES[s].content), STATES[s].thought, pop, gx, gy, SCENE);
                 assert(got.body.x == want.x && got.body.y == want.y && got.body.w == want.w && got.body.h == want.h);
                 n++;
