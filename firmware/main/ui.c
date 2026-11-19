@@ -1042,6 +1042,7 @@ void ui_start(void)
     s_barc_col[VOLARC_FILL] = rgb565(BRT_ARC_FILL_COLOR);
     s_barc_col[VOLARC_TRACK] = rgb565(BRT_ARC_TRACK_COLOR);
     av_init(&s_av);
+    int64_t tab_t0 = esp_timer_get_time();
     uint32_t *arc_store = heap_caps_malloc(VOLARC_CAP * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     if (!arc_store || volarc_build(&s_arc, arc_store, VOLARC_CAP) < 0) {
         s_arc.n = 0;
@@ -1061,6 +1062,7 @@ void ui_start(void)
             ESP_LOGW(TAG, "end-cue table %d unavailable", k);
         }
     }
+    ESP_LOGI(TAG, "arc tables built in %d ms", (int)((esp_timer_get_time() - tab_t0) / 1000));
     render_masks(scr);
     s_blit_done = xSemaphoreCreateBinary();
     xTaskCreate(blit_worker, "blit", STACK_BLIT, NULL, PRIO_BLIT, &s_blit_task);
