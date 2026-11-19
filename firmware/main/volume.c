@@ -100,6 +100,14 @@ void volume_count_edge(void)
     s_edge++;
 }
 
+bool volume_save_due(uint32_t now_ms, bool quiet)
+{
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    bool due = vs_save_due(&s_st, now_ms, nvstore_last_write(), quiet);
+    xSemaphoreGive(s_mtx);
+    return due;
+}
+
 bool volume_poll(uint32_t now_ms, bool quiet)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);

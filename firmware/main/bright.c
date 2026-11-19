@@ -12,7 +12,7 @@ static const char *TAG = "bright";
 /* Leaf lock: taken after the display lock, never before it. */
 static SemaphoreHandle_t s_mtx;
 static volst_t s_st;
-static uint32_t s_arms, s_cancels, s_slides, s_stops, s_saves;
+static uint32_t s_arms, s_rim, s_cancels, s_slides, s_stops, s_saves;
 
 void bright_init(void)
 {
@@ -32,11 +32,12 @@ int bright_effective(void)
     return v;
 }
 
-int bright_swipe_arm(void)
+int bright_swipe_arm(bool rim)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
     int base = vs_knob_arm(&s_st);
     s_arms++;
+    s_rim += rim;
     xSemaphoreGive(s_mtx);
     return base;
 }
@@ -86,6 +87,14 @@ void bright_count_stop(void)
     s_stops++;
 }
 
+bool bright_save_due(uint32_t now_ms, bool quiet)
+{
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    bool due = vs_save_due(&s_st, now_ms, nvstore_last_write(), quiet);
+    xSemaphoreGive(s_mtx);
+    return due;
+}
+
 bool bright_poll(uint32_t now_ms, bool quiet)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -120,6 +129,7 @@ void bright_stats(bright_stats_t *out)
     out->set = s_st.set;
     xSemaphoreGive(s_mtx);
     out->arms = s_arms;
+    out->rim = s_rim;
     out->cancels = s_cancels;
     out->slides = s_slides;
     out->stops = s_stops;

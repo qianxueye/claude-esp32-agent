@@ -22,6 +22,8 @@ int volume_knob_arm(void);
 void volume_knob_set(int v);
 void volume_knob_end(bool cancel);
 void volume_count_edge(void);
-/* Writes a due change; call from the life task. Returns true when a write happened. */
+/* A change is due for writing under the shared clock. */
+bool volume_save_due(uint32_t now_ms, bool quiet);
+/* Writes a due change; call from the life task when vs_save_pick picks the volume. Returns true when a write happened. */
 bool volume_poll(uint32_t now_ms, bool quiet);
 void volume_stats(volume_stats_t *out);

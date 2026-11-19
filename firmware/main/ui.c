@@ -577,7 +577,7 @@ static void knob_events(int ev, uint32_t now)
         av_set(&s_av, s_vk.v);
     }
     if (ev & VK_EV_BRT_ARM) {
-        vk_swipe_rebase(&s_vk, brt_index(bright_swipe_arm()));
+        vk_swipe_rebase(&s_vk, brt_index(bright_swipe_arm(s_vk.cls == VK_EDGE)));
         dp_set_active(&s_dp, bright_effective());
     }
     if (ev & VK_EV_BRT) {

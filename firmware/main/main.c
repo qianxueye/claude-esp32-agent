@@ -14,6 +14,7 @@
 #include "keydebounce.h"
 #include "bright.h"
 #include "nvstore.h"
+#include "volstate.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -323,11 +324,15 @@ static void life_task(void *arg)
             set_state(ST_OFFLINE);
         }
         bool quiet = !audio_pa_active() && s_state != ST_LISTENING;
-        if (volume_poll(t, quiet) && !saved_logged) {
+        const char *last_key = nvstore_last_key();
+        int last = !last_key ? VS_PICK_NONE : strcmp(last_key, VOL_NVS_KEY) == 0 ? VS_PICK_A : VS_PICK_B;
+        int pick = vs_save_pick(volume_save_due(t, quiet), bright_save_due(t, quiet), last);
+        if (pick == VS_PICK_B) {
+            bright_poll(t, quiet);
+        } else if (pick == VS_PICK_A && volume_poll(t, quiet) && !saved_logged) {
             saved_logged = true;
             ESP_LOGI(TAG, "volume saved; life stack high-water %u words", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
-        bright_poll(t, quiet);
         if (t - last_stats >= STATS_LOG_PERIOD_MS) {
             last_stats = t;
             transport_stats_t st;
@@ -348,8 +353,8 @@ static void life_task(void *arg)
                      (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves);
             bright_stats_t bs;
             bright_stats(&bs);
-            ESP_LOGI(TAG, "bright lvl=%d eff=%d panel=%d set=%d arms=%u cancels=%u slides=%u stops=%u saves=%u in=%u", bs.user, bs.effective, ui_panel_level(),
-                     (int)bs.set, (unsigned)bs.arms, (unsigned)bs.cancels, (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves,
+            ESP_LOGI(TAG, "bright lvl=%d eff=%d panel=%d set=%d arms=%u rim=%u cancels=%u slides=%u stops=%u saves=%u in=%u", bs.user, bs.effective,
+                     ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels, (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves,
                      (unsigned)ui_inputs_sent());
         }
     }

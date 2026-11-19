@@ -11,6 +11,7 @@ static const char *TAG = "nvstore";
 
 static bool s_on;
 static uint32_t s_last_write;
+static const char *s_last_key;
 
 void nvstore_init(void)
 {
@@ -50,6 +51,7 @@ int nvstore_load_u8(const char *key, uint8_t *raw)
 esp_err_t nvstore_save_u8(const char *key, uint8_t v, uint32_t now_ms)
 {
     s_last_write = now_ms;
+    s_last_key = key;
     if (!s_on) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -68,4 +70,9 @@ esp_err_t nvstore_save_u8(const char *key, uint8_t v, uint32_t now_ms)
 uint32_t nvstore_last_write(void)
 {
     return s_last_write;
+}
+
+const char *nvstore_last_key(void)
+{
+    return s_last_key;
 }
