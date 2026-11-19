@@ -103,6 +103,12 @@
 #define ANIM_PARTITION_LABEL "animpack" /* plain configuration: data partition of firmware/partitions.csv that holds the pack */
 #define ANIM_DIM_PLAYS 0 /* plain configuration: 0 holds the frame while dim, 1 keeps playing */
 #define ANIM_RING 1 /* plain configuration: 1 keeps the listening ring in pack mode */
+#define ANIM_HEAD_MS 250 /* mathematical model: playback runway a clip head must cover while its slot starts, apsrc_test SR1 and SR9 */
+#define ANIM_CARD_PIECE 4096 /* mathematical model: card read size, the largest that keeps the model's rate margin, apsrc_test SR9 */
+#define ANIM_CARD_DEADLINE_MS 2000 /* plain configuration: how long the card may keep the pick waiting for flash */
+#define ANIM_CARD_RETRY_S {60, 60, 300, 7200, 21600} /* plain configuration: waits before each card reopen after a read error */
+#define ANIM_CARD_READ_RETRIES 2 /* plain configuration: in-line retries of a failed card read */
+#define ANIM_CARD_READ_RETRY_MS 20 /* plain configuration: gap between in-line read retries */
 
 /* Selftest */
 #define SELFTEST_BEFORE_MS 400
