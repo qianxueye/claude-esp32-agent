@@ -130,6 +130,7 @@
 _Static_assert(SCENE_SIZE_PX % 32 == 0 && (SCENE_SIZE_PX / 32) % 2 == 1, "mathematical model: data-cache sets for the 90 degree column walk"); /* tested by aglue_test S1 */
 #define DIRTY_BAND_ROWS 40 /* rotated output is invalidated in horizontal bands of this height */
 #define SCENE_OUT_PX 466 /* rotated output square; must cover SCENE_MAX_RADIUS_PX of content */
+#define SCENE_RING_CLEAR_PX (LISTEN_RING_DIAMETER / 2 - LISTEN_RING_MAX_WIDTH_PX - 1) /* derived: inner radius of the ring's rewrite zone, ui.c draw_ring */
 #define SCENE_MAX_RADIUS_PX 225 /* glass bound; content also stays inside VOL_ARC_R_IN_PX, checked by volarc_test A2 */
 #define MASCOT_COLOR 0xD97757
 #define MASCOT_DIM_PERCENT 30
@@ -189,8 +190,10 @@ _Static_assert(SCENE_SIZE_PX % 32 == 0 && (SCENE_SIZE_PX / 32) % 2 == 1, "mathem
 #define ORBIT_ROWS 8 /* plain configuration */
 #define ORBIT_X0_PX -12 /* plain configuration: leftmost lattice column */
 #define ORBIT_Y0_PX -4 /* plain configuration: topmost lattice row */
-#define ORBIT_RECENTRE_X_PX (-(ORBIT_X0_PX + (ORBIT_COLS - 1) * ORBIT_PITCH_PX / 2)) /* derived: moves the lattice mid-point to the scene centre; sticker art only */
-#define ORBIT_RECENTRE_Y_PX (-(ORBIT_Y0_PX + (ORBIT_ROWS - 1) * ORBIT_PITCH_PX / 2)) /* derived, as above */
+#define ORBIT_HALF_X_PX ((ORBIT_COLS - 1) * ORBIT_PITCH_PX / 2) /* derived: half range of the lattice in x */
+#define ORBIT_HALF_Y_PX ((ORBIT_ROWS - 1) * ORBIT_PITCH_PX / 2) /* derived: half range in y */
+#define ORBIT_RECENTRE_X_PX (-(ORBIT_X0_PX + ORBIT_HALF_X_PX)) /* derived: moves the lattice mid-point to the scene centre; sticker art only */
+#define ORBIT_RECENTRE_Y_PX (-(ORBIT_Y0_PX + ORBIT_HALF_Y_PX)) /* derived, as above */
 _Static_assert((ORBIT_COLS - 1) * ORBIT_PITCH_PX % 2 == 0 && (ORBIT_ROWS - 1) * ORBIT_PITCH_PX % 2 == 0, "the lattice mid-point is a whole pixel");
 
 /* IMU orientation (docs/mascot.md "Screen orientation") */
