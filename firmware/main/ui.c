@@ -575,7 +575,6 @@ static void knob_events(int ev, uint32_t now)
     }
     if (ev & VK_EV_BRT_STOP) {
         bright_count_stop();
-        av_blink(&s_av, now);
         if (BRT_BOUNCE_STEPS > 0) {
             dp_bump(&s_dp, dp_clock(), brt_level(s_vk.bi == BRT_STEPS ? s_vk.bi - BRT_BOUNCE_STEPS : s_vk.bi + BRT_BOUNCE_STEPS));
         }

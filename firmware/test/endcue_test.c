@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "arcvis.h"
 #include "volknob.h"
 
 #define PI_D 3.14159265358979323846
@@ -438,8 +439,27 @@ static void test_e6_first_reversed_step(void)
     assert((ev & VK_EV_BRT) && (ev & VK_EV_OVER) && s.k.bi == BRT_STEPS - 1 && s.k.over == 0);
 }
 
+/* The glue's reaction to a cancel at the low end: the stretch event, then the end. */
+static int e7_next_frame_over(bool apply_over_event)
+{
+    arcvis_t v;
+    av_init(&v);
+    av_arm_kind(&v, AV_BRT, 0, 0);
+    av_over(&v, -N);
+    av_frame(&v, 1000, 0);
+    if (apply_over_event) {
+        av_over(&v, 0);
+    }
+    av_end(&v, 0, 1016);
+    avact_t a = av_frame(&v, 1016, 0);
+    return (a.flags & AV_OVER) ? a.over_to : -N;
+}
+
 static void test_e7_cancel(void)
 {
+    assert(e7_next_frame_over(true) == 0);
+    /* a cancel that keeps the stretch springs through a smaller one */
+    assert(e7_next_frame_over(false) == -(N - 1));
     sw_t s;
     sw_armed_at_end(&s, 180, -1);
     sw_px(&s, -100);

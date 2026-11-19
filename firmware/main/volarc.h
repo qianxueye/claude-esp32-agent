@@ -8,6 +8,9 @@
 #define VOLARC_MAX_AREAS 10 /* one area per VOL_ARC_CHUNK_THR percent of the whole arc */
 #define VOLARC_RING_MAX_AREAS 1 /* mathematical model: LVGL's 32 areas less the scene's 10 and the ring's 21; the ring redraws only when the arc change has at most this many */
 
+/* Storage of an end-cue table: the two stretch runs take 2 * ARC_OVER_CELLS percent of the sweep, either arc. */
+#define VOLARC_OVER_CAP (VOLARC_CAP * 2 * ARC_OVER_CELLS / 100)
+
 typedef struct {
     uint32_t *e; /* caller storage, VOLARC_CAP entries */
     int n, steps;
@@ -39,3 +42,17 @@ void volarc_seg_change_range(int a, int b, int *lo, int *hi);
 int volarc_areas(const volarc_t *a, int quad, int lo, int hi, volarc_rect_t *out, int max);
 /* As volarc_areas with chunk thresholds per area. */
 int volarc_areas_chunk(const volarc_t *a, int quad, int lo, int hi, int chunk, volarc_rect_t *out, int max);
+/* Builds the end-cue table of the meter built with the same arguments: thresholds 1..N are the low-end cells (1 touches the end), N+1..2N the high-end cells (N+1 touches it). */
+int volarc_build_over(volarc_t *a, uint32_t *storage, int cap, double start_deg, double sweep_deg, int steps);
+/* Whether end-cue cell thr is lit at stretch over (negative at the low end, positive at the high end). */
+int volarc_over_lit(int thr, int over);
+/* Threshold ranges (lo, hi] of the end-cue cells whose lit state differs between stretches from and to; returns the count, at most 2. */
+int volarc_over_ranges(int from, int to, int lo[2], int hi[2]);
+/* Colour class of a lit end-cue cell: the class of the meter's end cell at that end. */
+int volarc_over_class(int seg, int over);
+/* Unions extra into the area of rects[0] (end below 0) or rects[n - 1]; returns n. */
+int volarc_fold_rect(volarc_rect_t *rects, int n, int end, volarc_rect_t extra);
+/* The areas of a whole meter (one per chunk) with its lit stretch folded into the chunk holding the end it touches; the count equals the chunk count. */
+int volarc_whole_areas(const volarc_t *m, const volarc_t *o, int quad, int chunk, int stretch, volarc_rect_t *out, int max);
+/* The areas of the end-cue cells whose lit state differs between stretches from and to: one per changed end. */
+int volarc_over_areas(const volarc_t *o, int quad, int from, int to, volarc_rect_t out[2]);

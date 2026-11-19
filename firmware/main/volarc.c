@@ -7,6 +7,9 @@
 _Static_assert(VOL_ARC_R_IN_PX > LISTEN_RING_DIAMETER / 2 + 1, "arc must lie outside the listening ring");
 _Static_assert(VOL_ARC_R_OUT_PX < LCD_SIZE / 2, "arc must lie inside the glass");
 _Static_assert(VOL_ARC_R_IN_PX < VOL_ARC_R_OUT_PX, "arc band must not be empty");
+_Static_assert(2 * ARC_OVER_CELLS * VOL_SWEEP_DEG <= (360 - VOL_SWEEP_DEG) * 100, "both volume end-cue runs must fit the gap of the volume arc");
+_Static_assert(2 * ARC_OVER_CELLS * BRT_ARC_SWEEP_DEG <= (360 - BRT_ARC_SWEEP_DEG) * (BRT_STEPS + 1), "both brightness end-cue runs must fit outside its arc");
+_Static_assert(BRT_ARC_SWEEP_DEG * 100 * 10 <= (BRT_STEPS + 1) * VOL_SWEEP_DEG * 11, "VOLARC_OVER_CAP must hold the brightness cell pitch");
 
 static int thr_at(int x, int y, double start_deg, double sweep_deg, int steps)
 {
@@ -30,16 +33,42 @@ int volarc_build(volarc_t *a, uint32_t *storage, int cap)
     return volarc_build_seg(a, storage, cap, VOL_ARC_START_DEG, VOL_SWEEP_DEG, 100);
 }
 
-int volarc_build_seg(volarc_t *a, uint32_t *storage, int cap, double start_deg, double sweep_deg, int steps)
+typedef struct {
+    double start, sweep;
+    int steps;
+} geom_t;
+
+static int thr_over_at(int x, int y, const geom_t *g)
+{
+    double a = atan2((double)(2 * y - C2), (double)(2 * x - C2)) * 180.0 / PI_D, t = a - g->start;
+    t -= 360.0 * floor(t / 360.0);
+    double pitch = g->sweep / g->steps, run = ARC_OVER_CELLS * pitch;
+    if (t >= g->sweep && t - g->sweep < run) {
+        int j = (int)floor((t - g->sweep) / pitch) + 1;
+        return ARC_OVER_CELLS + (j > ARC_OVER_CELLS ? ARC_OVER_CELLS : j);
+    }
+    if (t > 0 && 360.0 - t < run) {
+        int k = (int)floor((360.0 - t) / pitch) + 1;
+        return k > ARC_OVER_CELLS ? ARC_OVER_CELLS : k;
+    }
+    return 0;
+}
+
+static int thr_main_at(int x, int y, const geom_t *g)
+{
+    return thr_at(x, y, g->start, g->sweep, g->steps);
+}
+
+static int build_table(volarc_t *a, uint32_t *storage, int cap, int nthr, const geom_t *g, int (*thr_fn)(int, int, const geom_t *))
 {
     int count[101] = {0};
     a->e = storage;
     a->n = 0;
-    a->steps = steps;
+    a->steps = nthr;
     for (int y = 0; y < LCD_SIZE; y++) {
         for (int x = 0; x < LCD_SIZE; x++) {
             if (in_band(x, y)) {
-                int t = thr_at(x, y, start_deg, sweep_deg, steps);
+                int t = thr_fn(x, y, g);
                 if (t > 0) {
                     count[t]++;
                 }
@@ -48,10 +77,10 @@ int volarc_build_seg(volarc_t *a, uint32_t *storage, int cap, double start_deg, 
     }
     a->cnt[0] = 0;
     int total = 0, pos[101];
-    for (int t = steps + 1; t <= 100; t++) {
+    for (int t = nthr + 1; t <= 100; t++) {
         a->cnt[t] = 0;
     }
-    for (int t = 1; t <= steps; t++) {
+    for (int t = 1; t <= nthr; t++) {
         pos[t] = total;
         total += count[t];
         a->cnt[t] = total;
@@ -62,7 +91,7 @@ int volarc_build_seg(volarc_t *a, uint32_t *storage, int cap, double start_deg, 
     for (int y = 0; y < LCD_SIZE; y++) {
         for (int x = 0; x < LCD_SIZE; x++) {
             if (in_band(x, y)) {
-                int t = thr_at(x, y, start_deg, sweep_deg, steps);
+                int t = thr_fn(x, y, g);
                 if (t > 0) {
                     a->e[pos[t]++] = ((uint32_t)t << 20) | ((uint32_t)y << 10) | (uint32_t)x;
                 }
@@ -71,6 +100,18 @@ int volarc_build_seg(volarc_t *a, uint32_t *storage, int cap, double start_deg, 
     }
     a->n = total;
     return total;
+}
+
+int volarc_build_seg(volarc_t *a, uint32_t *storage, int cap, double start_deg, double sweep_deg, int steps)
+{
+    geom_t g = {start_deg, sweep_deg, steps};
+    return build_table(a, storage, cap, steps, &g, thr_main_at);
+}
+
+int volarc_build_over(volarc_t *a, uint32_t *storage, int cap, double start_deg, double sweep_deg, int steps)
+{
+    geom_t g = {start_deg, sweep_deg, steps};
+    return build_table(a, storage, cap, 2 * ARC_OVER_CELLS, &g, thr_over_at);
 }
 
 void volarc_xy(uint32_t e, int quad, int *x, int *y)
@@ -140,6 +181,65 @@ int volarc_areas_chunk(const volarc_t *a, int quad, int lo, int hi, int chunk, v
         if (r.x2 >= r.x1) {
             out[n++] = r;
         }
+    }
+    return n;
+}
+
+int volarc_over_lit(int thr, int over)
+{
+    return over < 0 ? thr <= -over : over > 0 && thr > ARC_OVER_CELLS && thr - ARC_OVER_CELLS <= over;
+}
+
+int volarc_over_ranges(int from, int to, int lo[2], int hi[2])
+{
+    int n = 0, fl = from < 0 ? -from : 0, tl = to < 0 ? -to : 0, fh = from > 0 ? from : 0, th = to > 0 ? to : 0;
+    if (fl != tl) {
+        lo[n] = fl < tl ? fl : tl;
+        hi[n++] = fl < tl ? tl : fl;
+    }
+    if (fh != th) {
+        lo[n] = ARC_OVER_CELLS + (fh < th ? fh : th);
+        hi[n++] = ARC_OVER_CELLS + (fh < th ? th : fh);
+    }
+    return n;
+}
+
+int volarc_over_class(int seg, int over)
+{
+    return !seg && over < 0 ? VOLARC_MUTE : VOLARC_FILL;
+}
+
+int volarc_fold_rect(volarc_rect_t *rects, int n, int end, volarc_rect_t extra)
+{
+    if (n <= 0) {
+        return 0;
+    }
+    volarc_rect_t *r = &rects[end < 0 ? 0 : n - 1];
+    r->x1 = extra.x1 < r->x1 ? extra.x1 : r->x1;
+    r->y1 = extra.y1 < r->y1 ? extra.y1 : r->y1;
+    r->x2 = extra.x2 > r->x2 ? extra.x2 : r->x2;
+    r->y2 = extra.y2 > r->y2 ? extra.y2 : r->y2;
+    return n;
+}
+
+int volarc_whole_areas(const volarc_t *m, const volarc_t *o, int quad, int chunk, int stretch, volarc_rect_t *out, int max)
+{
+    int n = volarc_areas_chunk(m, quad, 0, m->steps, chunk, out, max);
+    int lo[2], hi[2], k = volarc_over_ranges(0, stretch, lo, hi);
+    for (int i = 0; i < k; i++) {
+        volarc_rect_t x;
+        if (volarc_areas_chunk(o, quad, lo[i], hi[i], ARC_OVER_CELLS, &x, 1) == 1) {
+            volarc_fold_rect(out, n, stretch, x);
+        }
+    }
+    return n;
+}
+
+int volarc_over_areas(const volarc_t *o, int quad, int from, int to, volarc_rect_t out[2])
+{
+    int lo[2], hi[2], n = 0, k = volarc_over_ranges(from, to, lo, hi);
+    for (int i = 0; i < k; i++) {
+        n += volarc_areas_chunk(o, quad, lo[i], hi[i], ARC_OVER_CELLS, out + n, 1);
     }
     return n;
 }
