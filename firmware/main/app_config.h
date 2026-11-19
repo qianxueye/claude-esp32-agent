@@ -126,7 +126,8 @@
 #define LCD_SIZE 466
 #define MASCOT_CELL_PX 16
 #define BUBBLE_UNIT_PX 4 /* font design pixel at 48 px; one quarter cell */
-#define SCENE_SIZE_PX 320 /* square the group is drawn into before rotation */
+#define SCENE_SIZE_PX 480 /* square the group is drawn into before rotation; half of it is a multiple of MASCOT_CELL_PX and it covers the panel */
+_Static_assert(SCENE_SIZE_PX % 32 == 0 && (SCENE_SIZE_PX / 32) % 2 == 1, "mathematical model: data-cache sets for the 90 degree column walk"); /* tested by aglue_test S1 */
 #define DIRTY_BAND_ROWS 40 /* rotated output is invalidated in horizontal bands of this height */
 #define SCENE_OUT_PX 466 /* rotated output square; must cover SCENE_MAX_RADIUS_PX of content */
 #define SCENE_MAX_RADIUS_PX 225 /* glass bound; content also stays inside VOL_ARC_R_IN_PX, checked by volarc_test A2 */
@@ -187,7 +188,7 @@
 #define ORBIT_COLS 6 /* plain configuration */
 #define ORBIT_ROWS 8 /* plain configuration */
 #define ORBIT_X0_PX -12 /* plain configuration: leftmost lattice column */
-#define ORBIT_Y0_PX -4 /* plain configuration: topmost lattice row; the THINKING bubble reaches the scene top at this offset */
+#define ORBIT_Y0_PX -4 /* plain configuration: topmost lattice row */
 
 /* IMU orientation (docs/mascot.md "Screen orientation") */
 #define IMU_I2C_ADDR_PRIMARY 0x6B

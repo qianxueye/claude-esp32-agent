@@ -1145,7 +1145,7 @@ void ui_start(void)
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
 
-    s_model = heap_caps_calloc(SCENE * SCENE, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_model = heap_caps_calloc(SCENE * SCENE, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_out = lv_draw_buf_create(SCENE_OUT_PX, SCENE_OUT_PX, LV_COLOR_FORMAT_RGB565, 0);
     ESP_ERROR_CHECK(s_model && s_out ? ESP_OK : ESP_ERR_NO_MEM);
     lv_draw_buf_clear(s_out, NULL);

@@ -84,10 +84,12 @@ static void test_place_at_every_orbit_point(void)
     /* Red proof: applying the mascot's one-unit bob moves the canvas off the mascot centre and, under a full bubble at the lowest orbit row, out of the scene. */
     assert(!placed_well(&g, 0, BUBBLE_UNIT_PX));
     assert(!placed_well(&full, 0, BUBBLE_UNIT_PX));
-    const ag_place_t pl = place_with_motion(&full, &full.clip[0], 0, ORBIT_Y0_PX + (ORBIT_ROWS - 1) * ORBIT_PITCH_PX, BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX, 0, 0);
-    assert(pl.y1 == SCENE);
-    const ag_place_t bob = place_with_motion(&full, &full.clip[0], 0, ORBIT_Y0_PX + (ORBIT_ROWS - 1) * ORBIT_PITCH_PX, BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX, 0, BUBBLE_UNIT_PX);
-    assert(bob.oy + full.clip[0].h > SCENE && bob.y1 == SCENE);
+    /* A 320 px scene clips the lowest orbit row under a full bubble; the live scene is larger. */
+    const int low = ORBIT_Y0_PX + (ORBIT_ROWS - 1) * ORBIT_PITCH_PX, sh = BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX;
+    const ag_place_t pl = ag_place(&full, &full.clip[0], 0, low, sh, 320);
+    assert(pl.y1 == 320);
+    const ag_place_t bob = ag_place(&full, &full.clip[0], 0, low + BUBBLE_UNIT_PX, sh, 320);
+    assert(bob.oy + full.clip[0].h > 320 && bob.y1 == 320);
 }
 
 /* Copies into a guarded scene and checks every byte: crop pixels where placed, untouched elsewhere. */
@@ -326,8 +328,56 @@ static void test_log_lines_fit(void)
     assert(n >= LOG_LINE_MAX_BYTES);
 }
 
+/* S1: LRU data cache of 128 sets x 8 ways x 32 B lines; counts misses of a walk down every column of a size x size byte buffer. */
+static long column_walk_misses(int size)
+{
+    enum { SETS = 128, WAYS = 8, LINE = 32 };
+    static long tag[SETS][WAYS], age[SETS][WAYS];
+    for (int s = 0; s < SETS; s++) {
+        for (int w = 0; w < WAYS; w++) {
+            tag[s][w] = -1;
+            age[s][w] = 0;
+        }
+    }
+    long misses = 0, now = 0;
+    for (int x = 0; x < size; x++) {
+        for (int y = 0; y < size; y++) {
+            const long line = ((long)y * size + x) / LINE;
+            const int set = (int)(line % SETS);
+            int hit = -1, victim = 0;
+            for (int w = 0; w < WAYS; w++) {
+                if (tag[set][w] == line) {
+                    hit = w;
+                }
+                if (age[set][w] < age[set][victim]) {
+                    victim = w;
+                }
+            }
+            now++;
+            if (hit < 0) {
+                misses++;
+                hit = victim;
+                tag[set][hit] = line;
+            }
+            age[set][hit] = now;
+        }
+    }
+    return misses;
+}
+
+static void test_scene_stride_suits_the_cache(void)
+{
+    const long ideal = ((long)SCENE * SCENE + 31) / 32;
+    const long m = column_walk_misses(SCENE);
+    printf("S1: size %d misses %ld ideal %ld\n", SCENE, m, ideal);
+    assert(m * 2 <= ideal * 3);
+    /* Red proof: at 384 the rows share 32 sets and every access misses. */
+    assert(column_walk_misses(384) > 1.5 * (384L * 384 / 32));
+}
+
 int main(void)
 {
+    test_scene_stride_suits_the_cache();
     test_log_lines_fit();
     test_place_at_every_orbit_point();
     test_copy_clips_to_the_scene();
