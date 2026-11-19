@@ -102,6 +102,17 @@ class Config:
     rate: int = 0  # words per minute for `say -r`; 0 keeps the voice default
     first_chunk_min_chars: int = 12  # a comma may end the first chunk once it is this long
     tts_timeout_s: float = 30.0
+    tts_engine: str = "say"  # "say" or "qwen3"; qwen3 falls back to say per sentence
+    qwen_url: str = ""  # speech server base URL; ignored when qwen_server_cmd is set
+    qwen_server_cmd: list[str] = field(default_factory=list)  # argv; --host/--port are appended
+    qwen_model: str = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+    qwen_voice: str = "ono_anna"
+    qwen_lang_code: str = "chinese"  # "chinese" or "japanese"
+    qwen_voices: dict[str, str] = field(default_factory=dict)  # per lang_code voice override
+    qwen_connect_timeout_s: float = 2.0
+    qwen_skip_s: float = 30.0  # after a failure, use say for this long before trying the server again
+    qwen_ready_timeout_s: float = 180.0
+    afconvert_bin: str = "/usr/bin/afconvert"
 
     # earcons
     earcon_gain: float = 0.35
@@ -128,4 +139,6 @@ def load(path: Path | str | None = None) -> Config:
     cfg = dataclasses.replace(cfg, **data)
     if not 0 <= cfg.volume <= 100:
         raise ValueError(f"volume must be 0-100, got {cfg.volume} in {p}")
+    if cfg.tts_engine not in ("say", "qwen3"):
+        raise ValueError(f'tts_engine 只能是 "say" 或 "qwen3"，现为 {cfg.tts_engine!r}（{p}）')
     return cfg
