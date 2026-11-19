@@ -94,8 +94,8 @@ static int s_pop, s_pop_target, s_bub_state;
 static scene_t s_drawn;
 static volknob_t s_vk;
 static arcvis_t s_av;
-static volarc_t s_arc;
-static uint16_t s_arc_col[3];
+static volarc_t s_arc, s_barc;
+static uint16_t s_arc_col[3], s_barc_col[3];
 static int s_bench, s_ring_width, s_ring_opa;
 static char s_miss[150];
 static uint32_t s_te_missed, s_cover_frames, s_cover_viol;
@@ -579,13 +579,16 @@ static void knob_events(int ev, uint32_t now)
     if (ev & VK_EV_BRT_ARM) {
         vk_swipe_rebase(&s_vk, brt_index(bright_swipe_arm(s_vk.cls == VK_EDGE)));
         dp_set_active(&s_dp, bright_effective());
+        av_arm_kind(&s_av, AV_BRT, s_vk.bi, s_vk.quad);
     }
     if (ev & VK_EV_BRT) {
         bright_swipe_set(brt_level(s_vk.bi));
         dp_set_active(&s_dp, bright_effective());
+        av_set(&s_av, s_vk.bi);
     }
     if (ev & VK_EV_BRT_STOP) {
         bright_count_stop();
+        av_blink(&s_av, now);
         if (BRT_BOUNCE_STEPS > 0) {
             dp_bump(&s_dp, dp_clock(), brt_level(s_vk.bi == BRT_STEPS ? s_vk.bi - BRT_BOUNCE_STEPS : s_vk.bi + BRT_BOUNCE_STEPS));
         }
@@ -600,18 +603,14 @@ static void knob_events(int ev, uint32_t now)
     if (ev & (VK_EV_BRT_COMMIT | VK_EV_BRT_CANCEL)) {
         bright_swipe_end((ev & VK_EV_BRT_CANCEL) != 0);
         dp_set_active(&s_dp, bright_effective());
+        av_end(&s_av, s_vk.bi, now);
     }
 }
 
-static const char *const CLS[] = {"idle", "dead", "centre", "edge", "armed", "swipe", "bright"};
-static const char *const WHY[] = {"none", "dark", "moved", "zone", "jump", "lateral", "slow", "tangent"};
-_Static_assert(sizeof(CLS) / sizeof(CLS[0]) == VK_STATE_N, "CLS is indexed by the classifier states");
-_Static_assert(sizeof(WHY) / sizeof(WHY[0]) == VK_WHY_N, "WHY is indexed by the classifier drop reasons");
-
 static void log_knob_end(uint32_t now)
 {
-    ESP_LOGI(TAG, "knob: end cls=%s armed=%d why=%s v0=%d v=%d travel=%.0f disp=%.0f x0=%d y0=%d r=%.0f dur=%u", CLS[s_vk.cls], s_vk.armed_ever,
-             WHY[s_vk.why], s_vk.v0, s_vk.v, s_vk.travel, s_vk.max_disp, s_vk.x0, s_vk.y0, s_vk.r0, (unsigned)(now - s_vk.t0));
+    ESP_LOGI(TAG, "knob: end cls=%s armed=%d why=%s v0=%d v=%d travel=%.0f disp=%.0f x0=%d y0=%d r=%.0f dur=%u", vk_cls_name(s_vk.cls), s_vk.armed_ever,
+             vk_why_name(s_vk.why), s_vk.v0, s_vk.v, s_vk.travel, s_vk.max_disp, s_vk.x0, s_vk.y0, s_vk.r0, (unsigned)(now - s_vk.t0));
 }
 
 /* One line per touch that left the slop; b0 and b are percent, -1 when the swipe never armed. */
@@ -621,9 +620,9 @@ static void log_swipe_end(uint32_t now)
         return;
     }
     int b0 = s_vk.bright_ever ? brt_level(s_vk.bi0) : -1, b = s_vk.bright_ever ? brt_level(s_vk.bi) : -1;
-    ESP_LOGI(TAG, "swipe: end cls=%s q=%d why=%s arm=%d b0=%d b=%d dx=%d dy=%d up=%.0f pk=%.0f lat=%.0f arm_ms=%d r1=%.0f rev=%d dur=%u", CLS[s_vk.cls],
-             s_vk.quad, WHY[s_vk.why], s_vk.bright_ever, b0, b, s_vk.lx - s_vk.x0, s_vk.ly - s_vk.y0, s_vk.up, s_vk.up_peak, s_vk.lat_peak, s_vk.arm_ms,
-             s_vk.r1, s_vk.rev, (unsigned)(now - s_vk.t0));
+    char line[LOG_LINE_MAX_BYTES];
+    vk_swipe_line(line, sizeof(line), &s_vk, b0, b, now);
+    ESP_LOGI(TAG, "%s", line);
 }
 
 static void touch_cb(lv_event_t *e)
@@ -736,17 +735,24 @@ static void invalidate_ring(void)
 
 _Static_assert(SCENE_OUT_PX == LCD_SIZE, "the arc and its clear loop index s_out in panel coordinates");
 
-static void arc_put(uint32_t e, int quad, int v)
+static const volarc_t *arc_table(int kind)
+{
+    return kind == AV_BRT ? &s_barc : &s_arc;
+}
+
+static void arc_put(int kind, uint32_t e, int quad, int v)
 {
     int x, y;
     volarc_xy(e, quad, &x, &y);
-    ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = s_arc_col[volarc_class(volarc_thr(e), v)];
+    int t = volarc_thr(e);
+    ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = kind == AV_BRT ? s_barc_col[volarc_seg_class(t, v)] : s_arc_col[volarc_class(t, v)];
 }
 
-static int arc_invalidate(int quad, int lo, int hi)
+static int arc_invalidate(int kind, int quad, int lo, int hi)
 {
     volarc_rect_t r[VOLARC_MAX_AREAS];
-    int n = volarc_areas(&s_arc, quad, lo, hi, r, VOLARC_MAX_AREAS);
+    int chunk = kind == AV_BRT ? BRT_ARC_CHUNK_CELLS : VOL_ARC_CHUNK_THR;
+    int n = volarc_areas_chunk(arc_table(kind), quad, lo, hi, chunk, r, VOLARC_MAX_AREAS);
     lv_display_t *disp = lv_obj_get_display(s_canvas);
     for (int i = 0; i < n; i++) {
         lv_area_t a = {r[i].x1 + CANVAS_OFF, r[i].y1 + CANVAS_OFF, r[i].x2 + CANVAS_OFF, r[i].y2 + CANVAS_OFF};
@@ -755,37 +761,40 @@ static int arc_invalidate(int quad, int lo, int hi)
     return n;
 }
 
-static int arc_paint(int quad, int v, int lo, int hi)
+static int arc_paint(int kind, int quad, int v, int lo, int hi)
 {
-    for (int i = s_arc.cnt[lo]; i < s_arc.cnt[hi]; i++) {
-        arc_put(s_arc.e[i], quad, v);
+    const volarc_t *t = arc_table(kind);
+    for (int i = t->cnt[lo]; i < t->cnt[hi]; i++) {
+        arc_put(kind, t->e[i], quad, v);
     }
-    return arc_invalidate(quad, lo, hi);
+    return arc_invalidate(kind, quad, lo, hi);
 }
 
-/* Returns the number of areas invalidated; the ring waits for a frame with at most one. */
+/* Returns the number of areas invalidated; the ring waits for a frame with more than VOLARC_RING_MAX_AREAS. */
 static int arc_update(uint32_t now)
 {
-    if (s_arc.n == 0) {
-        return 0;
-    }
     avact_t a = av_frame(&s_av, now, ((int)lroundf(orient_target() / 90.0f)) & 3);
     int areas = 0;
-    if (a.flags & AV_CLEAR_OLD) {
-        for (int i = 0; i < s_arc.n; i++) {
+    if ((a.flags & AV_CLEAR_OLD) && arc_table(a.old_kind)->n > 0) {
+        const volarc_t *t = arc_table(a.old_kind);
+        for (int i = 0; i < t->n; i++) {
             int x, y;
-            volarc_xy(s_arc.e[i], a.old_quad, &x, &y);
+            volarc_xy(t->e[i], a.old_quad, &x, &y);
             ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = 0;
         }
-        areas += arc_invalidate(a.old_quad, 0, 100);
+        areas += arc_invalidate(a.old_kind, a.old_quad, 0, t->steps);
     }
-    if (a.flags & AV_DRAW_NEW) {
-        areas += arc_paint(a.quad, a.val, 0, 100);
+    if ((a.flags & AV_DRAW_NEW) && arc_table(a.kind)->n > 0) {
+        areas += arc_paint(a.kind, a.quad, a.val, 0, arc_table(a.kind)->steps);
     }
-    if (a.flags & AV_DIFF) {
+    if ((a.flags & AV_DIFF) && arc_table(a.kind)->n > 0) {
         int lo, hi;
-        volarc_change_range(a.from, a.to, &lo, &hi);
-        areas += arc_paint(a.quad, a.to, lo, hi);
+        if (a.kind == AV_BRT) {
+            volarc_seg_change_range(a.from, a.to, &lo, &hi);
+        } else {
+            volarc_change_range(a.from, a.to, &lo, &hi);
+        }
+        areas += arc_paint(a.kind, a.quad, a.to, lo, hi);
     }
     return areas;
 }
@@ -987,11 +996,18 @@ void ui_start(void)
     s_arc_col[VOLARC_FILL] = rgb565(BUBBLE_FILL_COLOR);
     s_arc_col[VOLARC_TRACK] = rgb565(BUBBLE_OFFLINE_FILL_COLOR);
     s_arc_col[VOLARC_MUTE] = rgb565(BUBBLE_ERROR_COLOR);
+    s_barc_col[VOLARC_FILL] = rgb565(BRT_ARC_FILL_COLOR);
+    s_barc_col[VOLARC_TRACK] = rgb565(BRT_ARC_TRACK_COLOR);
     av_init(&s_av);
     uint32_t *arc_store = heap_caps_malloc(VOLARC_CAP * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     if (!arc_store || volarc_build(&s_arc, arc_store, VOLARC_CAP) < 0) {
         s_arc.n = 0;
         ESP_LOGW(TAG, "volume arc table unavailable");
+    }
+    uint32_t *barc_store = heap_caps_malloc(VOLARC_CAP * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+    if (!barc_store || volarc_build_seg(&s_barc, barc_store, VOLARC_CAP, BRT_ARC_START_DEG, BRT_ARC_SWEEP_DEG, BRT_STEPS + 1) < 0) {
+        s_barc.n = 0;
+        ESP_LOGW(TAG, "brightness arc table unavailable");
     }
     render_masks(scr);
     s_blit_done = xSemaphoreCreateBinary();
@@ -1032,6 +1048,13 @@ void ui_set_arc(int level)
 {
     bsp_display_lock(-1);
     av_force(&s_av, level > 100 ? 100 : level);
+    bsp_display_unlock();
+}
+
+void ui_set_brt_arc(int index)
+{
+    bsp_display_lock(-1);
+    av_force_kind(&s_av, AV_BRT, index > BRT_STEPS ? BRT_STEPS : index);
     bsp_display_unlock();
 }
 

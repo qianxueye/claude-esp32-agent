@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "brtmap.h"
 #include "dpower.h"
 #include "volknob.h"
@@ -673,6 +674,51 @@ static void test_g21_coarse_samples_in_the_cone_arm(void)
     }
 }
 
+/* Red proof for G22: the same line without the caps on rev, gap and dur. */
+static int wrong_uncapped_line(char *out, size_t cap, const volknob_t *k, uint32_t now)
+{
+    return snprintf(out, cap, VK_SWIPE_LINE_FMT, "centre", k->quad, "lateral", 1, 100, 100, k->lx - k->x0, k->ly - k->y0, k->up, k->up_peak, k->lat_peak,
+                    k->arm_ms, k->r1, k->rev, (unsigned)k->gap, k->stp, k->ku, k->kl, (unsigned)(now - k->t0));
+}
+
+static void test_g22_swipe_line_fits(void)
+{
+    /* Widest ESP_LOGI prefix and suffix: colour codes, a 10-digit timestamp and the ui tag. */
+    const size_t frame = strlen("\033[0;32mI (4294967295) ui: ") + strlen("\033[0m");
+    const double far = hypot(LCD_SIZE - 1, LCD_SIZE - 1);
+    int widest = 0;
+    char line[512];
+    volknob_t k;
+    for (int cls = 0; cls < VK_STATE_N; cls++) {
+        for (int why = 0; why < VK_WHY_N; why++) {
+            for (int sign = -1; sign <= 1; sign += 2) {
+                vk_init(&k);
+                k.cls = cls;
+                k.swhy = why;
+                k.quad = 3;
+                k.bright_ever = true;
+                k.x0 = sign < 0 ? LCD_SIZE - 1 : 0;
+                k.y0 = k.x0;
+                k.lx = k.ly = LCD_SIZE - 1 - k.x0;
+                k.up = k.ku = k.kl = -far;
+                k.up_peak = k.lat_peak = k.stp = far;
+                k.r1 = hypot(CTR, CTR);
+                k.arm_ms = BRT_ARM_MAX_MS;
+                k.rev = 1 << 30;
+                k.gap = UINT32_MAX;
+                k.t0 = 1;
+                int n = vk_swipe_line(line, sizeof(line), &k, 100, 100, 0);
+                assert(n > 0 && (size_t)n < sizeof(line) && strlen(line) == (size_t)n);
+                widest = n > widest ? n : widest;
+            }
+        }
+    }
+    printf("widest swipe line %d + log frame %zu = %zu of %d\n", widest, frame, widest + frame, LOG_LINE_MAX_BYTES - 1);
+    assert(widest + frame <= LOG_LINE_MAX_BYTES - 1);
+    assert(strstr(line, " rev=999 gap=999999 ") && strstr(line, " dur=999999"));
+    assert(wrong_uncapped_line(line, sizeof(line), &k, 0) + frame > LOG_LINE_MAX_BYTES - 1);
+}
+
 int main(void)
 {
     test_g2_tap_and_long_rotated();
@@ -695,6 +741,7 @@ int main(void)
     test_g19_dropped_candidate_keeps_knob_and_tap();
     test_g20_outward_rim_stroke_never_arms();
     test_g21_coarse_samples_in_the_cone_arm();
+    test_g22_swipe_line_fits();
     puts("ok");
     return 0;
 }

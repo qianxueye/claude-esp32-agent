@@ -128,6 +128,10 @@ static void handle_debug(const proto_frame_t *f)
     if (v) {
         ui_set_arc(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
     }
+    v = json_value(json, "brt_arc");
+    if (v) {
+        ui_set_brt_arc(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
     v = json_value(json, "fill");
     if (v) {
         ui_set_fill(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));

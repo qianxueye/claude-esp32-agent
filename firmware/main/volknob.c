@@ -1,5 +1,6 @@
 #include "volknob.h"
 #include <math.h>
+#include <stdio.h>
 
 #define PI_D 3.14159265358979323846
 #define CENTRE_PX ((LCD_SIZE - 1) / 2.0)
@@ -343,4 +344,31 @@ int vk_release(volknob_t *k, uint32_t t_ms)
 int vk_lost(volknob_t *k)
 {
     return end_touch(k, 0, false);
+}
+
+static const char *const CLS[] = {"idle", "dead", "centre", "edge", "armed", "swipe", "bright"};
+static const char *const WHY[] = {"none", "dark", "moved", "zone", "jump", "lateral", "slow", "tangent"};
+_Static_assert(sizeof(CLS) / sizeof(CLS[0]) == VK_STATE_N, "CLS is indexed by the classifier states");
+_Static_assert(sizeof(WHY) / sizeof(WHY[0]) == VK_WHY_N, "WHY is indexed by the classifier drop reasons");
+
+const char *vk_cls_name(int cls)
+{
+    return cls >= 0 && cls < VK_STATE_N ? CLS[cls] : "?";
+}
+
+const char *vk_why_name(int why)
+{
+    return why >= 0 && why < VK_WHY_N ? WHY[why] : "?";
+}
+
+static unsigned cap_ms(uint32_t v)
+{
+    return v > VK_MS_LOG_MAX ? VK_MS_LOG_MAX : (unsigned)v;
+}
+
+int vk_swipe_line(char *out, size_t cap, const volknob_t *k, int b0, int b, uint32_t now)
+{
+    return snprintf(out, cap, VK_SWIPE_LINE_FMT, vk_cls_name(k->cls), k->quad, vk_why_name(k->swhy), k->bright_ever, b0, b, k->lx - k->x0, k->ly - k->y0,
+                    k->up, k->up_peak, k->lat_peak, k->arm_ms, k->r1, k->rev > VK_REV_LOG_MAX ? VK_REV_LOG_MAX : k->rev, cap_ms(k->gap), k->stp, k->ku, k->kl,
+                    cap_ms(now - k->t0));
 }
