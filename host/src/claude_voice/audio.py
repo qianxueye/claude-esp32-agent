@@ -51,5 +51,4 @@ def earcons(gain: float) -> dict[str, bytes]:
         "listen_start": tone(660, 70, gain) + tone(880, 90, gain),
         "listen_end": tone(880, 60, gain) + tone(587, 90, gain),
         "error": tone(220, 140, gain) + silence(60) + tone(165, 220, gain),
-        "reset": tone(440, 110, gain),
     }
