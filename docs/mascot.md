@@ -64,12 +64,23 @@ A pixel-style bubble above the mascot shows the state. IDLE shows no bubble.
 - Invalidation: the arc is invalidated as one area per 10 thresholds (at most 10 for the whole arc, one for a 1 % step). LVGL keeps 32 areas per frame before repainting the screen, so a frame in which the arc invalidates more than one area skips the listening-ring update; the ring catches up in the next frame.
 - `VOL_ARC_*` values are plain configuration; the table is built at start-up into PSRAM.
 
+## Brightness arc
+
+- Shown while a brightness swipe is armed and for `VOL_ARC_LINGER_MS` after it ends; after a cancel it shows the restored level. No text or icon.
+- One rim meter at a time: the volume and brightness arcs share the band, and arming either gesture clears the other meter and draws its own in the same frame.
+- Band: the volume arc's band, r 222 to 230. Angles: UI 135° to 225° clockwise from 3 o'clock, the left rim centred on 9 o'clock, so the fill grows from the bottom up.
+- Cells: 33, one per ladder level (2.73° each). Cell c (1 to 33) is fill when c ≤ index + 1, else track, so the lowest level still shows one lit cell. Fill `#F4F3EE`, track `#8A877F`, hard edges.
+- Frame: the quadrant latched when the touch started, kept while the arc shows; turning the board does not move it.
+- End cue: when a swipe pushes past either end the arc is cleared for `BRT_END_BLINK_MS` and drawn again, once per arrival at the end. A release during the blink still ends in a drawn, lingering arc.
+- Invalidation: one area per 9 cells, 4 for the whole arc, one for a one-level step. A frame whose arc change has more than one area skips the listening-ring update, as for the volume arc, so any change of either arc in one frame stays within LVGL's 32 areas; a host test enumerates every change in every quadrant.
+- `BRT_ARC_*` values are plain configuration; the table is built at start-up into PSRAM.
+
 ## Screen orientation
 
 The QMI8658 IMU keeps the mascot and bubble upright relative to gravity at any angle. The screen is round, so every angle fits.
 
 - Angle: `atan2` of gravity in the screen plane, from the accelerometer at 50 Hz with a low-pass filter. The whole UI (mascot, bubble, ring) rotates as one group around the screen centre. The volume knob reads touch points in the panel frame and never subtracts the UI angle, so clockwise on the glass is clockwise at every orientation. The brightness swipe is the one gesture that uses the UI angle: it reads travel along the UI's up direction at the quadrant target latched when the touch starts. A LONG_PRESS must start within 150 px of the centre; a touch starting beyond that is an edge touch (see `protocol.md`, Input).
-- All scene content stays within 225 px of the centre, so no angle pushes it off the screen. It also stays at least 2 px inside the volume arc's inner radius (`VOL_ARC_R_IN_PX`, 222 px); a host test checks both bounds against the constants. The arc itself (radius 222 to 230 px) is drawn in panel coordinates.
+- All scene content stays within 225 px of the centre, so no angle pushes it off the screen. It also stays at least 2 px inside the volume arc's inner radius (`VOL_ARC_R_IN_PX`, 222 px); a host test checks both bounds against the constants. Both rim arcs (radius 222 to 230 px) are drawn in panel coordinates.
 - Ignore changes smaller than 3°, and ease towards the new angle with a 150 ms time constant, so a hand-held board does not jitter.
 - Within 5° of 0°, 90°, 180° or 270°, snap to that angle: there the block edges line up with the panel's square pixel grid and stay perfectly sharp. At other angles each block edge gets a one-pixel anti-aliased border.
 - Flat on a desk (in-plane gravity below 0.5 g): keep the last angle.
