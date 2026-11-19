@@ -189,6 +189,9 @@ _Static_assert(SCENE_SIZE_PX % 32 == 0 && (SCENE_SIZE_PX / 32) % 2 == 1, "mathem
 #define ORBIT_ROWS 8 /* plain configuration */
 #define ORBIT_X0_PX -12 /* plain configuration: leftmost lattice column */
 #define ORBIT_Y0_PX -4 /* plain configuration: topmost lattice row */
+#define ORBIT_RECENTRE_X_PX (-(ORBIT_X0_PX + (ORBIT_COLS - 1) * ORBIT_PITCH_PX / 2)) /* derived: moves the lattice mid-point to the scene centre; sticker art only */
+#define ORBIT_RECENTRE_Y_PX (-(ORBIT_Y0_PX + (ORBIT_ROWS - 1) * ORBIT_PITCH_PX / 2)) /* derived, as above */
+_Static_assert((ORBIT_COLS - 1) * ORBIT_PITCH_PX % 2 == 0 && (ORBIT_ROWS - 1) * ORBIT_PITCH_PX % 2 == 0, "the lattice mid-point is a whole pixel");
 
 /* IMU orientation (docs/mascot.md "Screen orientation") */
 #define IMU_I2C_ADDR_PRIMARY 0x6B

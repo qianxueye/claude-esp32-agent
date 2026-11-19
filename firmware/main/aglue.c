@@ -66,6 +66,19 @@ ag_place_t ag_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int 
     return pl;
 }
 
+ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int scene)
+{
+    ag_place_t pl;
+    const int s = p->scale;
+    pl.ox = scene / 2 + gx + ORBIT_RECENTRE_X_PX - p->canvas_w * s / 2 + c->x * s;
+    pl.oy = scene / 2 + gy + ORBIT_RECENTRE_Y_PX - p->canvas_h * s / 2 + c->y * s;
+    pl.x0 = pl.ox;
+    pl.y0 = pl.oy;
+    pl.x1 = pl.ox + c->w * s;
+    pl.y1 = pl.oy + c->h * s;
+    return pl;
+}
+
 void ag_copy(const uint8_t *buf, const ap_clip_t *c, uint8_t scale, const ag_place_t *pl, uint8_t *dst, int dst_stride)
 {
     if (pl->x0 >= pl->x1 || pl->y0 >= pl->y1 || scale < 1) {

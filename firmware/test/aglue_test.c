@@ -92,6 +92,34 @@ static void test_place_at_every_orbit_point(void)
     assert(bob.oy + full.clip[0].h > 320 && bob.y1 == 320);
 }
 
+/* The sticker's canvas centre is the scene centre plus the recentred orbit (x + 2, y - 10), whatever the bubble, and nothing is clipped. */
+static void test_sticker_place(void)
+{
+    _Static_assert(ORBIT_RECENTRE_X_PX == 2 && ORBIT_RECENTRE_Y_PX == -10, "recentred orbit offset");
+    const ap_pack_t big = canvas(512, 512, 1, 116, 116, 280, 280, 198);
+    const ap_pack_t odd = canvas(251, 253, 2, 40, 40, 100, 90, 103);
+    const ap_pack_t *const packs[2] = {&big, &odd};
+    for (int k = 0; k < 2; k++) {
+        const ap_pack_t *p = packs[k];
+        const ap_clip_t *c = &p->clip[0];
+        const int s = p->scale;
+        for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+            int gx, gy;
+            dp_orbit(i, &gx, &gy);
+            const ag_place_t pl = ag_sticker_place(p, c, gx, gy, SCENE);
+            assert(pl.ox - c->x * s + p->canvas_w * s / 2 == SCENE / 2 + gx + 2);
+            assert(pl.oy - c->y * s + p->canvas_h * s / 2 == SCENE / 2 + gy - 10);
+            assert(pl.x0 == pl.ox && pl.y0 == pl.oy && pl.x1 == pl.ox + c->w * s && pl.y1 == pl.oy + c->h * s);
+        }
+    }
+    /* On a scene smaller than the crop the origin is negative and the rectangle is not clipped to it. */
+    const ag_place_t pl = ag_sticker_place(&big, &big.clip[0], -12, -4, 100);
+    assert(pl.ox == 50 - 12 + 2 - 256 + 116 && pl.ox < 0 && pl.x0 == pl.ox && pl.x1 == pl.ox + 280);
+    /* Red proof: the old placement moves the same crop by the bubble shift and the raw lattice. */
+    const ag_place_t old = ag_place(&big, &big.clip[0], -12, -4, BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX, SCENE);
+    assert(old.oy != ag_sticker_place(&big, &big.clip[0], -12, -4, SCENE).oy);
+}
+
 /* Copies into a guarded scene and checks every byte: crop pixels where placed, untouched elsewhere. */
 static void check_copy(const ap_pack_t *p, const ap_clip_t *c, const uint8_t *buf, int gx, int gy)
 {
@@ -380,6 +408,7 @@ int main(void)
     test_scene_stride_suits_the_cache();
     test_log_lines_fit();
     test_place_at_every_orbit_point();
+    test_sticker_place();
     test_copy_clips_to_the_scene();
     test_bring_follows_the_decode_rules();
     test_stage_map();

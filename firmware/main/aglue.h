@@ -36,3 +36,6 @@ typedef struct {
 ag_place_t ag_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int shift, int scene);
 /* Copies the decoded crop into the clipped rows of dst, each index widened to scale x scale pixels. */
 void ag_copy(const uint8_t *buf, const ap_clip_t *c, uint8_t scale, const ag_place_t *pl, uint8_t *dst, int dst_stride);
+
+/* Scene position of the sticker crop's top-left pixel: canvas centre on the scene centre plus the recentred orbit, no bubble shift, not clipped. */
+ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int scene);

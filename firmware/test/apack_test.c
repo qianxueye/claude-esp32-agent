@@ -660,7 +660,7 @@ static double scene_radius(int reach, bool recentre)
     for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
         int gx, gy;
         dp_orbit(i, &gx, &gy);
-        const double cx = recentre ? gx + 2 : gx, cy = recentre ? gy - 10 : gy;
+        const double cx = recentre ? gx + ORBIT_RECENTRE_X_PX : gx, cy = recentre ? gy + ORBIT_RECENTRE_Y_PX : gy;
         for (int deg = 0; deg < 360; deg++) {
             const double a = deg * M_PI / 180.0, r = hypot(cx + reach * cos(a), cy + reach * sin(a));
             worst = r > worst ? r : worst;
