@@ -38,15 +38,15 @@ static void fixture(void)
 
 typedef struct {
     int tenths;
-    uint32_t spans, pixels, pixels_unfused;
+    uint32_t spans, pixels;
 } pin_t;
 
-/* Pinned from rotblit.c as it stands; the bilinear pixels differ between fused and unfused multiply-add, so both are pinned. */
+/* Right angles only: that path uses no trig and integer steps, so the pins hold on any compiler and libm. */
 static const pin_t PINS[] = {
-    {0, 0x4553142Du, 0xBFA2AAEFu, 0xBFA2AAEFu},    {450, 0x947E97B8u, 0x18833890u, 0x3B40D268u},
-    {900, 0x609FD81Du, 0xF93B25F7u, 0xF93B25F7u},  {1234, 0xE09060DBu, 0xFC2D8F84u, 0x2B6C9D27u},
-    {1800, 0x0D952DEDu, 0xBE8A9C67u, 0xBE8A9C67u}, {2700, 0xEA03DF9Du, 0xB6663387u, 0xB6663387u},
-    {3599, 0x5707DC1Du, 0xCE86B296u, 0xF2AAEF4Bu},
+    {0, 0x4553142Du, 0xBFA2AAEFu},
+    {900, 0x609FD81Du, 0xF93B25F7u},
+    {1800, 0x0D952DEDu, 0xBE8A9C67u},
+    {2700, 0xEA03DF9Du, 0xB6663387u},
 };
 
 static void r1(void)
@@ -63,9 +63,9 @@ static void r1(void)
         memset(g_dst, 0, sizeof g_dst);
         rotblit(g_src, S, g_pal, g_dst, OUT, OUT, t, g_draw, g_clear, 0, OUT);
         const uint32_t hp = fnv(2166136261u, g_dst, sizeof g_dst);
-        assert(hs == PINS[i].spans && (hp == PINS[i].pixels || hp == PINS[i].pixels_unfused));
+        assert(hs == PINS[i].spans && hp == PINS[i].pixels);
     }
-    printf("R1: %d angles pinned\n", n);
+    printf("R1: %d right angles pinned\n", n);
 }
 
 #define TOL 1e-3 /* test tolerance: above the double-versus-float span error, far below the inset */
