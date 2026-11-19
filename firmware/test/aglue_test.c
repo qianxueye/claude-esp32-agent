@@ -8,7 +8,6 @@
 #include "motion.h"
 
 #define SCENE SCENE_SIZE_PX
-#define GUARD 64
 #define STEP 4u
 
 static const uint8_t *const GOLDEN_CLIPS[2] = {APACK_GOLDEN_CLIP0, APACK_GOLDEN_CLIP1};
@@ -38,60 +37,6 @@ static ap_pack_t canvas(int cw, int ch, int scale, int x, int y, int w, int h, i
     return p;
 }
 
-/* A wrong rule for the red proof: the pack follows the mascot's bob and scuttle offsets. */
-static ag_place_t place_with_motion(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int shift, int dx, int dy)
-{
-    return ag_place(p, c, gx + dx, gy + dy, shift, SCENE);
-}
-
-/* At every orbit point and bubble step, the canvas centre sits on the mascot centre and a valid crop is never clipped. */
-static bool placed_well(const ap_pack_t *p, int dx, int dy)
-{
-    for (int k = 0; k < p->clip_count; k++) {
-        const ap_clip_t *c = &p->clip[k];
-        for (int pop = 0; pop <= 3; pop++) {
-            const int shift = (BUBBLE_SHIFT_UNITS * pop / 3) * BUBBLE_UNIT_PX;
-            for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
-                int gx, gy;
-                dp_orbit(i, &gx, &gy);
-                const ag_place_t pl = place_with_motion(p, c, gx, gy, shift, dx, dy);
-                const int s = p->scale;
-                /* Clawd's 16 x 10 cell body centre, as draw_mascot places it without dx and dy. */
-                const int mx = SCENE / 2 - 8 * MASCOT_CELL_PX + gx + 8 * MASCOT_CELL_PX;
-                const int my = SCENE / 2 - 5 * MASCOT_CELL_PX + gy + shift + 5 * MASCOT_CELL_PX;
-                if (pl.ox - c->x * s + p->canvas_w * s / 2 != mx || pl.oy - c->y * s + p->canvas_h * s / 2 != my) {
-                    return false;
-                }
-                if (pl.x0 != pl.ox || pl.y0 != pl.oy || pl.x1 != pl.ox + c->w * s || pl.y1 != pl.oy + c->h * s) {
-                    return false;
-                }
-            }
-        }
-    }
-    return true;
-}
-
-static void test_place_at_every_orbit_point(void)
-{
-    const ap_pack_t g = golden();
-    assert(placed_well(&g, 0, 0));
-    /* A 240 px canvas whose crop spans 92 px above and 96 px below the centre; reach is its farthest corner, 154 px. */
-    const int top = 28, h = 188;
-    const ap_pack_t full = canvas(240, 240, 1, 0, top, 240, h, 154);
-    assert(placed_well(&full, 0, 0));
-    const ap_pack_t half = canvas(120, 120, 2, 0, top / 2, 120, h / 2, 77);
-    assert(placed_well(&half, 0, 0));
-    /* Red proof: applying the mascot's one-unit bob moves the canvas off the mascot centre and, under a full bubble at the lowest orbit row, out of the scene. */
-    assert(!placed_well(&g, 0, BUBBLE_UNIT_PX));
-    assert(!placed_well(&full, 0, BUBBLE_UNIT_PX));
-    /* A 320 px scene clips the lowest orbit row under a full bubble; the live scene is larger. */
-    const int low = ORBIT_Y0_PX + (ORBIT_ROWS - 1) * ORBIT_PITCH_PX, sh = BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX;
-    const ag_place_t pl = ag_place(&full, &full.clip[0], 0, low, sh, 320);
-    assert(pl.y1 == 320);
-    const ag_place_t bob = ag_place(&full, &full.clip[0], 0, low + BUBBLE_UNIT_PX, sh, 320);
-    assert(bob.oy + full.clip[0].h > 320 && bob.y1 == 320);
-}
-
 /* The sticker's canvas centre is the scene centre plus the recentred orbit (x + 2, y - 10), whatever the bubble, and nothing is clipped. */
 static void test_sticker_place(void)
 {
@@ -115,9 +60,9 @@ static void test_sticker_place(void)
     /* On a scene smaller than the crop the origin is negative and the rectangle is not clipped to it. */
     const ag_place_t pl = ag_sticker_place(&big, &big.clip[0], -12, -4, 100);
     assert(pl.ox == 50 - 12 + 2 - 256 + 116 && pl.ox < 0 && pl.x0 == pl.ox && pl.x1 == pl.ox + 280);
-    /* Red proof: placing with the bubble shift moves the same crop. */
-    const ag_place_t shifted = ag_place(&big, &big.clip[0], -12, -4, BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX, SCENE);
-    assert(shifted.oy != ag_sticker_place(&big, &big.clip[0], -12, -4, SCENE).oy);
+    /* Red proof: a rule that adds the bubble shift moves the same crop. */
+    const int shifted_oy = SCENE / 2 - 4 + ORBIT_RECENTRE_Y_PX + BUBBLE_SHIFT_UNITS * BUBBLE_UNIT_PX - 256 + 116;
+    assert(shifted_oy != ag_sticker_place(&big, &big.clip[0], -12, -4, SCENE).oy);
 }
 
 /* Bubble content in units (glyphs, dots, spinner) behind the 160, 168 and 120 px widths, and the thought variant of 160. */
@@ -279,49 +224,6 @@ static void test_b4_top_bubble_unchanged(void)
     const ag_top_bubble_t t = ag_top_bubble(40, false, 3, -12, -4, SCENE);
     assert(t.body.w == 160 && t.body.h == 72 && t.cx_u == (SCENE / 2 - 12) / 4 && t.body.x == (t.cx_u - 20) * 4);
     printf("B4: %d cases\n", n);
-}
-
-/* Copies into a guarded scene and checks every byte: crop pixels where placed, untouched elsewhere. */
-static void check_copy(const ap_pack_t *p, const ap_clip_t *c, const uint8_t *buf, int gx, int gy)
-{
-    static uint8_t mem[GUARD + SCENE * SCENE + GUARD];
-    memset(mem, 0xEE, sizeof mem);
-    uint8_t *scene = mem + GUARD;
-    const ag_place_t pl = ag_place(p, c, gx, gy, 0, SCENE);
-    ag_copy(buf, c, p->scale, &pl, scene, SCENE);
-    for (int i = 0; i < GUARD; i++) {
-        assert(mem[i] == 0xEE && mem[GUARD + SCENE * SCENE + i] == 0xEE);
-    }
-    for (int y = 0; y < SCENE; y++) {
-        for (int x = 0; x < SCENE; x++) {
-            const bool in = x >= pl.x0 && x < pl.x1 && y >= pl.y0 && y < pl.y1;
-            const uint8_t want = in ? buf[((y - pl.oy) / p->scale) * c->w + (x - pl.ox) / p->scale] : 0xEE;
-            assert(scene[y * SCENE + x] == want);
-        }
-    }
-}
-
-static void test_copy_clips_to_the_scene(void)
-{
-    const ap_pack_t g = golden();
-    const ap_clip_t *c1 = &g.clip[1];
-    check_copy(&g, c1, APACK_GOLDEN_CLIP1, 0, 0);
-    /* Moved half off each edge: the crop is clipped, nothing past the scene is written. */
-    const int far = SCENE / 2 + 2;
-    check_copy(&g, c1, APACK_GOLDEN_CLIP1, -far, -far);
-    check_copy(&g, c1, APACK_GOLDEN_CLIP1, far, far);
-    ag_place_t pl = ag_place(&g, c1, -far, 0, 0, SCENE);
-    assert(pl.x0 == 0 && pl.ox < 0 && pl.x1 == pl.ox + c1->w);
-    pl = ag_place(&g, c1, 4 * SCENE, 0, 0, SCENE);
-    assert(pl.x0 >= pl.x1);
-    check_copy(&g, c1, APACK_GOLDEN_CLIP1, 4 * SCENE, 0);
-    /* Scale 2 widens each index to a 2 x 2 block, also when the clip edge cuts a block in half. */
-    ap_pack_t two = canvas(8, 8, 2, 1, 2, 3, 2, 4);
-    static const uint8_t px[6] = {1, 2, 3, 4, 5, 6};
-    check_copy(&two, &two.clip[0], px, 0, 0);
-    check_copy(&two, &two.clip[0], px, -SCENE / 2 + 5, 0);
-    pl = ag_place(&two, &two.clip[0], -SCENE / 2 + 5, 0, 0, SCENE);
-    assert(pl.ox == -1 && pl.x0 == 0 && pl.x1 == 5);
 }
 
 static void test_bring_follows_the_decode_rules(void)
@@ -568,13 +470,11 @@ int main(void)
 {
     test_scene_stride_suits_the_cache();
     test_log_lines_fit();
-    test_place_at_every_orbit_point();
     test_sticker_place();
     test_b1_side_bubble_table();
     test_b2_left_mirrors_right();
     test_b3_bub_y_snap_and_edge();
     test_b4_top_bubble_unchanged();
-    test_copy_clips_to_the_scene();
     test_bring_follows_the_decode_rules();
     test_stage_map();
     test_imu_bits();

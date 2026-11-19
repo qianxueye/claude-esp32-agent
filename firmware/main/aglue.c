@@ -45,29 +45,6 @@ bool ag_bring(const ap_pack_t *p, int clip, int frame, uint8_t *buf, ag_held_t *
     return true;
 }
 
-static int lo(int v, int m)
-{
-    return v < m ? m : v;
-}
-
-static int hi(int v, int m)
-{
-    return v > m ? m : v;
-}
-
-ag_place_t ag_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int shift, int scene)
-{
-    ag_place_t pl;
-    const int s = p->scale;
-    pl.ox = scene / 2 + gx - p->canvas_w * s / 2 + c->x * s;
-    pl.oy = scene / 2 + gy + shift - p->canvas_h * s / 2 + c->y * s;
-    pl.x0 = lo(pl.ox, 0);
-    pl.y0 = lo(pl.oy, 0);
-    pl.x1 = hi(pl.ox + c->w * s, scene);
-    pl.y1 = hi(pl.oy + c->h * s, scene);
-    return pl;
-}
-
 ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int scene)
 {
     ag_place_t pl;
@@ -79,24 +56,6 @@ ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int 
     pl.x1 = pl.ox + c->w * s;
     pl.y1 = pl.oy + c->h * s;
     return pl;
-}
-
-void ag_copy(const uint8_t *buf, const ap_clip_t *c, uint8_t scale, const ag_place_t *pl, uint8_t *dst, int dst_stride)
-{
-    if (pl->x0 >= pl->x1 || pl->y0 >= pl->y1 || scale < 1) {
-        return;
-    }
-    for (int y = pl->y0; y < pl->y1; y++) {
-        const uint8_t *row = buf + (size_t)((y - pl->oy) / scale) * c->w;
-        uint8_t *out = dst + (size_t)y * dst_stride;
-        if (scale == 1) {
-            memcpy(out + pl->x0, row + (pl->x0 - pl->ox), (size_t)(pl->x1 - pl->x0));
-            continue;
-        }
-        for (int x = pl->x0; x < pl->x1; x++) {
-            out[x] = row[(x - pl->ox) / scale];
-        }
-    }
 }
 
 #define U BUBBLE_UNIT_PX

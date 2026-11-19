@@ -16,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "core/lv_refr_private.h"
+#include "acomp.h"
 #include "aglue.h"
 #include "arcvis.h"
 #include "bright.h"
@@ -39,6 +40,7 @@ static const char *TAG = "ui";
 #define SCENE SCENE_SIZE_PX
 #define TEXT_ROWS_PX 48
 #define CANVAS_OFF ((LCD_SIZE - SCENE_OUT_PX) / 2)
+_Static_assert(CANVAS_OFF == 0, "the flush hook and the snapshot compose in panel coordinates");
 
 typedef struct {
     int state, dx, dy, gx, gy, shift;
@@ -85,7 +87,7 @@ static int s_inval_n;
 static SemaphoreHandle_t s_te_sem;
 static volatile uint32_t s_te_edges;
 static uint8_t *s_model;
-static uint16_t s_pal[PAL_N];
+static uint16_t s_pal[PAL_N], s_pal_be[PAL_N]; /* the swapped copy is what the flush hook writes */
 static lv_draw_buf_t *s_out;
 static uint8_t *s_mask[ST_COUNT];
 static irect_t s_bb, s_prev_bb;
@@ -125,6 +127,10 @@ static volatile uint32_t s_dec_sum, s_dec_max, s_work_sum, s_work_max, s_cut_las
 static int64_t s_work_t0, s_work_tick_us, s_refr_t0_us, s_cut_t0;
 static int s_work_stage; /* 1: frame decoded, 2: presented, waiting for its flush */
 static bool s_cut_pending;
+static acomp_art_t s_art;
+static acomp_state_t s_ac;
+static bool s_art_ready, s_art_wanted_last;
+static int s_tick_bands;
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -332,7 +338,7 @@ static void anim_reset_held(void)
     s_pal_clip = -1;
 }
 
-/* Decodes the frame if the buffer holds another, loads the clip's palette on a change, and copies the crop into the scene. */
+/* Decodes the frame if the buffer holds another, loads the clip's palette on a change, and describes the art for present(). */
 static void draw_anim(const scene_t *s)
 {
     const ap_pack_t *p = s_ap.pack;
@@ -354,14 +360,19 @@ static void draw_anim(const scene_t *s)
     if (s_pal_clip != s->anim_clip) {
         for (int i = 0; i < c->colors; i++) {
             s_pal[PAL_PACK_FIRST + i] = (uint16_t)(c->palette[2 * i] | (c->palette[2 * i + 1] << 8));
+            s_pal_be[PAL_PACK_FIRST + i] = __builtin_bswap16(s_pal[PAL_PACK_FIRST + i]);
         }
         s_pal_clip = s->anim_clip;
     }
-    const ag_place_t pl = ag_place(p, c, s->gx, s->gy, s->shift, SCENE);
-    if (pl.x0 < pl.x1 && pl.y0 < pl.y1) {
-        ag_copy(s_abuf, c, p->scale, &pl, s_model, SCENE);
-        grow_bb(pl.x0, pl.y0, pl.x1, pl.y1);
-    }
+    const ag_place_t pl = ag_sticker_place(p, c, s->gx, s->gy, SCENE);
+    s_art = (acomp_art_t){s_abuf, c->w, c->h, c->w, p->scale, pl.ox, pl.oy, 0, SCENE, SCENE_OUT_PX};
+    s_art_ready = true;
+}
+
+/* Whether the flush hook and the snapshot draw the art now. */
+static bool art_wanted(void)
+{
+    return s_art_ready && s_fill < 0 && s_panel_on;
 }
 
 static void compute_scene(scene_t *s, uint32_t now)
@@ -385,6 +396,7 @@ static void compute_scene(scene_t *s, uint32_t now)
     s->anim_clip = s_anim.clip;
     s->anim_frame = s_anim.frame;
     if (s_anim.clip != APLAY_CLAWD) {
+        s->shift = 0;
         return;
     }
     switch (s_state) {
@@ -463,6 +475,7 @@ static void redraw(const scene_t *s)
         fill(s_prev_bb.x0, s_prev_bb.y0, s_prev_bb.x1 - s_prev_bb.x0, s_prev_bb.y1 - s_prev_bb.y0, PAL_BG);
     }
     s_bb = (irect_t){SCENE, SCENE, 0, 0};
+    s_art_ready = false;
     if (s->anim_clip == APLAY_CLAWD) {
         draw_mascot(s);
     } else if (s->anim_clip >= 0) {
@@ -476,13 +489,21 @@ static void redraw(const scene_t *s)
 }
 
 typedef struct {
-    int tenths, y0, y1;
+    bool patch;               /* a flush-chunk patch, else a scene blit */
+    int tenths, y0, y1;       /* blit rows, or patch rows */
+    uint16_t *dst;            /* patch: pixel (x0, y0) of the chunk */
+    int stride, x0, x1;       /* patch: chunk width and columns */
 } blit_job_t;
 
 static blit_job_t s_job;
 static TaskHandle_t s_blit_task;
 static SemaphoreHandle_t s_blit_done;
 static xspan_t s_span_new[SCENE_OUT_PX], s_span_prev[SCENE_OUT_PX], s_span_clear[SCENE_OUT_PX];
+
+static void run_patch(const blit_job_t *j)
+{
+    acomp_rows(&s_art, s_ac.art, s_pal_be, j->dst, j->stride, j->x0, j->y0, j->x1, j->y1);
+}
 
 static void run_blit(int tenths, int y0, int y1)
 {
@@ -494,7 +515,11 @@ static void blit_worker(void *arg)
 {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        run_blit(s_job.tenths, s_job.y0, s_job.y1);
+        if (s_job.patch) {
+            run_patch(&s_job);
+        } else {
+            run_blit(s_job.tenths, s_job.y0, s_job.y1);
+        }
         xSemaphoreGive(s_blit_done);
     }
 }
@@ -525,27 +550,29 @@ static void present(int tenths)
     }
     if (ymin < ymax) {
         int mid = (ymin + ymax) / 2;
-        s_job = (blit_job_t){tenths, mid, ymax};
+        s_job = (blit_job_t){.tenths = tenths, .y0 = mid, .y1 = ymax};
         xTaskNotifyGive(s_blit_task);
         run_blit(tenths, ymin, mid);
         xSemaphoreTake(s_blit_done, portMAX_DELAY);
     }
     uint32_t px = 0;
     s_inval_n = 0;
+    s_art.tenths = tenths;
+    s_art_wanted_last = art_wanted();
+    s_tick_bands = acomp_step(&s_ac, s_art_wanted_last, &s_art, s_span_clear);
+    lv_display_t *disp = lv_obj_get_display(s_canvas);
     const int shrink = s_bench == UI_BENCH_SHRINK ? 8 : 0;
-    for (int y0 = ymin; y0 < ymax; y0 += DIRTY_BAND_ROWS) {
-        int y1 = y0 + DIRTY_BAND_ROWS < ymax ? y0 + DIRTY_BAND_ROWS : ymax, xa = SCENE_OUT_PX, xb = 0;
-        for (int y = y0; y < y1; y++) {
-            if (!span_empty(s_span_clear[y])) {
-                xa = s_span_clear[y].x0 < xa ? s_span_clear[y].x0 : xa;
-                xb = s_span_clear[y].x1 > xb ? s_span_clear[y].x1 : xb;
-            }
-        }
-        if (xa < xb) {
-            lv_area_t inv = {xa + shrink + CANVAS_OFF, y0 + CANVAS_OFF, xb - 1 - shrink + CANVAS_OFF, y1 - 1 + CANVAS_OFF};
-            lv_inv_area(lv_obj_get_display(s_canvas), &inv);
-            px += (uint32_t)((xb - xa) * (y1 - y0));
-        }
+    const bool overflow = s_tick_bands > ACOMP_MAX_BANDS;
+    if (overflow) {
+        lv_area_t all = {CANVAS_OFF, CANVAS_OFF, CANVAS_OFF + SCENE_OUT_PX - 1, CANVAS_OFF + SCENE_OUT_PX - 1};
+        lv_inv_area(disp, &all);
+        px = SCENE_OUT_PX * SCENE_OUT_PX;
+    }
+    for (int i = 0; i < s_tick_bands && !overflow; i++) {
+        const irect_t b = s_ac.bands[i];
+        lv_area_t inv = {b.x0 + shrink + CANVAS_OFF, b.y0 + CANVAS_OFF, b.x1 - 1 - shrink + CANVAS_OFF, b.y1 - 1 + CANVAS_OFF};
+        lv_inv_area(disp, &inv);
+        px += (uint32_t)((b.x1 - b.x0) * (b.y1 - b.y0));
     }
     const int off = CANVAS_OFF;
     s_cover_frames++;
@@ -575,6 +602,38 @@ static void present(int tenths)
     s_blit_us += (uint32_t)(esp_timer_get_time() - t0);
     s_blit_n++;
     s_blit_px += px;
+}
+
+static bool bench_spins(void)
+{
+    return s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK || s_bench == UI_BENCH_SPIN_SERIAL;
+}
+
+/* Composes the art into a packed, byte-swapped flush chunk, the rows split over both cores unless the bench forces one. */
+static void patch_chunk(uint16_t *chunk, int x0, int y0, int x1, int y1)
+{
+    int ya, mid, yb;
+    if (!acomp_split(s_ac.art, y0, y1, &ya, &mid, &yb)) {
+        return;
+    }
+    const int w = x1 - x0;
+    uint16_t *top = chunk + (size_t)(ya - y0) * w;
+    if (s_bench == UI_BENCH_SPIN_SERIAL || yb - ya < 2) {
+        run_patch(&(blit_job_t){.y0 = ya, .y1 = yb, .dst = top, .stride = w, .x0 = x0, .x1 = x1});
+        return;
+    }
+    s_job = (blit_job_t){.patch = true, .y0 = mid, .y1 = yb, .dst = top + (size_t)(mid - ya) * w, .stride = w, .x0 = x0, .x1 = x1};
+    xTaskNotifyGive(s_blit_task);
+    run_patch(&(blit_job_t){.y0 = ya, .y1 = mid, .dst = top, .stride = w, .x0 = x0, .x1 = x1});
+    xSemaphoreTake(s_blit_done, portMAX_DELAY);
+}
+
+static esp_err_t flush_hook(lv_display_t *disp, esp_lcd_panel_handle_t panel, int x0, int y0, int x1, int y1, const void *map, void *ctx)
+{
+    if (art_wanted()) {
+        patch_chunk((uint16_t *)map, x0 - CANVAS_OFF, y0 - CANVAS_OFF, x1 - CANVAS_OFF, y1 - CANVAS_OFF);
+    }
+    return esp_lcd_panel_draw_bitmap(panel, x0, y0, x1, y1, map);
 }
 
 static void apply_rotation(float deg)
@@ -1022,23 +1081,27 @@ static void tick_cb(lv_timer_t *t)
     anim_tick(now);
     scene_t sc;
     compute_scene(&sc, now);
-    if (memcmp(&sc, &s_drawn, sizeof(sc)) != 0 || s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK || s_bench == UI_BENCH_REDRAW) {
+    if (memcmp(&sc, &s_drawn, sizeof(sc)) != 0 || bench_spins() || s_bench == UI_BENCH_REDRAW) {
         s_drawn = sc;
         redraw(&sc);
+    }
+    s_tick_bands = 0;
+    if (art_wanted() != s_art_wanted_last) {
+        s_model_dirty = true;
     }
     if (s_bench == UI_BENCH_CANVAS) {
         lv_obj_invalidate(s_canvas);
     } else if (s_bench == UI_BENCH_SCREEN) {
         lv_obj_invalidate(lv_screen_active());
     }
-    if (arc_update(now) <= VOLARC_RING_MAX_AREAS) {
-        update_ring();
-    }
-    if ((s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK)) {
+    if (bench_spins()) {
         s_bench_angle = fmodf(s_bench_angle + 0.18f * (float)dt, 360.0f);
         apply_rotation(s_bench_angle);
     } else {
         apply_rotation(orient_step(dt, s_panel_on));
+    }
+    if (volarc_ring_ok(arc_update(now), s_tick_bands)) {
+        update_ring();
     }
     if (s_work_stage == 1) {
         s_work_tick_us = esp_timer_get_time() - s_work_t0;
@@ -1122,6 +1185,8 @@ static lv_display_t *display_start(void)
     };
     lv_display_t *disp = esp_lv_adapter_register_display(&dcfg);
     ESP_ERROR_CHECK(disp ? ESP_OK : ESP_FAIL);
+    const esp_lv_adapter_draw_bitmap_callbacks_t hook = {.custom_draw_bitmap = flush_hook};
+    ESP_ERROR_CHECK(esp_lv_adapter_set_draw_bitmap_callbacks(disp, &hook, NULL));
     te_init();
     lv_display_add_event_cb(disp, round_area_cb, LV_EVENT_INVALIDATE_AREA, NULL);
     esp_lcd_touch_handle_t tp;
@@ -1248,6 +1313,10 @@ lv_draw_buf_t *ui_snapshot_take(void)
 {
     bsp_display_lock(-1);
     lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
+    if (buf && art_wanted()) {
+        const int w = buf->header.w < ACOMP_ROWS ? buf->header.w : ACOMP_ROWS, h = buf->header.h < ACOMP_ROWS ? buf->header.h : ACOMP_ROWS;
+        acomp_rows(&s_art, s_ac.art, s_pal, (uint16_t *)buf->data, buf->header.stride / 2, 0, 0, w, h);
+    }
     bsp_display_unlock();
     return buf;
 }

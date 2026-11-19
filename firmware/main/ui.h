@@ -18,7 +18,7 @@ void ui_start(void);
 void ui_set_state(dev_state_t s);
 void ui_set_angle_override(bool on, float deg);
 /* Test aid for frame-rate measurement; 0 off, 1 spin, 2 redraw, 3 invalidate canvas, 4 invalidate screen, 5 spin with the flushed area deliberately shrunk. */
-enum { UI_BENCH_OFF, UI_BENCH_SPIN, UI_BENCH_REDRAW, UI_BENCH_CANVAS, UI_BENCH_SCREEN, UI_BENCH_SHRINK };
+enum { UI_BENCH_OFF, UI_BENCH_SPIN, UI_BENCH_REDRAW, UI_BENCH_CANVAS, UI_BENCH_SCREEN, UI_BENCH_SHRINK, UI_BENCH_SPIN_SERIAL };
 void ui_set_bench(int mode);
 /* Posts an activity cause from any task; the UI timer applies it. */
 void ui_wake(dp_cause_t cause);

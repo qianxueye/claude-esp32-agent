@@ -32,11 +32,6 @@ typedef struct {
     int x0, y0, x1, y1; /* destination clipped to the scene, x1 and y1 exclusive */
 } ag_place_t;
 
-/* Puts the canvas centre on the mascot centre, the scene centre moved by orbit and bubble shift; the mascot's own motion is not applied. */
-ag_place_t ag_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int shift, int scene);
-/* Copies the decoded crop into the clipped rows of dst, each index widened to scale x scale pixels. */
-void ag_copy(const uint8_t *buf, const ap_clip_t *c, uint8_t scale, const ag_place_t *pl, uint8_t *dst, int dst_stride);
-
 /* Scene position of the sticker crop's top-left pixel: canvas centre on the scene centre plus the recentred orbit, no bubble shift, not clipped. */
 ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int scene);
 
