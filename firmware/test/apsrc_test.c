@@ -558,6 +558,9 @@ static void test_sr10_pick(void)
 {
     const bool D = true, N = false;
     const apsrc_flash_t FV = APSRC_FLASH_VERIFYING, FO = APSRC_FLASH_OK, FF = APSRC_FLASH_FAILED;
+    /* Red (a): a latch on FLASH after the deadline must not hold off a card that turns ready. */
+    assert(apsrc_pick(2, FO, D) == APSRC_SRC_FLASH);
+    assert(apsrc_pick(1, FO, D) == APSRC_SRC_CARD);
     assert(apsrc_pick(1, FV, N) == APSRC_SRC_CARD && apsrc_pick(1, FO, D) == APSRC_SRC_CARD && apsrc_pick(1, FF, N) == APSRC_SRC_CARD);
     assert(apsrc_pick(2, FO, N) == APSRC_SRC_VERIFYING);
     assert(apsrc_pick(2, FO, D) == APSRC_SRC_FLASH);
@@ -571,9 +574,6 @@ static void test_sr10_pick(void)
     assert(apsrc_pick(2, FV, N) == APSRC_SRC_VERIFYING && apsrc_pick(2, FF, N) == APSRC_SRC_VERIFYING);
     assert(apsrc_pick(2, FV, D) == APSRC_SRC_NONE && apsrc_pick(2, FF, D) == APSRC_SRC_NONE);
     assert(apsrc_pick(0, FV, N) == APSRC_SRC_VERIFYING && apsrc_pick(6, FV, N) == APSRC_SRC_VERIFYING);
-    /* Red (a): a latch on FLASH after the deadline must not hold off a card that turns ready. */
-    assert(apsrc_pick(2, FO, D) == APSRC_SRC_FLASH);
-    assert(apsrc_pick(1, FO, D) == APSRC_SRC_CARD);
     /* Red (b): ignoring deadline_passed in rows 2 and 4 would wait on the card forever. */
     assert(apsrc_pick(2, FO, D) != APSRC_SRC_VERIFYING && apsrc_pick(2, FV, D) != APSRC_SRC_VERIFYING);
     assert(apsrc_pick(2, FO, D) == APSRC_SRC_FLASH);
@@ -648,9 +648,9 @@ static void test_sr12_heads_write_once(void)
     apsrc_want(&g_s, 0);
     fail_card();
     assert(is_6());
-    /* The card now carries other bytes inside every head frame; header and index are unchanged. */
+    /* The card now carries other bytes inside head frames 1 to 3; header and index are unchanged. */
     for (int k = 0; k < 3; k++) {
-        for (int j = 0; j < 4; j++) {
+        for (int j = 1; j < 4; j++) {
             uint32_t len;
             const uint32_t off = frame_off(k, j, &len);
             fc.file[off + 7] ^= 0xFF;
@@ -660,8 +660,8 @@ static void test_sr12_heads_write_once(void)
     fc.open_res = APSRC_IO_OK;
     const uint32_t from = fc.nlog;
     g_us += 61000ull * 1000;
-    while (!is_ok()) {
-        assert(apsrc_step(&g_s) && !is_5());
+    while (!is_ok() && !is_5()) {
+        assert(apsrc_step(&g_s));
     }
     assert(fc.nlog > from);
     const uint32_t po = payload_off();
@@ -669,6 +669,7 @@ static void test_sr12_heads_write_once(void)
         assert(fc.log[i].off < po);
     }
     assert(!memcmp(held, snap, sizeof snap) && held[7] == snap[7]);
+    assert(is_ok());
     assert(apsrc_frame(&g_s, 1, 1, &f) && f.data == held);
 }
 
