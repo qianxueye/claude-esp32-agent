@@ -395,6 +395,14 @@ static void test_s16_pick_table(void)
         life_slot(&l, u, vs_save_pick);
     }
     assert(l.attempts >= 4 && l.min_gap >= VOL_SAVE_MIN_MS && !vs_needs_save(&l.key[0]) && !vs_needs_save(&l.key[1]));
+    /* Writing every key the peek found due, without the pick, writes twice inside the gap: the red proof. */
+    volst_t wrong[2];
+    loaded(&wrong[0], 45);
+    brt_loaded(&wrong[1], VS_LOAD_FOUND, 49);
+    vs_host_set(&wrong[0], (const uint8_t[]){50, VOL_MODE_PERSIST}, 2);
+    vs_host_set(&wrong[1], (const uint8_t[]){64, VOL_MODE_PERSIST}, 2);
+    bool due[2] = {vs_save_due(&wrong[0], 100000, 0, true), vs_save_due(&wrong[1], 100000, 0, true)};
+    assert(due[0] && due[1] && vs_save_pick(due[0], due[1], VS_PICK_NONE) == VS_PICK_A);
 }
 
 static void test_s17_failed_attempt_rotates(void)

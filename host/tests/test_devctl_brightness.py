@@ -193,11 +193,13 @@ def test_free_passes_with_armed_swipes():
     assert ok and lines[-1] == "swipecheck free PASS"
 
 
-def test_swipecheck_final_sample_catches_a_late_arm(fast, capsys):
+def test_swipecheck_final_sample_catches_a_late_arm(monkeypatch, capsys):
     """An arm after the last bright line inside the window shows in the final line; the pin is released after it."""
-    link = TimedLink([(0.0, bright_line(49)), (0.03, bright_line(49)), (0.06, bright_line(49, arms=3, slides=5)), (0.25, bright_line(49, arms=4, slides=5))])
+    monkeypatch.setattr(devctl, "SWIPE_FINAL_GUARD_S", 0.2)
+    monkeypatch.setattr(devctl, "BRIGHT_WAIT_S", 1.0)
+    link = TimedLink([(0.0, bright_line(49)), (0.1, bright_line(49)), (0.25, bright_line(49, arms=3, slides=5)), (0.6, bright_line(49, arms=4, slides=5))])
     with pytest.raises(SystemExit) as e:
-        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.05, label="grip"))
+        devctl.cmd_swipecheck(link, SimpleNamespace(seconds=0.2, label="grip"))
     out = capsys.readouterr().out
     assert e.value.code == 1 and "arms +1" in out and "swipecheck grip FAIL" in out
     assert link.sent[0] == (devctl.T_DEBUG, b'{"disp_force":0}') and link.sent[-1] == (devctl.T_DEBUG, b'{"disp_force":null}')

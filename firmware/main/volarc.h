@@ -6,7 +6,7 @@
 
 #define VOLARC_CAP (((VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX) * 26) / 10 + 128)
 #define VOLARC_MAX_AREAS 10 /* one area per VOL_ARC_CHUNK_THR percent of the whole arc */
-#define VOLARC_RING_MAX_AREAS 1 /* the listening ring redraws only in a frame whose arc change has at most this many areas */
+#define VOLARC_RING_MAX_AREAS 1 /* mathematical model: LVGL's 32 areas less the scene's 10 and the ring's 21; the ring redraws only when the arc change has at most this many */
 
 typedef struct {
     uint32_t *e; /* caller storage, VOLARC_CAP entries */

@@ -47,8 +47,8 @@ const char *vk_cls_name(int cls);
 const char *vk_why_name(int why);
 
 #define VK_SWIPE_LINE_FMT "swipe: end cls=%s q=%d why=%s arm=%d b0=%d b=%d dx=%d dy=%d up=%.0f pk=%.0f lat=%.0f arm_ms=%d r1=%.0f rev=%d gap=%u stp=%.0f ku=%.0f kl=%.0f dur=%u"
-#define VK_REV_LOG_MAX 999
-#define VK_MS_LOG_MAX 999999u
+#define VK_REV_LOG_MAX 999 /* plain configuration: log cap on rev */
+#define VK_MS_LOG_MAX 999999u /* plain configuration: log cap on gap and dur, about 17 minutes */
 /* Formats the swipe line of a touch that ended at now; b0 and b are percent or -1. rev, gap and dur are capped at the *_LOG_MAX
    values so the line fits LOG_LINE_MAX_BYTES with its log prefix, checked by brtswipe_test. */
 int vk_swipe_line(char *out, size_t cap, const volknob_t *k, int b0, int b, uint32_t now);
