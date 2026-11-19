@@ -528,10 +528,28 @@ static int seg_areas(const volarc_t *a, int quad, int lo, int hi, int chunk, int
     return n;
 }
 
-/* Areas of one frame as ui.c spends them: the arc, the scene's 10, and the ring's 21 only when the arc has at most VOLARC_RING_MAX_AREAS. */
-static int frame_total(int arc)
+/* Areas of one frame as ui.c spends them: the arc, the scene's bands, and the ring's 21 only when volarc_ring_ok. */
+static int frame_total(int arc, int bands)
 {
-    return arc + 10 + (arc <= VOLARC_RING_MAX_AREAS ? 21 : 0);
+    return arc + bands + (volarc_ring_ok(arc, bands) ? VOLARC_RING_AREAS : 0);
+}
+
+/* A6 and A12: arc + bands + ring stays within LVGL's 32 areas for every band count and arc area count; the band condition is what keeps it so. */
+static void test_ring_band_budget(void)
+{
+    int worst = 0, wrong = 0;
+    for (int bands = 0; bands <= 12; bands++) {
+        for (int arc = 0; arc <= 20; arc++) {
+            const int t = frame_total(arc, bands);
+            worst = t > worst ? t : worst;
+            const int no_band = arc + bands + (arc <= VOLARC_RING_MAX_AREAS ? VOLARC_RING_AREAS : 0);
+            wrong = no_band > wrong ? no_band : wrong;
+        }
+    }
+    printf("ring budget: bands 0..12, arc 0..20: at most %d of 32; without the band condition %d\n", worst, wrong);
+    assert(worst <= 32 && VOLARC_RING_MAX_BANDS == 10);
+    assert(wrong == 34);
+    assert(volarc_ring_ok(1, 10) && !volarc_ring_ok(1, 11) && !volarc_ring_ok(2, 10) && volarc_ring_ok(0, 0));
 }
 
 static void test_a6_segment_budget(void)
@@ -541,7 +559,7 @@ static void test_a6_segment_budget(void)
     int px, step_px = 0, worst = 0;
     int whole = seg_areas(&g_seg, 0, 0, BRT_STEPS + 1, BRT_ARC_CHUNK_CELLS, &px);
     printf("brightness arc: whole %d areas %d px", whole, px);
-    assert(whole <= 4 && frame_total(whole) <= 32);
+    assert(whole <= 4 && frame_total(whole, 10) <= 32);
     for (int q = 0; q < 4; q++) {
         assert(seg_areas(&g_seg, q, 0, BRT_STEPS + 1, BRT_ARC_CHUNK_CELLS, &px) == whole);
         for (int bi = 0; bi < BRT_STEPS; bi++) {
@@ -554,7 +572,7 @@ static void test_a6_segment_budget(void)
             for (int b = 0; b <= BRT_STEPS; b++) {
                 int lo, hi;
                 volarc_seg_change_range(a, b, &lo, &hi);
-                int t = frame_total(seg_areas(&g_seg, q, lo, hi, BRT_ARC_CHUNK_CELLS, &px));
+                int t = frame_total(seg_areas(&g_seg, q, lo, hi, BRT_ARC_CHUNK_CELLS, &px), 10);
                 worst = t > worst ? t : worst;
             }
         }
@@ -562,7 +580,7 @@ static void test_a6_segment_budget(void)
     int vol_whole = frame_areas(0, 0, 100, &px);
     int takeover = vol_whole + whole;
     printf("; 1 step 1 area, at most %d px; any step at most %d of 32; takeover %d (+10 scene = %d of 32)\n", step_px, worst, takeover, takeover + 10);
-    assert(worst <= 32 && frame_total(takeover) <= 32 && takeover <= 22);
+    assert(worst <= 32 && frame_total(takeover, 10) <= 32 && takeover <= 22);
     /* One area per cell breaks the takeover sum: the red proof. */
     assert(vol_whole + seg_areas(&g_seg, 0, 0, BRT_STEPS + 1, 1, &px) > 22);
 }
@@ -577,7 +595,7 @@ static void test_volume_multi_step_budget(void)
             for (int b = a + 1; b <= 100; b++) {
                 int lo, hi;
                 volarc_change_range(a, b, &lo, &hi);
-                int t = frame_total(frame_areas(q, lo, hi, &px));
+                int t = frame_total(frame_areas(q, lo, hi, &px), 10);
                 worst = t > worst ? t : worst;
             }
         }
@@ -1128,8 +1146,8 @@ static int g_worst_skip, g_worst_ring, g_worst_total, g_worst_wrong, g_frames;
 static void check_frame(const frame_t *f)
 {
     g_frames++;
-    bool ring = f->arc <= VOLARC_RING_MAX_AREAS;
-    int total = f->arc + 10 + (ring ? 21 : 0);
+    bool ring = volarc_ring_ok(f->arc, 10);
+    int total = frame_total(f->arc, 10);
     if (ring) {
         g_worst_ring = f->arc > g_worst_ring ? f->arc : g_worst_ring;
     } else {
@@ -1559,6 +1577,7 @@ int main(void)
     test_a2_scene_clear_of_arc();
     test_a2s_sticker_scene_clear_of_arc();
     test_a2r_listening_clear_of_arc();
+    test_ring_band_budget();
     test_area_budget();
     test_class();
     test_linger();
