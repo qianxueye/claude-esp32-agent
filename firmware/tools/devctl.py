@@ -44,7 +44,9 @@ GATE_VOLUME_MAX = 30  # Owner rule: speech volume during a gate run
 GATE_VERIFY_MS_MAX = 1000  # gate G7, plain configuration, placeholder
 GATE_HEAP_DROP_MAX = 2048  # gate G5, plain configuration, placeholder until the TLS budget is known
 GATE_HEAP_LARGEST_MIN = 31744  # gate G5, plain configuration, placeholder
-VOLUME_SAVE_WAIT_S = 12.0  # plain configuration: the 5 s write gap plus amplifier off and two 2 s log periods
+VOL_SAVE_SETTLE_MS = 7000  # mathematical model: the board's 5 s write gap plus one 2 s log period without a save
+VOLUME_SAVE_WAIT_S = 18.0  # mathematical model: a pending save within 5 s, the next log line within 2 s, then the settle span, plus 4 s margin
+GATE_SAMPLE_WAIT_S = 6.0  # plain configuration: three 2 s log periods for one anim sample
 
 
 def crc16(data, crc=0xFFFF):
@@ -728,10 +730,8 @@ def anim_report(a, b, sa, sb):
     return lines, failed
 
 
-def wait_sample(link, timeout, after=None, seen=None):
-    """Return (anim sample, latest stats dict) for the first complete sample arriving after the host time 'after', or (None, stats).
-
-    Knob lines met on the way leave their save count in seen["saves"]."""
+def wait_sample(link, timeout, after=None):
+    """Return (anim sample, latest stats dict) for the first complete sample arriving after the host time 'after', or (None, stats)."""
     end = time.monotonic() + timeout
     sampler, stats, ping = AnimSampler(), None, Keepalive(link)
     while time.monotonic() < end:
@@ -739,9 +739,6 @@ def wait_sample(link, timeout, after=None, seen=None):
         for t, p in link.poll():
             if t != T_LOG:
                 continue
-            k = knob_line(p)
-            if k and seen is not None:
-                seen["saves"] = k[1]
             stats = parse_stats(p) or stats
             s = sampler.feed(p)
             if s and (after is None or time.monotonic() > after) and stats is not None:
@@ -775,19 +772,19 @@ def knob_line(p):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def gate_run(link, args, seen):
+def gate_run(link, args):
     """The measured part of gate-anim; returns True when a judged rule failed or a step could not run."""
     link.send(T_SET_STATE, bytes([STATES["speaking"]]))
     link.send(T_SET_VOLUME, bytes([args.volume, 1]))
     if link.wait_for(T_VOLUME, 2.0, show=False, pred=lambda p: p[:1] == bytes([args.volume])) is None:
         print("gate-anim: the board did not confirm volume %d; not streaming" % args.volume)
         return True
-    a, sa = wait_sample(link, 6.0, seen=seen)
+    a, sa = wait_sample(link, GATE_SAMPLE_WAIT_S)
     if a is None:
         print("gate-anim: no anim and stats lines before the run")
         return True
     stream_pcm(link, args.wav)
-    b, sb = wait_sample(link, 6.0, after=time.monotonic(), seen=seen)
+    b, sb = wait_sample(link, GATE_SAMPLE_WAIT_S, after=time.monotonic())
     if b is None:
         print("gate-anim: no anim and stats lines after the run")
         return True
@@ -804,39 +801,40 @@ def cmd_gate_anim(link, args):
     if not isinstance(old, int):
         print("gate-anim: no vol in HELLO; nothing changed")
         sys.exit(1)
-    seen = {"saves": None}
+    stored = False
     try:
-        failed = gate_run(link, args, seen)
+        failed = gate_run(link, args)
     finally:
-        restore_volume(link, old, h.get("vol_set"), seen)
-    if failed:
+        stored = restore_volume(link, old, h.get("vol_set"))
+    if failed or not stored:
         sys.exit(1)
 
 
-def restore_volume(link, old, was_set, seen):
-    """Persist the volume read from HELLO, then wait, bounded, for a knob line proving a save after it.
+def restore_volume(link, old, was_set):
+    """Persist the volume read from HELLO; True once knob lines at that volume show no save for VOL_SAVE_SETTLE_MS of board time.
 
-    Saves are at least 5 s apart and only the gate's own set was pending, so two saves past the last count seen,
-    or one past the first count seen afterwards, include a save made after the restore."""
-    for t, p in link.poll():
-        k = knob_line(p) if t == T_LOG else None
-        seen["saves"] = k[1] if k else seen["saves"]
-    pre, first = seen["saves"], None
+    The board saves whenever the stored value differs and 5 s passed since its last write, so a quiet settle span means it holds old."""
     link.send(T_SET_VOLUME, bytes([old, 1]))
     link.send(T_SET_STATE, bytes([STATES["idle"]]))
     note = "" if was_set else "; the board had no stored volume and now stores %d" % old
+    since, write_failed = None, False
     end, ping = time.monotonic() + VOLUME_SAVE_WAIT_S, Keepalive(link)
-    while time.monotonic() < end:
+    while time.monotonic() < end and not write_failed:
         ping.tick()
         for t, p in link.poll():
-            k = knob_line(p) if t == T_LOG else None
-            if not k or k[0] != old:
+            if t != T_LOG:
                 continue
-            if (pre is not None and k[1] >= pre + 2) or (first is not None and k[1] > first):
+            write_failed |= b"nvs write failed" in p
+            k, ms = knob_line(p), board_ms(p)
+            if not k or ms is None:
+                continue
+            if k[0] != old or since is None or since[1] != k[1]:
+                since = (ms, k[1]) if k[0] == old else None
+            elif ms - since[0] >= VOL_SAVE_SETTLE_MS and not write_failed:
                 print("gate-anim: volume %d restored and stored%s" % (old, note))
-                return
-            first = k[1] if first is None else first
-    print("gate-anim: volume %d sent; its storage was not confirmed within %.0f s%s" % (old, VOLUME_SAVE_WAIT_S, note))
+                return True
+    print("gate-anim: volume %d sent; storage %s%s" % (old, "failed" if write_failed else "not confirmed within %.0f s" % VOLUME_SAVE_WAIT_S, note))
+    return False
 
 
 def brt_snap(pct):

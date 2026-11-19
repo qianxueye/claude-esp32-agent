@@ -113,13 +113,13 @@ def test_disp_anim_clip_pins_and_releases():
 
 
 class FakeBoard:
-    """A board behind one link: confirms persist volume sets and prints a stats, knob and anim period on every poll."""
+    """A board behind one link: one 2 s log period per poll; a persist set is confirmed and saved once 5 s passed since the last save."""
 
     opens = 0
 
     def __init__(self, port=None, serial_number=None):
         FakeBoard.opens += 1
-        self.sent, self.ms, self.vol, self.saves = [], 1000, 55, 4
+        self.sent, self.ms, self.vol, self.stored, self.saves, self.last_save = [], 1000, 55, 55, 4, 0
         self.hellos = [{"vol": self.vol, "vol_set": True}]
         self.pushback = []
         self.ser = SimpleNamespace(close=lambda: None)
@@ -135,7 +135,8 @@ class FakeBoard:
 
     def poll(self):
         self.ms += 2000
-        self.saves += 1
+        if self.vol != self.stored and self.ms - self.last_save >= 5000:
+            self.stored, self.saves, self.last_save = self.vol, self.saves + 1, self.ms
         out, self.pushback = self.pushback, []
         lines = [stats_line(self.ms), knob(self.ms, self.vol, self.saves)] + anim_lines(self.ms, frames=self.ms // 66)
         return out + [(devctl.T_LOG, p) for p in lines]
@@ -228,22 +229,32 @@ def test_volume_is_restored_when_the_board_never_confirms(monkeypatch, board, ca
     assert "did not confirm volume 25" in capsys.readouterr().out
 
 
-def naive_confirms(pre, seq):
-    """A wrong rule: any save past the count seen before the restore counts as the restore's own."""
-    return any(saves > pre for vol, saves in seq if vol == 55)
+def first_line_confirms(seq):
+    """A wrong rule: the first knob line at the restored volume counts as stored, though a save may still be due."""
+    return any(vol == 55 for _, vol, _ in seq)
 
 
-@pytest.mark.parametrize("seq, confirmed", [
-    ([(55, 8), (55, 8)], False),
-    ([(55, 8), (55, 9)], True),
-    ([(55, 9)], True),
-])
-def test_restore_confirms_only_a_save_after_the_restore(board, capsys, seq, confirmed):
-    """Before the restore the board had counted 7 saves; one more may be the gate's own pending set, two prove a later one."""
+def restore_with(capsys, seq, extra=()):
     link = StubLink()
-    lines = iter([[]] + [[(devctl.T_LOG, knob(9000 + 2000 * i, vol, saves))] for i, (vol, saves) in enumerate(seq)])
-    link.poll = lambda: next(lines, [])
-    devctl.restore_volume(link, 55, True, {"saves": 7})
-    assert ("restored and stored" in capsys.readouterr().out) == confirmed
-    if not confirmed:
-        assert naive_confirms(7, seq)
+    polls = iter([[(devctl.T_LOG, knob(ms, vol, saves))] for ms, vol, saves in seq] + [[(devctl.T_LOG, p)] for p in extra])
+    link.poll = lambda: next(polls, [])
+    return devctl.restore_volume(link, 55, True), capsys.readouterr().out
+
+
+@pytest.mark.parametrize("seq, stored", [
+    ([(9000, 30, 8), (11000, 55, 8), (13000, 55, 8), (15000, 55, 8), (17000, 55, 8), (19000, 55, 8)], True),
+    ([(9000, 55, 8), (11000, 55, 9), (13000, 55, 9), (15000, 55, 9), (17000, 55, 9)], False),
+    ([(9000, 55, 8), (11000, 55, 9), (13000, 55, 9), (15000, 55, 9), (17000, 55, 9), (19000, 55, 9)], True),
+    ([(9000, 55, 8), (11000, 30, 8), (13000, 55, 8), (15000, 55, 8), (17000, 55, 8)], False),
+])
+def test_restore_waits_for_a_quiet_settle_span(board, capsys, seq, stored):
+    """Stored only after 7 s of board time at the restored volume without a save; a save or another volume restarts the span."""
+    got, out = restore_with(capsys, seq)
+    assert got == stored and ("restored and stored" in out) == stored
+    # Red proof: taking the first line at the restored volume would call every case stored.
+    assert first_line_confirms(seq)
+
+
+def test_restore_fails_on_a_write_failure(board, capsys):
+    got, out = restore_with(capsys, [(9000, 55, 8)], extra=[b"W (10000) volume: nvs write failed (ESP_FAIL): retrying every 5000 ms"])
+    assert not got and "storage failed" in out
