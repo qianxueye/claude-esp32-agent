@@ -194,7 +194,7 @@ static void test_g5_deadline(void)
     }
 }
 
-/* Red proof for G6: the old rule entered the swipe from a centre start only. */
+/* Red proof for G6: a rule that enters the swipe from a centre start only. */
 static bool wrong_centre_only(int cls)
 {
     return cls == VK_CENTRE;

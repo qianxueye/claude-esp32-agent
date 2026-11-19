@@ -143,8 +143,8 @@ FIRMWARE = Path(__file__).parents[2] / "firmware" / "main"
 ARMED_GRIP = dict(cls="edge", why="none", arm=1, pk=60, lat=4, ku=48, kl=3)
 
 
-def dbcf027_verdict(first, last):
-    """The verdict before the bracket: counters and level only."""
+def counters_only_verdict(first, last):
+    """A verdict on the arms counter and the level alone, without the armed-line rule."""
     return last["arms"] - first["arms"] == 0 and first["lvl"] == last["lvl"]
 
 
@@ -160,8 +160,8 @@ def test_armed_line_with_equal_counters_fails_grip_and_wipe():
     for label in ("grip", "wipe"):
         lines, ok = devctl.swipe_report(label, first, dict(first), [ARMED_GRIP])
         assert not ok and lines[-1] == "swipecheck %s FAIL" % label and "armed cls edge" in "\n".join(lines)
-    # The rule before the bracket passes it: the red proof.
-    assert dbcf027_verdict(first, dict(first))
+    # Counters and level alone pass it: the red proof.
+    assert counters_only_verdict(first, dict(first))
 
 
 def test_arm_without_a_swipe_line_fails():
