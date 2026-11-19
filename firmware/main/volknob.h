@@ -3,14 +3,15 @@
 #include <stdint.h>
 #include "app_config.h"
 
-/* Touch gesture classifier: tap, long press, the edge volume knob and the centre brightness swipe. Models in docs/protocol.md "Volume" and docs/display-power.md "User brightness". */
+/* Touch gesture classifier: tap, long press, the edge volume knob and the brightness swipe. Models in docs/protocol.md "Volume" and docs/display-power.md "User brightness". */
 
 enum { VK_EV_TAP = 1, VK_EV_LONG = 2, VK_EV_ARM = 4, VK_EV_VOL = 8, VK_EV_COMMIT = 16, VK_EV_CANCEL = 32, VK_EV_BRT_ARM = 64, VK_EV_BRT = 128, VK_EV_BRT_STOP = 256, VK_EV_BRT_COMMIT = 512, VK_EV_BRT_CANCEL = 1024 };
 enum { VK_IDLE, VK_DEAD, VK_CENTRE, VK_EDGE, VK_ARMED, VK_SWIPE, VK_BRIGHT, VK_STATE_N };
-enum { VK_WHY_NONE, VK_WHY_DARK, VK_WHY_MOVED, VK_WHY_ZONE, VK_WHY_JUMP, VK_WHY_LATERAL, VK_WHY_SLOW, VK_WHY_N };
+enum { VK_WHY_NONE, VK_WHY_DARK, VK_WHY_MOVED, VK_WHY_ZONE, VK_WHY_JUMP, VK_WHY_LATERAL, VK_WHY_SLOW, VK_WHY_TANGENT, VK_WHY_N };
 
 typedef struct {
     int state, why, cls;
+    int swhy; /* the swipe candidate's drop reason; why keeps the knob's */
     int x0, y0, lx, ly;
     uint32_t t0, last_t;
     double theta_last, travel, acc, r0, max_disp, rmin, rmax;
@@ -23,6 +24,9 @@ typedef struct {
     int quad, bi, bi0, rev, dir, arm_ms, qx, qy;
     uint32_t t_moved, q_t;
     bool latched, slid, bright_ever, bumped;
+    bool rim_dead; /* an edge touch's brightness candidate has dropped */
+    uint32_t gap; /* largest time between changed samples, press included */
+    double stp, ku, kl; /* largest step; up and lat at the candidate's arm or drop sample */
 } volknob_t;
 
 void vk_init(volknob_t *k);

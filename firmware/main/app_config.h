@@ -79,12 +79,20 @@
 #define BRT_STEPS 32 /* mathematical model: equal-ratio steps from BRT_MIN_PERCENT to 100, the finest that integer percent keeps distinct */
 #define BRT_TRAVEL_PX 240 /* plain configuration, placeholder: travel along the UI's up direction for the whole range */
 #define BRT_ARM_PX 48 /* mathematical model, placeholder: travel along the UI's up direction before the level responds */
-#define BRT_LAT_PX 24 /* mathematical model, placeholder: sideways travel that drops a swipe before it arms */
+#define BRT_LAT_PX 24 /* mathematical model, placeholder: sideways travel below which a swipe is never dropped as sideways */
+#define BRT_CONE_NUM 1 /* mathematical model, placeholder: with BRT_CONE_DEN, the sideways-to-up ratio beyond which a swipe drops */
+#define BRT_CONE_DEN 2 /* mathematical model, placeholder: 1/2 is a cone of 26.6 degrees either side of the UI vertical */
 #define BRT_ARM_MAX_MS 500 /* mathematical model, placeholder: time from leaving the slop to arming */
 #define BRT_JUMP_MIN_PX 32 /* mathematical model, placeholder: base of the per-sample distance limit */
-#define BRT_V_MAX_PX_S 2400 /* mathematical model, placeholder: fastest plausible finger */
+#define BRT_V_MAX_PX_S 4800 /* mathematical model, placeholder: fastest plausible finger, the fastest logged stroke times its peak-to-mean ratio */
 #define BRT_UP_SIGN 1 /* plain configuration: +1 when travel toward the top of the drawn UI raises the level */
-#define BRT_BOUNCE_STEPS 2 /* plain configuration: ladder steps the panel dips when a swipe pushes past an end; 0 turns it off */
+#define BRT_BOUNCE_STEPS 0 /* plain configuration: ladder steps the panel dips when a swipe pushes past an end; 0 turns it off */
+#define BRT_END_BLINK_MS 150 /* plain configuration: the brightness arc is blank this long when a swipe pushes past an end */
+#define BRT_ARC_START_DEG 135 /* plain configuration: UI-frame angle of the brightness arc's lowest cell, clockwise from 3 o'clock */
+#define BRT_ARC_SWEEP_DEG 90 /* plain configuration: the brightness arc spans the left rim */
+#define BRT_ARC_CHUNK_CELLS 9 /* plain configuration: ladder cells covered by one invalidated area */
+#define BRT_ARC_FILL_COLOR BUBBLE_FILL_COLOR /* plain configuration */
+#define BRT_ARC_TRACK_COLOR BUBBLE_OFFLINE_FILL_COLOR /* plain configuration */
 #define BRT_NVS_KEY "brt" /* plain configuration: NVS key in VOL_NVS_NAMESPACE */
 
 /* Selftest */

@@ -604,7 +604,7 @@ static void knob_events(int ev, uint32_t now)
 }
 
 static const char *const CLS[] = {"idle", "dead", "centre", "edge", "armed", "swipe", "bright"};
-static const char *const WHY[] = {"none", "dark", "moved", "zone", "jump", "lateral", "slow"};
+static const char *const WHY[] = {"none", "dark", "moved", "zone", "jump", "lateral", "slow", "tangent"};
 _Static_assert(sizeof(CLS) / sizeof(CLS[0]) == VK_STATE_N, "CLS is indexed by the classifier states");
 _Static_assert(sizeof(WHY) / sizeof(WHY[0]) == VK_WHY_N, "WHY is indexed by the classifier drop reasons");
 

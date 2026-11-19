@@ -193,24 +193,30 @@ static void test_g5_deadline(void)
     }
 }
 
-static void test_g6_edge_starts_never_adjust(void)
+/* Red proof for G6: the old rule entered the swipe from a centre start only. */
+static bool wrong_centre_only(int cls)
+{
+    return cls == VK_CENTRE;
+}
+
+static void test_g6_rim_starts_arm_inward(void)
 {
     const int radii[3] = {152, 176, 200};
     for (int q = 0; q < 4; q++) {
         for (int j = 0; j < 3; j++) {
-            sw_t s;
-            double a = QUADS[q] * 3.14159265358979323846 / 180.0;
-            int x = (int)lround(CTR - radii[j] * round(sin(a))), y = (int)lround(CTR + radii[j] * round(cos(a)));
-            sw_press(&s, x, y, QUADS[q], false, 16);
-            assert(s.k.cls == VK_EDGE);
-            bool wrong_armed = false;
-            for (int i = 1; i <= 75; i++) {
-                sw_at(&s, 2 * i, 0, 8);
-                wrong_armed |= s.k.r1 < VOL_R_MIN_PX && fabs(s.k.up) >= BRT_ARM_PX;
+            for (int end = -1; end <= 1; end += 2) {
+                sw_t s;
+                double a = QUADS[q] * 3.14159265358979323846 / 180.0;
+                int x = (int)lround(CTR - end * radii[j] * round(sin(a))), y = (int)lround(CTR + end * radii[j] * round(cos(a)));
+                sw_press(&s, x, y, QUADS[q], false, 16);
+                assert(s.k.cls == VK_EDGE);
+                for (int i = 1; i <= 75; i++) {
+                    sw_at(&s, end * 2 * i, 0, 8);
+                }
+                assert((s.ev & VK_EV_BRT_ARM) && s.k.cls == VK_EDGE && s.k.bi == (end > 0 ? 29 : 3));
+                assert(vk_release(&s.k, s.t) == VK_EV_BRT_COMMIT);
+                assert(!wrong_centre_only(s.k.cls));
             }
-            assert(!(s.ev & BRT_ANY) && !(vk_release(&s.k, s.t) & BRT_ANY));
-            /* Re-classing by the current radius arms on the same samples: the red proof. */
-            assert(wrong_armed);
         }
     }
     volknob_t k;
@@ -406,7 +412,7 @@ static void test_g14_jump(void)
         sw_t s;
         centre(&s, QUADS[q], 10);
         sw_at(&s, 14, 0, 16);
-        sw_at(&s, 174, 0, 100);
+        sw_at(&s, 214, -200, 100);
         assert(!(s.ev & BRT_ANY) && s.k.why == VK_WHY_JUMP);
 
         centre(&s, QUADS[q], 10);
@@ -415,9 +421,9 @@ static void test_g14_jump(void)
         assert(s.k.bi == 20);
         int before = s.k.bi;
         s.ev = 0;
-        sw_at(&s, s.fu + 160, 0, 200);
+        sw_at(&s, s.fu - 200, -200, 200);
         assert((s.ev & VK_EV_BRT_CANCEL) && s.k.bi == 10 && s.k.bi0 == 10 && vk_release(&s.k, s.t + 10) == 0);
-        assert(wrong_no_limit(before, 160) != 10);
+        assert(wrong_no_limit(before, -200) != 10);
 
         centre(&s, QUADS[q], 10);
         sw_slide(&s, 3 * 48, 0, 3, 16);
@@ -499,7 +505,7 @@ static void test_g16_glue(void)
         assert(dp_update(&g.d, g.sw.t).level_pct == brt_level(g.sw.k.bi) && g.s.user == brt_level(g.sw.k.bi));
     }
     assert(g.sw.k.bi == brt_index(49) + 4 && g.s.user == 60);
-    bglue_at(&g, g.sw.fu + 160, 200);
+    bglue_at(&g, g.sw.fu - 280, 200);
     assert((g.sw.ev & VK_EV_BRT_CANCEL) && g.s.user == 49 && dp_update(&g.d, g.sw.t).level_pct == 49 && !g.s.knob);
     assert(vs_needs_save(&g.s));
     vs_saved(&g.s, 49);
@@ -519,7 +525,7 @@ int main(void)
     test_g3_arming_never_steps();
     test_g4_cone();
     test_g5_deadline();
-    test_g6_edge_starts_never_adjust();
+    test_g6_rim_starts_arm_inward();
     test_g7_dark_press();
     test_g8_direction_follows_ui();
     test_g9_frame_latched();
