@@ -41,6 +41,10 @@ uv run claude-voice [--config config.toml]
 - Mac 睡眠或中继没在运行时，设备屏幕显示「离线」；Mac 唤醒、中继启动后设备会自动重连。
 - 设备没有开启闪存加密，拿到设备的人可以读出其中的 Wi-Fi 密码和配对密钥。
 
+## 远程连接端点
+
+中继还在本机回环地址 `127.0.0.1` 的 47802 端口（`tunnel_port`）上提供 WebSocket 端点 `/clawd/v1`，隧道程序（如 cloudflared）把设备从互联网发来的连接转到这里。端点里传的是与 Wi-Fi 相同的加密连接，没有配对密钥的连接会被断开；局域网上的其他设备连不到这个端口。中继本身不启动隧道程序。这个端点和 Wi-Fi 端口一样，只在 Wi-Fi 开启且设备已配对时启动；不需要时在 `config.toml` 里设 `tunnel_enabled = false`。
+
 ## 前提
 
 - whisper 模型文件（如 `ggml-medium.bin`）：在 `config.toml` 里用 `whisper_model` 写明路径。没写或文件不存在时，启动会报错并指出该配置项。
