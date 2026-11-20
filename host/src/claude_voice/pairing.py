@@ -180,8 +180,17 @@ def _status_line(st: dict) -> str:
     return line + f"；中继：{relay}"
 
 
-def pair_payload(body: dict) -> bytes:
-    """PAIR as compact JSON, refused before sending when the device cannot hold it."""
+def pair_payload(
+    *, identity: str, psk_hex: str, ssid: str, password: str, extra_networks: Sequence[tuple[str, str]],
+    names: list[str], addrs: list[str], port: int,
+) -> bytes:
+    """PAIR as compact JSON, main network first in `networks`; PairError when the device cannot hold it."""
+    networks = [{"ssid": ssid, "password": password, "lan": True}]
+    networks += [{"ssid": s, "password": p, "lan": False} for s, p in extra_networks]
+    body = {
+        "ssid": ssid, "password": password, "psk_identity": identity, "psk": psk_hex,
+        "relay_names": names, "relay_addrs": addrs, "relay_port": port, "networks": networks,
+    }
     payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
     if len(payload) > PAIR_PAYLOAD_MAX:
         raise PairError(
@@ -189,6 +198,16 @@ def pair_payload(body: dict) -> bytes:
             "请少加几个 Wi-Fi，或换用较短的名称和密码。"
         )
     return payload
+
+
+def check_pair_size(
+    cfg: Config, *, serial: str, ssid: str, password: str, extra_networks: Sequence[tuple[str, str]]
+) -> None:
+    """Refuse an oversize PAIR before the USB port opens (opening it resets the board)."""
+    pair_payload(
+        identity=psk_identity(serial), psk_hex="0" * 2 * PSK_BYTES, ssid=ssid, password=password,
+        extra_networks=extra_networks, names=relay_names(cfg), addrs=private_ipv4(cfg), port=65535,
+    )
 
 
 async def pair(
@@ -222,12 +241,10 @@ async def pair(
     unknown = False  # PAIR sent; neither PAIR_RESULT nor a session with the new key yet
     try:
         try:
-            networks = [{"ssid": ssid, "password": password, "lan": True}]
-            networks += [{"ssid": s, "password": p, "lan": False} for s, p in extra_networks]
-            payload = pair_payload({
-                "ssid": ssid, "password": password, "psk_identity": identity, "psk": psk.hex(),
-                "relay_names": names, "relay_addrs": addrs, "relay_port": server.port, "networks": networks,
-            })
+            payload = pair_payload(
+                identity=identity, psk_hex=psk.hex(), ssid=ssid, password=password,
+                extra_networks=extra_networks, names=names, addrs=addrs, port=server.port,
+            )
             await console.open()
             old = store.get(identity)
             store.set(identity, psk)

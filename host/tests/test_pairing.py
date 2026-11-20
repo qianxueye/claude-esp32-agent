@@ -496,3 +496,22 @@ async def test_pair_command_passes_the_extra_networks(monkeypatch):
     monkeypatch.setattr(cli, "pair", fake_pair)
     assert await cli.pair_command(cfg())
     assert seen["extra_networks"] == [("我的手机", HOTSPOT_PASSWORD)] and seen["ssid"] == "家里的网"
+
+
+async def test_pair_command_refuses_an_oversize_pair_before_opening_the_port(monkeypatch):
+    from claude_voice import cli
+
+    opened = []
+
+    async def fake_usb(c, port):
+        opened.append(port)
+        return "transport"
+
+    monkeypatch.setattr(cli, "_board", lambda c: ("port", FAKE_SERIAL))
+    monkeypatch.setattr(cli, "_ask_wifi", lambda c: ('"' * 32, '"' * 63))
+    monkeypatch.setattr(cli, "_ask_more_wifi", lambda main: _worst('"', '"'))
+    monkeypatch.setattr(cli, "_usb", fake_usb)
+    monkeypatch.setattr(cli, "pair", lambda *a, **kw: pytest.fail("pair ran"))
+    with pytest.raises(PairError, match="1023 字节"):
+        await cli.pair_command(cfg())
+    assert opened == []
