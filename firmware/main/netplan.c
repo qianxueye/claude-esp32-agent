@@ -122,8 +122,10 @@ void np_wifi_up(netplan_t *np, const uint8_t ip[4], int rssi, size_t n_tries)
     np->st.wifi = NET_WIFI_CONNECTED;
     memcpy(np->st.ip, ip, 4);
     np->st.rssi = rssi;
-    np->st.relay = n_tries ? NET_RELAY_CONNECTING : NET_RELAY_NONE;
-    np->round_fail = NET_RELAY_NONE;
+    if (!np->session) {
+        np->st.relay = n_tries ? NET_RELAY_CONNECTING : NET_RELAY_NONE;
+        np->round_fail = NET_RELAY_NONE;
+    }
     np->assoc_backoff_ms = NET_BACKOFF_MIN_MS;
 }
 

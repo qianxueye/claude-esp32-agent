@@ -162,6 +162,32 @@ static void test_session_end(void)
           r == NW_IDLE && s2.n_out == n && s2.out[0] == FRAME_SYNC0 && s2.out[1] == FRAME_SYNC1 && memcmp(s2.out, want, n) == 0);
 }
 
+static void test_offer_and_capacity(void)
+{
+    static uint8_t store[64];
+    static uint8_t big[16384], pl[4096];
+    netwrite_t q;
+    nw_init(&q, store, sizeof store);
+    put(&q, T_LOG, 'a', 20);
+    put(&q, T_LOG, 'b', 20);
+    uint8_t p20[20] = {0};
+    CHECK("offer into a full queue refuses without counting a drop", !nw_offer(&q, T_LOG, p20, 20) && q.dropped == 0);
+    CHECK("put into a full queue counts the drop", !nw_put(&q, T_LOG, p20, 20) && q.dropped == 1);
+    nw_init(&q, big, 8192);
+    atomic_store(&q.head, 4090);
+    atomic_store(&q.tail, 4090);
+    CHECK("8192 bytes, empty at index 4090: a 4103-byte frame does not fit (8192 < 2 x 4103 - 1)",
+          !nw_offer(&q, T_SNAP_DATA, pl, 4096));
+    nw_init(&q, big, 16384);
+    int all = 1;
+    for (uint32_t at = 0; at < 16384; at += 509) {
+        atomic_store(&q.head, at);
+        atomic_store(&q.tail, at);
+        all &= nw_offer(&q, T_SNAP_DATA, pl, 4096);
+    }
+    CHECK("16384 bytes, empty at any index: a 4103-byte frame fits", all);
+}
+
 static void test_init(void)
 {
     static uint8_t store[100];
@@ -177,6 +203,7 @@ int main(void)
     test_full_queue();
     test_wrap();
     test_session_end();
+    test_offer_and_capacity();
     test_init();
     printf("netwrite: %d checks, %d failed\n", s_checks, s_fail);
     return s_fail ? 1 : 0;

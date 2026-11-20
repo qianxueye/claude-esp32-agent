@@ -215,6 +215,7 @@ static void test_status(void)
     CHECK("authenticated session: relay connected", np.st.relay == NET_RELAY_CONNECTED);
     np_session_down(&np);
     CHECK("session end after authentication: relay connecting", np.st.relay == NET_RELAY_CONNECTING);
+    np_try_failed(&np, NET_RELAY_UNREACHABLE);
     np_round_failed(&np);
     np_wifi_down(&np);
     CHECK("Wi-Fi disconnect: wifi connecting, relay none", np.st.wifi == NET_WIFI_CONNECTING && np.st.relay == NET_RELAY_NONE);
@@ -235,6 +236,9 @@ static void test_status(void)
     np_session_up(&np);
     np_remote_changed(&np, 1);
     CHECK("changed SET_REMOTE keeps an open session connected", np.st.relay == NET_RELAY_CONNECTED);
+    const uint8_t ip2[4] = {10, 0, 0, 9};
+    np_wifi_up(&np, ip2, -60, 1);
+    CHECK("new IP during an open session keeps relay connected", np.st.relay == NET_RELAY_CONNECTED && np.st.ip[3] == 9);
 }
 
 static void test_refused_after_handshake(void)

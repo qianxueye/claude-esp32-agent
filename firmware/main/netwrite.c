@@ -19,10 +19,9 @@ bool nw_init(netwrite_t *q, uint8_t *storage, uint32_t cap)
     return true;
 }
 
-bool nw_put(netwrite_t *q, uint8_t type, const void *payload, size_t len)
+bool nw_offer(netwrite_t *q, uint8_t type, const void *payload, size_t len)
 {
     if (len > PROTO_MAX_PAYLOAD) {
-        q->dropped++;
         return false;
     }
     uint32_t total = (uint32_t)len + FRAME_OVERHEAD;
@@ -31,7 +30,6 @@ bool nw_put(netwrite_t *q, uint8_t type, const void *payload, size_t len)
     uint32_t idx = t & (q->cap - 1);
     uint32_t pad = q->cap - idx < total ? q->cap - idx : 0;
     if (total > q->cap || pad + total > q->cap - (t - h)) {
-        q->dropped++;
         return false;
     }
     if (pad) {
@@ -42,6 +40,15 @@ bool nw_put(netwrite_t *q, uint8_t type, const void *payload, size_t len)
     proto_encode(q->buf + idx, type, payload, len);
     atomic_store_explicit(&q->tail, t + total, memory_order_release);
     return true;
+}
+
+bool nw_put(netwrite_t *q, uint8_t type, const void *payload, size_t len)
+{
+    if (nw_offer(q, type, payload, len)) {
+        return true;
+    }
+    q->dropped++;
+    return false;
 }
 
 /* Points at the unwritten rest of the front frame; returns its length, 0 when none is queued before end. */
