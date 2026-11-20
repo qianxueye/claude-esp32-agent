@@ -102,6 +102,7 @@ class FakeDevice:
         self.forgets = 0
         self.received: list[int] = []
         self.set_volumes: list[bytes] = []
+        self.remotes: list[dict] = []
         self._booting = False
         self._mic_pos = 0
         self._tasks: list[asyncio.Task] = []
@@ -193,6 +194,8 @@ class FakeDevice:
             self.state = new
         elif ftype == T.SET_VOLUME:
             self._set_volume(payload)
+        elif ftype == T.SET_REMOTE:
+            self.remotes.append(json.loads(payload))
         elif ftype == T.SPK_AUDIO:
             self.queued += len(payload)
             self.max_queued = max(self.max_queued, self.queued)

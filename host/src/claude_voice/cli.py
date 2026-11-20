@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import config as config_mod
 from .agent import ClaudeAgent
+from .cloudflared import Cloudflared
 from .keychain import KeychainError, KeychainStore, PskStore, psk_identity
 from .link import Link, Opener, SerialTransport, list_boards, serial_opener
 from .pairing import PairError, current_ssid, forget, pair
@@ -100,6 +101,19 @@ async def start_tunnel(cfg: config_mod.Config, link: Link, keys: dict[str, bytes
     return server
 
 
+def start_cloudflared(cfg: config_mod.Config, link: Link, tunnel: TunnelServer | None) -> Cloudflared | None:
+    """Start the Quick Tunnel supervisor when `cloudflared_bin` is set and the tunnel endpoint listens."""
+    if not cfg.cloudflared_bin:
+        return None
+    if tunnel is None:
+        logging.info("cloudflared not started: the tunnel endpoint is off")
+        return None
+    supervisor = Cloudflared(cfg, tunnel.port, link.set_remote)
+    supervisor.start()
+    logging.info("starting cloudflared for the tunnel endpoint")
+    return supervisor
+
+
 async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
     stt = WhisperStt(cfg)
     agent = ClaudeAgent(cfg)
@@ -110,6 +124,7 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
     tasks: list[asyncio.Task] = []
     server: WifiServer | None = None
     tunnel: TunnelServer | None = None
+    quick: Cloudflared | None = None
     try:
         logging.info("starting whisper-server (first start may take a while)")
         await stt.start()
@@ -120,11 +135,14 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
         keys = wifi_keys(cfg, store)
         server = await start_wifi(cfg, link, store, keys)
         tunnel = await start_tunnel(cfg, link, keys)
+        quick = start_cloudflared(cfg, link, tunnel)
         tasks = [asyncio.create_task(link.run()), asyncio.create_task(relay.idle_reset_loop())]
         await asyncio.gather(*tasks)
     finally:
         for t in tasks:
             t.cancel()
+        if quick is not None:
+            await quick.close()
         if server is not None:
             await server.close()
         if tunnel is not None:

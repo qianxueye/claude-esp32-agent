@@ -53,6 +53,11 @@ class Config:
     tunnel_ws_max_message: int = 32768
     tunnel_preauth_bytes_max: int = 32768  # inbound bytes before the TLS session is authenticated
     tunnel_write_buffer_max: int = 262144  # frames are dropped while this much is unsent
+    # cloudflared Quick Tunnel to the tunnel endpoint, started by the relay; "" leaves it off
+    cloudflared_bin: str = ""
+    cloudflared_url_timeout_s: float = 30.0  # no public hostname by then: restart cloudflared
+    cloudflared_restart_min_s: float = 1.0
+    cloudflared_restart_max_s: float = 60.0  # a run longer than this resets the delay to the minimum
     keychain_service: str = "claude-voice"
     keychain_timeout_s: float = 30.0  # `security` may wait for the user to unlock the Keychain
 
@@ -136,6 +141,7 @@ class Config:
 POSITIVE_KEYS = (
     "tunnel_preauth_max", "tunnel_preauth_per_addr_max", "tunnel_upgrade_timeout_s",
     "tunnel_ws_max_message", "tunnel_preauth_bytes_max", "tunnel_write_buffer_max",
+    "cloudflared_url_timeout_s", "cloudflared_restart_min_s", "cloudflared_restart_max_s",
 )
 
 
@@ -157,6 +163,8 @@ def load(path: Path | str | None = None) -> Config:
     for key in POSITIVE_KEYS:
         if not getattr(cfg, key) > 0:
             raise ValueError(f"{key} must be positive, got {getattr(cfg, key)} in {p}")
+    if cfg.cloudflared_restart_max_s < cfg.cloudflared_restart_min_s:
+        raise ValueError(f"cloudflared_restart_max_s must not be below cloudflared_restart_min_s in {p}")
     if not 0 <= cfg.volume <= 100:
         raise ValueError(f"volume must be 0-100, got {cfg.volume} in {p}")
     if cfg.tts_engine not in ("say", "qwen3"):

@@ -206,6 +206,7 @@ class Link:
         self._active: Session | None = None
         self._switch = asyncio.Lock()
         self._nonce = 0
+        self._remote_url: str | None = None
 
     @property
     def connected(self) -> bool:
@@ -225,6 +226,17 @@ class Link:
 
     def send_state(self, state: int) -> None:
         self.send(T.SET_STATE, bytes([int(state)]))
+
+    def set_remote(self, url: str | None) -> None:
+        """Remember the board's remote URL and send it on the active session when it changed."""
+        if url == self._remote_url:
+            return
+        self._remote_url = url
+        self._send_remote()
+
+    def _send_remote(self) -> None:
+        if self._remote_url:
+            self.send(T.SET_REMOTE, json.dumps({"url": self._remote_url}).encode())
 
     def _write(self, s: Session, ftype: int, payload: bytes = b"") -> bool:
         try:
@@ -354,6 +366,8 @@ class Link:
         reason = str(info.get("reason", ""))
         self._h.on_hello(reason, info)
         self.send_state(self._h.current_state())
+        if self._active is s:
+            self._send_remote()
         if s.kind == "usb" and first and reason == "boot":
             # the board reset when the port opened, so it never saw the HOST_HELLO of this open
             self._send_host_hello(s)
