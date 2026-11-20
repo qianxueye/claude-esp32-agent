@@ -36,6 +36,11 @@ void proto_parser_init(proto_parser_t *p, uint8_t *storage, size_t cap)
     p->cap = cap;
 }
 
+void proto_parser_set_stream(proto_parser_t *p, bool stream)
+{
+    p->stream = stream;
+}
+
 size_t proto_parser_feed(proto_parser_t *p, const uint8_t *data, size_t len)
 {
     size_t room = p->cap - p->fill;
@@ -100,6 +105,9 @@ int proto_parser_next(proto_parser_t *p, uint32_t now_ms, proto_frame_t *f)
         return 1;
 
     incomplete:
+        if (p->stream) {
+            return 0;
+        }
         if (p->wait_since_ms == 0) {
             p->wait_since_ms = now_ms ? now_ms : 1;
         } else if (now_ms - p->wait_since_ms >= PROTO_PARTIAL_FRAME_TIMEOUT_MS) {
