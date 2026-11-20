@@ -440,6 +440,25 @@ async def test_text_message_closes_the_connection():
         await b.close()
 
 
+async def test_binary_frame_after_a_text_frame_in_the_same_chunk_is_never_processed(caplog):
+    caplog.set_level(logging.INFO, logger="claude_voice")
+    async with Harness() as w:
+        conns = []
+        run = w.srv._run_session
+        w.srv._run_session = lambda t: (conns.append(t._conn), run(t))[1]
+        d = await w.board()
+        b = d.t
+        b.ws.send_text(b"hello")
+        b.tls.write(encode(T.INPUT, bytes([TURN_INPUT])))
+        b.ws.send_binary(b._out.read())
+        conns[0].data_received(b"".join(b.ws.data_to_send()))  # both frames in one call, not via the socket
+        assert await _closed_within(b, 1.0)
+        await until(lambda: any("tunnel session closed" in r.getMessage() for r in caplog.records))
+        assert b.ws.close_rcvd is not None and b.ws.close_rcvd.code == 1003
+        assert w.h.relay.state == State.IDLE and not w.h.stt.calls
+    assert not [r for r in caplog.records if r.getMessage().startswith("input ")]
+
+
 def _padded_request(n, size):
     pad = "".join(f"X-Pad-{i}: {'a' * size}\r\n" for i in range(n))
     return (
