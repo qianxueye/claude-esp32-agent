@@ -680,3 +680,51 @@ def test_relay_lookup_finds_a_key_whatever_the_device_serial_case():
 
     store = stored((psk_identity("AA:BB:CC:DD:EE:FF"), KEY))
     assert load_keys(dataclasses.replace(Config(), device_serial="aa:bb:cc:dd:ee:ff"), store) == {IDENTITY: KEY}
+
+
+PHANTOMS = """keychain: "/tmp/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>=""svce"<blob>="claude-voice""
+    "acct"<blob>="clawd-AABBCCDDEE04"
+    "svce"<blob>="claude-voice-other"
+keychain: "/tmp/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>=<NULL>
+    "icmt"<blob>=""acct"<blob>="clawd-AABBCCDDEE05""
+    "svce"<blob>="claude-voice"
+keychain: "/tmp/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="claude-voice"
+    "acct"<blob>="clawd-AABBCCDDEEFF"
+    "svce"<blob>="claude-voice"
+"""
+
+
+def test_keychain_attributes_quoted_in_a_label_or_comment_are_not_read(monkeypatch):
+    output = {"text": PHANTOMS}
+    monkeypatch.setattr(
+        keychain_mod.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, output["text"], "")
+    )
+    store = KeychainStore("claude-voice", 5.0)
+    assert store.identities() == ["clawd-AABBCCDDEEFF"]
+    label, comment, genuine = PHANTOMS.split('keychain: "/tmp/login.keychain-db"\n')[1:]
+    output["text"] = label.replace('"acct"<blob>="clawd-AABBCCDDEE04"', '"acct"<blob>="clawd-AABBCCDDEEFF"').replace(
+        '""svce"<blob>="claude-voice""', '""acct"<blob>="clawd-AABBCCDDEE06""'
+    )
+    assert store.find_any() == "clawd-AABBCCDDEEFF"
+    output["text"] = comment
+    assert store.find_any() is None
+
+
+def test_redact_hides_overlapping_secrets_whole():
+    from claude_voice.pairing import redact
+
+    secrets_ = ["password1", "password1234", ""]
+    text = redact("a=password1234 b=password1 c", secrets_)
+    assert text == "a=*** b=*** c" and secrets_ == ["password1", "password1234", ""]

@@ -84,9 +84,9 @@ def current_ssid(cfg: Config) -> str | None:
 
 
 def redact(text: str, secrets_: list[str]) -> str:
-    for s in secrets_:
-        if s:
-            text = text.replace(s, "***")
+    """Replace every secret with `***`, longest first so a secret inside another leaves no remainder."""
+    for s in sorted((s for s in secrets_ if s), key=len, reverse=True):
+        text = text.replace(s, "***")
     return text
 
 

@@ -12,8 +12,9 @@ SECURITY = "/usr/bin/security"
 _IDENTITY = re.compile(re.escape(PSK_IDENTITY_PREFIX) + r"[0-9A-Fa-f]{12}")
 _SERIAL = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
 _SERVICE = re.compile(r"[A-Za-z0-9._-]{1,64}")
-_ACCOUNT_LINE = re.compile(r'"acct"<blob>="([^"]*)"')
-_SERVICE_LINE = re.compile(r'"svce"<blob>="([^"]*)"')
+# whole attribute lines only, so a label or comment quoting `"acct"<blob>=` is not read as one
+_ACCOUNT_LINE = re.compile(r'^\s*"acct"<blob>="([^"]*)"$', re.MULTILINE)
+_SERVICE_LINE = re.compile(r'^\s*"svce"<blob>="([^"]*)"$', re.MULTILINE)
 _DUMP_ITEM = re.compile(r"^keychain: ", re.MULTILINE)
 _NOT_FOUND = 44
 DELETE_MAX = 16  # deletes of one identity, one per keychain in the search list
