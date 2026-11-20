@@ -15,20 +15,28 @@ from test_tunnel import Harness as TunnelHarness
 from test_wifi import IDENTITY, KEY, WifiHarness
 
 from claude_voice import cli
-from claude_voice.cloudflared import Backoff, Cloudflared, hostname_from_banner, metrics_hostname, remote_url
+from claude_voice import cloudflared as cloudflared_mod
+from claude_voice.cloudflared import Backoff, Cloudflared, hostname_from_banner, remote_url
 from claude_voice.config import load
 from claude_voice.link import Link, TransportClosed, memory_pair
 from claude_voice.protocol import PROTO_VERSION, SYNC, Decoder, State, T, encode
 
 FAKE_CLOUDFLARED = r'''
-import http.server, json, os, signal, socketserver, sys, threading, time
+import json, os, signal, stat, sys, time
 here = os.path.dirname(os.path.abspath(__file__))
 mode = json.load(open(os.path.join(here, "mode.json")))
 runs_path = os.path.join(here, "runs")
 n = int(open(runs_path).read()) + 1 if os.path.exists(runs_path) else 1
 open(runs_path, "w").write(str(n))
+args = sys.argv[1:]
+config = args[args.index("--config") + 1] if "--config" in args else None
+record = {
+    "argv": args, "pid": os.getpid(), "tunnel_env": sorted(k for k in os.environ if k.startswith("TUNNEL_")),
+    "keep_env": os.environ.get("CLAWD_TEST_KEEP"), "config": open(config).read() if config else None,
+    "config_dir_mode": stat.S_IMODE(os.stat(os.path.dirname(config)).st_mode) if config else None,
+}
 with open(os.path.join(here, "argv.jsonl"), "a") as f:
-    f.write(json.dumps({"argv": sys.argv[1:], "pid": os.getpid()}) + "\n")
+    f.write(json.dumps(record) + "\n")
 if mode.get("ignore_term"):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 lifetimes = mode.get("lifetimes", [])
@@ -36,28 +44,15 @@ life = lifetimes[n - 1] if n <= len(lifetimes) else None
 if life == 0:
     sys.exit(1)
 host = mode.get("hostname", "run{n}-quick.trycloudflare.com").format(n=n)
-metrics = sys.argv[sys.argv.index("--metrics") + 1]
-class Server(http.server.HTTPServer):
-    def server_bind(self):
-        socketserver.TCPServer.server_bind(self)
-        self.server_name, self.server_port = self.server_address[0], self.server_address[1]
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path != "/quicktunnel":
-            self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
-        body = json.dumps({"hostname": mode.get("metrics_value", host)}).encode()
-        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *a): pass
-if mode.get("metrics", True):
-    addr, port = metrics.rsplit(":", 1)
-    srv = Server((addr, int(port)), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+def info(text):
+    print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " INF " + text, file=sys.stderr, flush=True)
+info("Requesting new quick Tunnel on trycloudflare.com...")
 if mode.get("banner", True):
-    banner = mode.get("banner_host", host)
-    print("INF +----------------------------------------------------+", file=sys.stderr, flush=True)
-    print("INF |  Your quick Tunnel has been created! Visit it at:  |", file=sys.stderr, flush=True)
-    print(f"INF |  https://{banner}  |", file=sys.stderr, flush=True)
+    row = mode.get("banner_row", "https://" + mode.get("banner_host", host))
+    info("+" + "-" * 92 + "+")
+    info("|  Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |")
+    info("|  " + row.ljust(88) + "  |")
+    info("+" + "-" * 92 + "+")
 start = time.monotonic()
 crash = os.path.join(here, "crash")
 while True:
@@ -133,16 +128,15 @@ def alive(pid):
 
 
 def test_hostname_patterns():
-    assert metrics_hostname({"hostname": "abc-1.trycloudflare.com"}) == "abc-1.trycloudflare.com"
-    assert metrics_hostname({"hostname": "https://abc-1.trycloudflare.com"}) == "abc-1.trycloudflare.com"
-    assert metrics_hostname({"hostname": ""}) is None and metrics_hostname(["x"]) is None
-    good = "INF |  https://abc-1.trycloudflare.com  |"
+    good = "2026-11-20T10:00:00Z INF |  https://abc-1.trycloudflare.com                            |"
     assert hostname_from_banner(good) == "abc-1.trycloudflare.com"
+    assert hostname_from_banner("INF |https://abc-1.trycloudflare.com |") == "abc-1.trycloudflare.com"
     assert hostname_from_banner("https://abc-1.trycloudflare.com\n") == "abc-1.trycloudflare.com"
     for bad in (
         "https://abc.trycloudflare.com.evil.example |", "https://abc.trycloudflare.com/path |",
         "https://abc.trycloudflare.com:8443 |", "http://abc.trycloudflare.com |", "https://ABC.trycloudflare.com |",
-        "https://a_b.trycloudflare.com |", "https://evil.example |",
+        "https://a_b.trycloudflare.com |", "https://evil.example |", "INF |  xhttps://a-b.trycloudflare.com  |",
+        "INF |  =https://a-b.trycloudflare.com  |", "INF evil.example/https://a-b.trycloudflare.com  |",
     ):
         assert hostname_from_banner(bad) is None, bad
     assert remote_url("abc.trycloudflare.com") == "wss://abc.trycloudflare.com/clawd/v1"
@@ -155,28 +149,46 @@ def test_backoff_doubles_to_the_maximum_and_resets_after_a_long_run():
     assert b.after(8.1) == 1.0 and b.after(0.1) == 2.0
 
 
-async def test_hostname_from_metrics_with_the_exact_arguments(tmp_path):
+async def test_hostname_from_the_banner_with_the_exact_arguments_and_no_http(tmp_path, monkeypatch):
+    import httpx
+
+    requests = []
+    monkeypatch.setattr(httpx.AsyncClient, "send", lambda self, req, **kw: requests.append(req))
     urls = Urls()
-    sup = await supervised(tmp_path, urls, banner=False, metrics_value="https://run1-quick.trycloudflare.com")
+    sup = await supervised(tmp_path, urls)
     try:
         await until(lambda: urls.seen, timeout=10)
         assert urls.seen == [url(1)] and sup.url == url(1), cf_log(tmp_path)
-        argv = runs(tmp_path)[0]["argv"]
-        metrics = argv[-1]
-        assert argv == ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:47999", "--metrics", metrics]
-        assert metrics.startswith("127.0.0.1:") and "--config" not in argv
+        run = runs(tmp_path)[0]
+        config = run["argv"][3]
+        assert run["argv"] == ["tunnel", "--no-autoupdate", "--config", config, "--url", "http://127.0.0.1:47999"]
+        assert run["config"] == "{}\n" and run["config_dir_mode"] == 0o700
+        assert "--metrics" not in run["argv"] and requests == [] and not hasattr(cloudflared_mod, "httpx")
     finally:
         await sup.close()
+    assert not os.path.exists(os.path.dirname(config))
 
 
-async def test_banner_fallback_when_metrics_is_absent(tmp_path):
+async def test_child_gets_no_tunnel_variables_and_a_fresh_config_on_every_start(tmp_path, monkeypatch):
+    for name in ("TUNNEL_URL", "TUNNEL_TOKEN", "TUNNEL_METRICS", "TUNNEL_ORIGIN_CERT"):
+        monkeypatch.setenv(name, "http://127.0.0.1:1")
+    monkeypatch.setenv("CLAWD_TEST_KEEP", "kept")
     urls = Urls()
-    sup = await supervised(tmp_path, urls, metrics=False)
+    sup = await supervised(tmp_path, urls)
     try:
         await until(lambda: urls.seen, timeout=10)
-        assert urls.seen == [url(1)], cf_log(tmp_path)
+        config = runs(tmp_path)[0]["argv"][3]
+        with open(config, "w") as f:
+            f.write("ingress:\n  - service: http://127.0.0.1:1\n")
+        (tmp_path / "cf" / "crash").write_text("")
+        await until(lambda: url(2) in urls.seen, timeout=10)
+        first, second = runs(tmp_path)[:2]
+        assert first["tunnel_env"] == second["tunnel_env"] == [], cf_log(tmp_path)
+        assert first["keep_env"] == second["keep_env"] == "kept"
+        assert second["argv"][3] == config and second["config"] == "{}\n"
     finally:
         await sup.close()
+    assert not os.path.exists(os.path.dirname(config))
 
 
 async def test_banner_of_an_earlier_run_in_the_log_is_ignored(tmp_path, caplog):
@@ -184,7 +196,7 @@ async def test_banner_of_an_earlier_run_in_the_log_is_ignored(tmp_path, caplog):
     (tmp_path / "logs").mkdir()
     (tmp_path / "logs" / "cloudflared.log").write_text("INF |  https://stale-old.trycloudflare.com  |\n")
     urls = Urls()
-    sup = await supervised(tmp_path, urls, url_timeout=0.5, metrics=False, banner=False)
+    sup = await supervised(tmp_path, urls, url_timeout=0.5, banner=False)
     try:
         await until(lambda: len(runs(tmp_path)) >= 2, timeout=10)
         assert [u for u in urls.seen if u] == [], cf_log(tmp_path)
@@ -195,11 +207,12 @@ async def test_banner_of_an_earlier_run_in_the_log_is_ignored(tmp_path, caplog):
 @pytest.mark.parametrize(
     "mode",
     [
-        {"metrics_value": "evil.example.com", "banner": False},
-        {"metrics_value": "abc.trycloudflare.com.evil.example", "banner_host": "abc.trycloudflare.com.evil.example"},
-        {"metrics": False, "banner_host": "abc.trycloudflare.com/x"},
+        {"banner_host": "evil.example.com"},
+        {"banner_host": "abc.trycloudflare.com.evil.example"},
+        {"banner_host": "abc.trycloudflare.com/x"},
+        {"banner_row": "xhttps://a-b.trycloudflare.com"},
     ],
-    ids=["other-domain", "suffix-attack", "banner-with-path"],
+    ids=["other-domain", "suffix-attack", "banner-with-path", "no-left-boundary"],
 )
 async def test_hostname_off_the_pattern_is_never_pushed(tmp_path, caplog, mode):
     caplog.set_level(logging.WARNING, logger="claude_voice.cloudflared")
@@ -210,8 +223,6 @@ async def test_hostname_off_the_pattern_is_never_pushed(tmp_path, caplog, mode):
         assert [u for u in urls.seen if u] == [], cf_log(tmp_path)
         text = "\n".join(r.getMessage() for r in caplog.records)
         assert "no tunnel hostname within 0.5 s" in text, text
-        if "metrics_value" in mode:
-            assert "is not a Quick Tunnel host; ignored" in text, text
     finally:
         await sup.close()
 
@@ -277,7 +288,7 @@ async def test_missing_binary_retries_without_raising(tmp_path, caplog):
 async def test_readiness_timeout_leaves_the_relay_running(tmp_path):
     h = make()
     await h.up()
-    sup = await supervised(tmp_path, h.link.set_remote, cfg=h.cfg, url_timeout=0.3, metrics=False, banner=False)
+    sup = await supervised(tmp_path, h.link.set_remote, cfg=h.cfg, url_timeout=0.3, banner=False)
     try:
         await until(lambda: len(runs(tmp_path)) >= 2, timeout=10)
         h.dev.inject(TURN_INPUT)
@@ -303,7 +314,8 @@ async def test_cloudflared_starts_only_with_a_binary_and_a_listening_tunnel(tmp_
         sup = cli.start_cloudflared(c, link, srv)
         try:
             await until(lambda: sup.url, timeout=10)
-            assert runs(tmp_path)[0]["argv"][3] == f"http://127.0.0.1:{srv.port}", cf_log(tmp_path)
+            argv = runs(tmp_path)[0]["argv"]
+            assert argv[argv.index("--url") + 1] == f"http://127.0.0.1:{srv.port}", cf_log(tmp_path)
         finally:
             await sup.close()
 

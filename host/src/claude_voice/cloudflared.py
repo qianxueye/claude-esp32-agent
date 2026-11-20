@@ -5,33 +5,32 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
-
 from .config import Config
-from .stt import free_port
 from .tunnel import PATH
 
 log = logging.getLogger("claude_voice.cloudflared")
 HOSTNAME = re.compile(r"[a-z0-9-]{1,63}\.trycloudflare\.com")
-# the banner URL must end the token, so `….trycloudflare.com.evil` or `…/path` never match
-BANNER = re.compile(r"https://([a-z0-9-]{1,63}\.trycloudflare\.com)(?=\s|$)", re.MULTILINE)
+# the banner URL is a whole token, so `xhttps://…`, `….trycloudflare.com.evil` or `…/path` never match
+BANNER = re.compile(r"(?<![^\s|])https://([a-z0-9-]{1,63}\.trycloudflare\.com)(?=\s|$)", re.MULTILINE)
 POLL_S = 0.2
 STOP_TIMEOUT_S = 5.0
 BANNER_READ_MAX = 256 * 1024  # bytes of one run's log searched for the banner
 HOST_CHARS = 80  # longest refused hostname kept for logs
+EMPTY_CONFIG = "{}\n"  # no ingress rules, so `--url` applies and no default config file is loaded
+ENV_PREFIX = "TUNNEL_"  # cloudflared reads its flags from these variables
 
 
-def metrics_hostname(value: object) -> str | None:
-    """The `hostname` of a /quicktunnel answer without a leading `https://`; None when it has none."""
-    if isinstance(value, dict) and isinstance(value.get("hostname"), str):
-        return value["hostname"].strip().removeprefix("https://") or None
-    return None
+def child_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if not k.startswith(ENV_PREFIX)}
 
 
 def hostname_from_banner(text: str) -> str | None:
@@ -73,6 +72,7 @@ class Cloudflared:
         self._log_path = Path(cfg.log_dir) / "cloudflared.log"
         self._task: asyncio.Task | None = None
         self._logged: str | None = None
+        self._config_dir: str | None = None
         self.url: str | None = None
 
     def start(self) -> None:
@@ -98,50 +98,50 @@ class Cloudflared:
 
     async def _run_once(self) -> None:
         cfg = self._cfg
-        metrics = free_port()
         if self._log_file is None:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
             self._log_file = open(self._log_path, "ab")
         offset = self._log_file.seek(0, 2)
+        config = self._write_config()
         args = [
-            cfg.cloudflared_bin, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self._port}",
-            "--metrics", f"127.0.0.1:{metrics}",
+            cfg.cloudflared_bin, "tunnel", "--no-autoupdate", "--config", config,
+            "--url", f"http://127.0.0.1:{self._port}",
         ]
         self._proc = await asyncio.create_subprocess_exec(
-            *args, stdin=subprocess.DEVNULL, stdout=self._log_file, stderr=self._log_file
+            *args, stdin=subprocess.DEVNULL, stdout=self._log_file, stderr=self._log_file, env=child_env()
         )
-        host = await self._wait_hostname(metrics, offset)
+        host = await self._wait_hostname(offset)
         self._set_url(remote_url(host))
         code = await self._proc.wait()
         log.warning("cloudflared exited with %s (see cloudflared.log)", code)
 
-    async def _wait_hostname(self, metrics: int, offset: int) -> str:
+    def _write_config(self) -> str:
+        """Rewrite the empty config in the supervisor's private directory and return its path."""
+        if self._config_dir is None:
+            self._config_dir = tempfile.mkdtemp(prefix="clawd-cloudflared-")
+        path = os.path.join(self._config_dir, "config.yml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(EMPTY_CONFIG)
+        return path
+
+    async def _wait_hostname(self, offset: int) -> str:
+        """The hostname from this run's own banner, read from the log after `offset`."""
         assert self._proc is not None
         deadline = time.monotonic() + self._cfg.cloudflared_url_timeout_s
         refused: set[str] = set()
-        async with httpx.AsyncClient(timeout=1.0, trust_env=False) as http:
-            while True:
-                if self._proc.returncode is not None:
-                    raise RuntimeError(f"exited with {self._proc.returncode} before the tunnel was ready")
-                for found in (await self._from_metrics(http, metrics), self._from_banner(offset)):
-                    if found is None:
-                        continue
-                    if HOSTNAME.fullmatch(found):
-                        return found
-                    if found not in refused:
-                        refused.add(found)
-                        log.warning("cloudflared hostname %r is not a Quick Tunnel host; ignored", found[:HOST_CHARS])
-                if time.monotonic() > deadline:
-                    raise RuntimeError(f"no tunnel hostname within {self._cfg.cloudflared_url_timeout_s:g} s")
-                await asyncio.sleep(POLL_S)
-
-    async def _from_metrics(self, http: httpx.AsyncClient, metrics: int) -> str | None:
-        try:
-            r = await http.get(f"http://127.0.0.1:{metrics}/quicktunnel")
-            value = r.json() if r.status_code == 200 else None
-        except (httpx.HTTPError, ValueError):
-            return None
-        return metrics_hostname(value)
+        while True:
+            if self._proc.returncode is not None:
+                raise RuntimeError(f"exited with {self._proc.returncode} before the tunnel was ready")
+            found = self._from_banner(offset)
+            if found is not None:
+                if HOSTNAME.fullmatch(found):
+                    return found
+                if found not in refused:
+                    refused.add(found)
+                    log.warning("cloudflared hostname %r is not a Quick Tunnel host; ignored", found[:HOST_CHARS])
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"no tunnel hostname within {self._cfg.cloudflared_url_timeout_s:g} s")
+            await asyncio.sleep(POLL_S)
 
     def _from_banner(self, offset: int) -> str | None:
         try:
@@ -187,3 +187,6 @@ class Cloudflared:
         if self._log_file is not None:
             self._log_file.close()
             self._log_file = None
+        if self._config_dir is not None:
+            shutil.rmtree(self._config_dir, ignore_errors=True)
+            self._config_dir = None
