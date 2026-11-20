@@ -31,13 +31,14 @@ uv run claude-voice [--config config.toml]
    uv run claude-voice pair
    ```
 
-3. 按提示输入 Wi-Fi 名称和密码。密码输入时不显示，不会写进日志。设备会重启一次。
+3. 按提示输入 Wi-Fi 名称和密码，之后可以再输入最多 3 个其他 Wi-Fi（例如手机热点），直接按回车结束。密码输入时不显示，不会写进日志。设备会重启一次。
 4. 程序生成配对密钥，存进 macOS 钥匙串（服务名 `claude-voice`），连同 Wi-Fi 设置和本机的局域网名称、地址一起写入设备，然后等设备通过 Wi-Fi 连上本机，并显示结果。
 5. 第一次配对时 macOS 防火墙可能弹窗，询问是否允许 Python 接受传入连接。请点「允许」，否则设备连不上本机。
 6. 配对完成后拔掉 USB 线（或改用充电器供电），再运行 `uv run claude-voice`，设备就会通过 Wi-Fi 连上。
 
 - 换了 Wi-Fi 或本机地址变了，重新运行一次 `pair` 即可。
 - 清除配对：`uv run claude-voice forget`（设备要用 USB 连着）。它清除设备上的 Wi-Fi 设置，并删除钥匙串里的密钥。
+- 设备丢失时：运行 `uv run claude-voice revoke`，不需要连接设备。它删除钥匙串里这台设备的配对密钥，正在运行的中继会在 10 秒内断开这台设备。设备里保存的 Wi-Fi 密码仍能被读出，请修改这些 Wi-Fi 的密码。钥匙串里有多台设备的密钥时，先在 `config.toml` 里用 `device_serial` 指定要撤销的设备。
 - Mac 睡眠或中继没在运行时，设备屏幕显示「离线」；Mac 唤醒、中继启动后设备会自动重连。
 - 设备没有开启闪存加密，拿到设备的人可以读出其中的 Wi-Fi 密码和配对密钥。
 
@@ -47,7 +48,9 @@ uv run claude-voice [--config config.toml]
 
 - 只有这台 Mac 上的程序能连到这个端口，局域网上的其他设备连不到。
 - 端点里传的是与 Wi-Fi 相同的加密连接，没有配对密钥的连接会被断开。
-- 中继不会启动隧道程序，要另外运行。
+- 在 `config.toml` 里设置 `cloudflared_bin`（cloudflared 程序的路径）后，中继会启动 cloudflared 的临时隧道，得到一个 `trycloudflare.com` 公网地址，写进日志并发给开发板。cloudflared 退出后中继会自动重启它，每次得到的地址都不同。没有设置时，中继不启动隧道程序。
+- 地址变了以后，开发板要先通过 USB 或局域网连上中继，才能收到新地址。
+- cloudflared 启动失败不影响 USB 和 Wi-Fi 连接。它的日志写在日志目录的 `cloudflared.log`。
 - 和 Wi-Fi 端口一样，只在 Wi-Fi 开启、这台 Mac 已和开发板配对时启动。不需要时，在 `config.toml` 里设 `tunnel_enabled = false`。
 
 ## 前提
