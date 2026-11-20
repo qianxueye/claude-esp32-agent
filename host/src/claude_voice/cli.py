@@ -177,7 +177,7 @@ STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 
 def run_until_signal(main: Coroutine[Any, Any, None]) -> None:
     """Run `main` as the loop's main task; the first SIGTERM or SIGHUP cancels it so its cleanup runs.
-    Later signals are ignored, so they cannot interrupt that cleanup."""
+    Signals during a cancellation already under way (Ctrl-C or an earlier signal) are ignored."""
 
     async def runner() -> None:
         loop = asyncio.get_running_loop()
@@ -186,7 +186,7 @@ def run_until_signal(main: Coroutine[Any, Any, None]) -> None:
 
         def stop() -> None:
             nonlocal stopping
-            if not stopping and task is not None:
+            if not stopping and task is not None and not task.cancelling():
                 stopping = True
                 task.cancel()
 
