@@ -74,17 +74,20 @@ class QwenTts:
         )
         base = f"http://127.0.0.1:{port}"
         t0 = time.monotonic()
+        last = "no response"
         async with httpx.AsyncClient(timeout=1.0) as probe:
             while True:
                 if self._proc.poll() is not None:
                     raise TtsError(f"server exited with {self._proc.returncode} (see qwen-tts-server.log)")
                 if time.monotonic() - t0 > cfg.qwen_ready_timeout_s:
-                    raise TtsError("server not ready in time")
+                    raise TtsError(f"server not ready in time; last probe: {last}")
                 try:
-                    if (await probe.get(base + "/")).status_code < 500:
+                    status = (await probe.get(base + "/")).status_code
+                    if status < 500:
                         return base
-                except httpx.HTTPError:
-                    pass
+                    last = f"HTTP {status}"
+                except httpx.HTTPError as e:
+                    last = repr(e)
                 await asyncio.sleep(0.5)
 
     async def _drop_client(self) -> None:
@@ -114,6 +117,13 @@ class QwenTts:
         self._failing = True
 
     async def synth(self, text: str) -> bytes:
+        if self._proc is not None and self._proc.poll() is not None:
+            log.error(
+                "qwen3 speech server exited with %s; using say until the relay restarts (see qwen-tts-server.log)",
+                self._proc.returncode,
+            )
+            await self._stop_server()
+            await self._drop_client()
         if self._http is None or time.monotonic() < self._skip_until:
             return await self._fallback.synth(text)
         t0 = time.monotonic()
