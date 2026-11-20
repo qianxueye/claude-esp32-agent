@@ -613,10 +613,11 @@ def expect(name, ok, detail=""):
 
 
 def cmd_v3check(link, args):
-    """Silent protocol v3 checks: HELLO fields including the volume, consumed counter, flush, resume, proto refusal, PAIR stub."""
+    """Silent protocol v3 checks: HELLO fields including the volume, consumed counter, flush, resume, proto refusal, PAIR refusal, FORGET."""
     ok = True
     h = link.hellos[-1] if link.hellos else {}
-    ok &= expect("hello fields", h.get("proto") == PROTO and h.get("link") == "usb" and h.get("paired") is False
+    paired = h.get("paired")
+    ok &= expect("hello fields", h.get("proto") == PROTO and h.get("link") == "usb" and isinstance(paired, bool)
                  and h.get("reason") in ("boot", "reply") and isinstance(h.get("vol"), int) and isinstance(h.get("vol_set"), bool),
                  json.dumps(h))
     vol0 = h.get("vol")
@@ -646,8 +647,12 @@ def cmd_v3check(link, args):
             drained |= t == T_SPK_STATUS and bool(p[4] & 2)
     ok &= expect("flush cancels pending SPK_END", not drained)
     link.send(T_HOST_HELLO, b'{"proto":%d}' % PROTO)
-    ok &= expect("HELLO reply + WIFI_STATUS", link.wait_for(T_HELLO, 1.0, show=False) is not None
-                 and link.wait_for(T_WIFI_STATUS, 1.0, show=False) == b'{"wifi":"off","relay":"none"}'
+    got_hello = link.wait_for(T_HELLO, 1.0, show=False) is not None
+    status = link.wait_for(T_WIFI_STATUS, 1.0, show=False)
+    if paired:
+        print("WIFI_STATUS", status.decode() if status else None)
+    ok &= expect("HELLO reply + WIFI_STATUS", got_hello and status is not None
+                 and (paired or status == b'{"wifi":"off","relay":"none"}')
                  and link.hellos[-1]["reason"] == "reply", json.dumps(link.hellos[-1:]))
     ok &= expect("transient 0 left the stored volume unchanged", bool(link.hellos) and link.hellos[-1].get("vol") == vol0,
                  "vol %r then %r" % (vol0, link.hellos[-1:] and link.hellos[-1].get("vol")))
@@ -664,9 +669,12 @@ def cmd_v3check(link, args):
     link.send(T_HOST_HELLO, b'{"proto":1}')
     ok &= expect("proto mismatch ignored", link.wait_for(T_HELLO, 1.0, show=False) is None)
     link.send(T_PAIR, b"{}")
-    ok &= expect("PAIR stub", link.wait_for(T_PAIR_RESULT, 1.0, show=False) == b'{"ok":false,"error":"not implemented"}')
-    link.send(T_FORGET)
-    ok &= expect("FORGET stub", link.wait_for(T_FORGET_RESULT, 1.0, show=False) == b'{"ok":false,"error":"not implemented"}')
+    p = link.wait_for(T_PAIR_RESULT, 1.0, show=False)
+    r = json.loads(p) if p else {}
+    ok &= expect("PAIR {} refused", r.get("ok") is False and isinstance(r.get("error"), str), p.decode() if p else "no reply")
+    if paired is False:
+        link.send(T_FORGET)
+        ok &= expect("FORGET while unpaired", link.wait_for(T_FORGET_RESULT, 1.0, show=False) == b'{"ok":true}')
     print("v3check", "PASS" if ok else "FAIL")
 
 
