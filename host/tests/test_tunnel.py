@@ -261,6 +261,10 @@ class Harness:
         await self.lan.close()
 
 
+def _session_logs(caplog):
+    return [r.getMessage() for r in caplog.records if "link open" in r.getMessage() or "session open" in r.getMessage()]
+
+
 def _lan_closed(d):
     return d.t._closed or d.t._writer.is_closing()
 
@@ -298,15 +302,18 @@ async def test_message_boundaries_do_not_matter(split):
 
 
 @pytest.mark.parametrize("key", [bytes(32), KEY[:-1] + b"\x00"], ids=["zero-key", "one-byte-off"])
-async def test_wrong_psk_fails_and_nothing_reaches_link(key):
+async def test_wrong_psk_fails_and_nothing_reaches_link(key, caplog):
+    caplog.set_level(logging.INFO, logger="claude_voice")
     async with Harness() as w:
         with pytest.raises(ConnectionError):
             await WsBoard.connect(w.srv.port, key=key)
         await asyncio.sleep(0.1)
         assert w.h.link.active_kind is None and w.h.relay.state == State.IDLE and w.srv.admission.count == 0
+    assert not _session_logs(caplog)
 
 
-async def test_plain_frames_inside_messages_are_never_processed():
+async def test_plain_frames_inside_messages_are_never_processed(caplog):
+    caplog.set_level(logging.INFO, logger="claude_voice")
     async with Harness() as w:
         b = await WsBoard.open(w.srv.port)
         await asyncio.wait_for(b.upgraded.wait(), 3)
@@ -315,7 +322,9 @@ async def test_plain_frames_inside_messages_are_never_processed():
         b.send_raw(encode(T.INPUT, bytes([TURN_INPUT])))
         assert await _closed_within(b, 1.0)
         assert w.h.link.active_kind is None and w.h.relay.state == State.IDLE and not w.h.stt.calls
+        assert b.rx.qsize() == 1 and b.rx.get_nowait() is None
         await b.close()
+    assert not _session_logs(caplog)
 
 
 async def test_resumed_inner_session_is_refused():
