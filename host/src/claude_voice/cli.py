@@ -9,8 +9,11 @@ import getpass
 import logging
 import logging.handlers
 import resource
+import signal
 import sys
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any
 
 from . import config as config_mod
 from .agent import ClaudeAgent
@@ -169,6 +172,35 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
         await stt.close()
 
 
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+def run_until_signal(main: Coroutine[Any, Any, None]) -> None:
+    """Run `main` as the loop's main task; the first SIGTERM or SIGHUP cancels it so its cleanup runs.
+    Later signals are ignored, so they cannot interrupt that cleanup."""
+
+    async def runner() -> None:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        stopping = False
+
+        def stop() -> None:
+            nonlocal stopping
+            if not stopping and task is not None:
+                stopping = True
+                task.cancel()
+
+        for sig in STOP_SIGNALS:
+            loop.add_signal_handler(sig, stop)
+        try:
+            await main
+        except asyncio.CancelledError:
+            if not stopping:
+                raise
+
+    asyncio.run(runner())
+
+
 def _board(cfg: config_mod.Config) -> tuple[str, str]:
     boards = list_boards(cfg)
     if not boards:
@@ -258,7 +290,7 @@ def main() -> None:
     raise_open_files_limit(cfg.open_files_limit)
     if args.command == "run":
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(run(cfg))
+            run_until_signal(run(cfg))
         return
     command = {"pair": pair_command, "forget": forget_command, "revoke": revoke_command}[args.command]
     try:
