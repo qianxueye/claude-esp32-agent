@@ -21,6 +21,7 @@ from .relay import Relay
 from .stt import WhisperStt
 from .qwen_tts import QwenTts
 from .tts import SayTts
+from .tunnel import TunnelServer
 from .wifi import WifiServer, load_keys
 
 
@@ -56,16 +57,25 @@ def keychain(cfg: config_mod.Config) -> KeychainStore:
     return KeychainStore(cfg.keychain_service, cfg.keychain_timeout_s)
 
 
-async def start_wifi(cfg: config_mod.Config, link: Link, store: PskStore) -> WifiServer | None:
+def wifi_keys(cfg: config_mod.Config, store: PskStore) -> dict[str, bytes]:
+    """The paired board's PSK for the network links, or {} after logging why they stay off."""
     if not cfg.wifi_enabled:
-        return None
+        return {}
     try:
         keys = load_keys(cfg, store)
     except (KeychainError, ValueError) as e:
         logging.error("Wi-Fi link off: %s", e)
-        return None
+        return {}
     if not keys:
         logging.info("Wi-Fi link off: no paired board (run `claude-voice pair`)")
+    return keys
+
+
+async def start_wifi(
+    cfg: config_mod.Config, link: Link, store: PskStore, keys: dict[str, bytes] | None = None
+) -> WifiServer | None:
+    keys = wifi_keys(cfg, store) if keys is None else keys
+    if not keys:
         return None
     server = WifiServer(cfg, keys, link.serve_wifi)
     try:
@@ -74,6 +84,19 @@ async def start_wifi(cfg: config_mod.Config, link: Link, store: PskStore) -> Wif
         logging.error("Wi-Fi link off: cannot listen on port %d: %s", cfg.wifi_port, e.strerror)
         return None
     logging.info("Wi-Fi link listening on %s:%d", cfg.wifi_host, server.port)
+    return server
+
+
+async def start_tunnel(cfg: config_mod.Config, link: Link, keys: dict[str, bytes]) -> TunnelServer | None:
+    if not (cfg.tunnel_enabled and cfg.wifi_enabled and keys):
+        return None
+    server = TunnelServer(cfg, keys, lambda t: link.serve_wifi(t, "tunnel"))
+    try:
+        await server.start()
+    except OSError as e:
+        logging.error("tunnel link off: cannot listen on port %d: %s", cfg.tunnel_port, e.strerror)
+        return None
+    logging.info("tunnel link listening on %s:%d", server.address, server.port)
     return server
 
 
@@ -86,13 +109,17 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
     relay.attach(link)
     tasks: list[asyncio.Task] = []
     server: WifiServer | None = None
+    tunnel: TunnelServer | None = None
     try:
         logging.info("starting whisper-server (first start may take a while)")
         await stt.start()
         if isinstance(tts, QwenTts):
             await tts.start()
         agent.start()
-        server = await start_wifi(cfg, link, keychain(cfg))
+        store = keychain(cfg)
+        keys = wifi_keys(cfg, store)
+        server = await start_wifi(cfg, link, store, keys)
+        tunnel = await start_tunnel(cfg, link, keys)
         tasks = [asyncio.create_task(link.run()), asyncio.create_task(relay.idle_reset_loop())]
         await asyncio.gather(*tasks)
     finally:
@@ -100,6 +127,8 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
             t.cancel()
         if server is not None:
             await server.close()
+        if tunnel is not None:
+            await tunnel.close()
         with contextlib.suppress(Exception):
             await agent.close()
         if isinstance(tts, QwenTts):

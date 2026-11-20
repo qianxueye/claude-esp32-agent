@@ -44,6 +44,15 @@ class Config:
     wifi_silence_timeout_s: float = 5.0  # no valid frame from the board: the session is dead
     wifi_write_buffer_max: int = 262144  # frames are dropped while this much is unsent
     wifi_close_timeout_s: float = 2.0
+    # tunnel link: WebSocket endpoint on 127.0.0.1 for a tunnel connector such as cloudflared
+    tunnel_enabled: bool = True
+    tunnel_port: int = 47802  # 0: an ephemeral port
+    tunnel_preauth_max: int = 4  # tunnel connections from WebSocket accept to the end of the TLS handshake
+    tunnel_preauth_per_addr_max: int = 2  # per CF-Connecting-IP value
+    tunnel_upgrade_timeout_s: float = 10.0
+    tunnel_ws_max_message: int = 32768
+    tunnel_preauth_bytes_max: int = 32768  # inbound bytes before the TLS session is authenticated
+    tunnel_write_buffer_max: int = 262144  # frames are dropped while this much is unsent
     keychain_service: str = "claude-voice"
     keychain_timeout_s: float = 30.0  # `security` may wait for the user to unlock the Keychain
 
@@ -124,6 +133,12 @@ class Config:
     open_files_limit: int = 4096  # soft RLIMIT_NOFILE raised to this at startup, never above the hard limit
 
 
+POSITIVE_KEYS = (
+    "tunnel_preauth_max", "tunnel_preauth_per_addr_max", "tunnel_upgrade_timeout_s",
+    "tunnel_ws_max_message", "tunnel_preauth_bytes_max", "tunnel_write_buffer_max",
+)
+
+
 def load(path: Path | str | None = None) -> Config:
     cfg = Config()
     p = Path(path) if path else HOST_DIR / "config.toml"
@@ -137,6 +152,11 @@ def load(path: Path | str | None = None) -> Config:
     if unknown:
         raise ValueError(f"unknown config keys in {p}: {', '.join(unknown)}")
     cfg = dataclasses.replace(cfg, **data)
+    if not 0 <= cfg.tunnel_port <= 65535:
+        raise ValueError(f"tunnel_port must be 0-65535, got {cfg.tunnel_port} in {p}")
+    for key in POSITIVE_KEYS:
+        if not getattr(cfg, key) > 0:
+            raise ValueError(f"{key} must be positive, got {getattr(cfg, key)} in {p}")
     if not 0 <= cfg.volume <= 100:
         raise ValueError(f"volume must be 0-100, got {cfg.volume} in {p}")
     if cfg.tts_engine not in ("say", "qwen3"):
