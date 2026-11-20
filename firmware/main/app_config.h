@@ -24,6 +24,10 @@
 #define NET_RELAY_NAMES_MAX 4
 #define NET_RELAY_NAME_MAX 63
 #define NET_RELAY_ADDRS_MAX 8
+#define LAN_CONNECT_TIMEOUT_MS 1500 /* TCP connect to one relay address on the LAN */
+#define REMOTE_CONNECT_TIMEOUT_MS 15000 /* DNS, TCP, outer TLS and upgrade of the remote URL */
+#define NET_BACKOFF_MIN_MS 1000 /* relay and association retry, doubling */
+#define NET_BACKOFF_MAX_MS 30000
 
 /* USB-Serial-JTAG transport */
 #define USB_RX_BUFFER_BYTES 16384
