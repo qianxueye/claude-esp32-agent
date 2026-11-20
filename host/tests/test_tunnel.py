@@ -384,7 +384,7 @@ async def test_missing_or_invalid_connecting_ip_shares_one_key(caplog):
     assert peer_key(Headers()) == "tunnel:?"
     assert peer_key(Headers([("CF-Connecting-IP", "not an address")])) == "tunnel:?"
     assert peer_key(Headers([("CF-Connecting-IP", "a"), ("CF-Connecting-IP", "b")])) == "tunnel:?"
-    assert peer_key(Headers([("cf-connecting-ip", " 2001:DB8::1 ")])) == "tunnel:2001:db8::1"
+    assert peer_key(Headers([("cf-connecting-ip", " 2001:DB8::1 ")])) == "tunnel:2001:db8::/64"
     c = tunnel_cfg(tunnel_preauth_max=4, tunnel_preauth_per_addr_max=2, wifi_handshake_timeout_s=5.0)
     async with tunnel(Recorder(), c) as srv:
         held = [await _upgrade(srv.port, ip) for ip in (None, "garbage", None)]
@@ -396,6 +396,28 @@ async def test_missing_or_invalid_connecting_ip_shares_one_key(caplog):
     assert "Tunnel connection from tunnel:? refused: its handshake limit is reached" in [
         r.getMessage() for r in caplog.records
     ]
+
+
+def _key(ip):
+    return peer_key(Headers([("CF-Connecting-IP", ip)]))
+
+
+def test_ipv6_keys_by_its_64_network_and_mapped_ipv4_by_the_ipv4_address():
+    assert _key("2001:db8:1:2::1") == _key("2001:db8:1:2:ffff:ffff:ffff:ffff") == "tunnel:2001:db8:1:2::/64"
+    assert _key("2001:db8:1:2::1") != _key("2001:db8:1:3::1")
+    assert _key("::ffff:198.51.100.7") == _key("198.51.100.7") == "tunnel:198.51.100.7"
+    assert _key("198.51.100.7") != _key("198.51.100.8")
+
+
+async def test_one_ipv6_64_shares_the_per_address_cap():
+    c = tunnel_cfg(tunnel_preauth_max=8, tunnel_preauth_per_addr_max=2, wifi_handshake_timeout_s=5.0)
+    async with tunnel(Recorder(), c) as srv:
+        same = [await _upgrade(srv.port, ip) for ip in ("2001:db8:0:1::1", "2001:db8:0:1::2", "2001:db8:0:1:a::3")]
+        assert [b.response is not None for b in same] == [True, True, False]
+        other = [await _upgrade(srv.port, ip) for ip in ("2001:db8:0:2::1", "2001:db8:0:3::1")]
+        assert [b.response is not None for b in other] == [True, True]
+        for b in same + other:
+            await b.close()
 
 
 async def test_upgrade_deadline_closes_a_silent_connection():

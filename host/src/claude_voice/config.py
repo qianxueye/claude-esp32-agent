@@ -48,7 +48,7 @@ class Config:
     tunnel_enabled: bool = True
     tunnel_port: int = 47802  # 0: an ephemeral port
     tunnel_preauth_max: int = 4  # tunnel connections from WebSocket accept to the end of the TLS handshake
-    tunnel_preauth_per_addr_max: int = 2  # per CF-Connecting-IP value
+    tunnel_preauth_per_addr_max: int = 2  # per CF-Connecting-IP IPv4 address or IPv6 /64
     tunnel_upgrade_timeout_s: float = 10.0
     tunnel_ws_max_message: int = 32768
     tunnel_preauth_bytes_max: int = 32768  # inbound bytes before the TLS session is authenticated
