@@ -780,7 +780,8 @@ bool netcfg_parse_remote(const uint8_t *text, size_t len, char url[NET_URL_MAX +
             char key[KEY_BUF];
             size_t klen;
             if (!jkey(&c, key, &klen)) {
-                return false;
+                c.bad = true;
+                break;
             }
             if (!key_is(key, klen, "url")) {
                 jskip(&c, 1);

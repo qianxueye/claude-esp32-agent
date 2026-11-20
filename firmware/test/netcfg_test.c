@@ -76,6 +76,8 @@ static void expect(const char *name, const char *json, const char *want)
 
 static void test_minimal_and_full(void)
 {
+    CHECK("fixtures have the encoder's lengths 474, 525 and 51",
+          sizeof FULL4 - 1 == 474 && sizeof FIVE - 1 == 525 && sizeof REMOTE - 1 == 51);
     const char *min = mk("\"HomeNet\"", "\"correct horse\"", ID, PSK64, "");
     expect("minimal PAIR accepted", min, NULL);
     CHECK("minimal: one network from the top-level pair, lan true",
@@ -323,6 +325,9 @@ static void test_remote(void)
     CHECK("SET_REMOTE without url refused", !remote_ok("{\"access_id\":\"i\"}"));
     CHECK("SET_REMOTE duplicate url refused", !remote_ok("{\"url\":\"wss://a.b/\",\"url\":\"wss://a.b/\"}"));
     CHECK("SET_REMOTE trailing x refused", !remote_ok("{\"url\":\"wss://a.b/\"}x"));
+    const char *bad_key = "{\"url\":\"wss://a.b/x\",5:1}";
+    CHECK("SET_REMOTE with a bad key after the URL refused and the URL cleared",
+          !netcfg_parse_remote((const uint8_t *)bad_key, strlen(bad_key), url) && url[0] == 0);
     char u[300] = "wss://";
     memset(u + 6, 'a', 245);
     memcpy(u + 251, ".b/x", 5);
