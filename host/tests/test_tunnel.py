@@ -273,7 +273,8 @@ async def test_listens_on_loopback_only_with_the_exact_inner_handshake():
     rec = Recorder()
     async with tunnel(rec, tunnel_cfg(wifi_host="0.0.0.0")) as srv:
         assert srv.address == "127.0.0.1"
-        b = await WsBoard.connect(srv.port)
+        b = await WsBoard.connect(srv.port, headers=[("Sec-WebSocket-Extensions", "permessage-deflate")])
+        assert "Sec-WebSocket-Extensions" not in b.response.headers
         assert b.tls.version() == "TLSv1.2" and b.tls.cipher()[0] == CIPHER and not b.tls.session_reused
         await until(lambda: rec.sessions)
         await b.close()
@@ -427,6 +428,18 @@ async def test_message_over_the_size_limit_closes_the_connection():
         await b.close()
 
 
+async def test_text_message_closes_the_connection():
+    rec = Recorder()
+    async with tunnel(rec) as srv:
+        b = await WsBoard.connect(srv.port)
+        await until(lambda: rec.sessions)
+        b.ws.send_text(b"hello")
+        b._flush_ws()
+        assert await _closed_within(b, 1.0)
+        assert b.ws.close_rcvd is not None and b.ws.close_rcvd.code == 1003
+        await b.close()
+
+
 def _padded_request(n, size):
     pad = "".join(f"X-Pad-{i}: {'a' * size}\r\n" for i in range(n))
     return (
@@ -483,8 +496,11 @@ UPGRADE = "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlI
         ("GET /clawd/v1 HTTP/1.1", ""),
         ("GET /clawd/v1 HTTP/1.1", "Upgrade: websocket\r\nConnection: Upgrade\r\n"),
         ("GET /clawd/v1 HTTP/1.1", UPGRADE + "X-Long: " + "a" * 9000 + "\r\n"),
+        ("GET /clawd/v1 HTTP/1.1", UPGRADE + "Content-Length: 5\r\n"),
+        ("GET /clawd/v1 HTTP/9.9", UPGRADE),
     ],
-    ids=["root", "other-version", "query", "trailing-slash", "post", "plain-get", "no-key", "header-too-long"],
+    ids=["root", "other-version", "query", "trailing-slash", "post", "plain-get", "no-key", "header-too-long",
+         "with-body", "bad-http-version"],
 )
 async def test_every_other_request_gets_an_empty_404(request_line, headers):
     async with tunnel(Recorder(), tunnel_cfg(tunnel_preauth_bytes_max=65536)) as srv:

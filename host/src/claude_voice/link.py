@@ -15,6 +15,7 @@ from .config import Config
 from .protocol import PARTIAL_TIMEOUT, PROTO_VERSION, Decoder, State, T, encode
 
 log = logging.getLogger("claude_voice.link")
+LOG_NAMES = {"wifi": "Wi-Fi"}
 
 
 class TransportClosed(Exception):
@@ -261,7 +262,7 @@ class Link:
         async with self._switch:
             old = self._active
             if s.kind == "wifi" and old is not None and old.kind == "usb":
-                log.info("%s session refused: the board is on USB", s.label)
+                log.info("%s session refused: the board is on USB", LOG_NAMES.get(s.label, s.label))
                 return False
             if old is not None:
                 log.info("%s session replaces the %s session", s.label, old.label)
@@ -318,7 +319,10 @@ class Link:
                     else:
                         self._dispatch(s, ftype, payload)
                 if s.kind == "wifi" and now - last_valid > cfg.wifi_silence_timeout_s:
-                    log.warning("no frame on %s for %.0f s; closing the session", s.label, cfg.wifi_silence_timeout_s)
+                    log.warning(
+                        "no frame on %s for %.0f s; closing the session",
+                        LOG_NAMES.get(s.label, s.label), cfg.wifi_silence_timeout_s,
+                    )
                     return
         except TransportClosed:
             pass

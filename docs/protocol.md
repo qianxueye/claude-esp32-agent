@@ -100,7 +100,7 @@ HELLO `link` is `"tunnel"` when the board sends it over the tunnel.
 | `0x82` | SET_STATE  | `u8` state (table below). |
 | `0x83` | SET_VOLUME | `u8` volume (values above 100 are clamped to 100), then an optional `u8` mode: `0` transient (also when absent), `1` persist, `2` seed. Other modes and other lengths are ignored, as is any set while the knob is armed. See Volume. |
 | `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. Optional: `networks`, up to 4 `{"ssid":"…","password":"…","lan":true|false}` that replace all saved networks (`lan` true where the relay addresses are reachable); `remote_url` (`"wss://…/clawd/v1"`); `access_id` and `access_secret` (tunnel provider credentials sent as headers on the upgrade). |
-| `0x85` | FORGET     | USB only. Empty. Erase Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials; disconnect Wi-Fi; then send FORGET_RESULT. |
+| `0x85` | FORGET     | USB only. Empty. Erase Wi-Fi credentials, PSK and relay addresses; disconnect Wi-Fi; then send FORGET_RESULT. |
 | `0x86` | SET_REMOTE | JSON `{"url":"wss://…/clawd/v1"}`, optionally with `access_id` and `access_secret`. Sent by the relay after HELLO on any authenticated link; the device stores the values only when they changed. |
 | `0x90` | SPK_AUDIO  | PCM, ≤ 4096 bytes, even length. Appended to the playback queue. |
 | `0x91` | SPK_FLUSH  | Empty. Stop playback now and clear the queue. |
