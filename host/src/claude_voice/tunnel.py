@@ -176,7 +176,7 @@ class _Conn(asyncio.Protocol):
             if isinstance(event, Request):
                 self._on_request(event)
             elif self._ws.state is not OPEN:
-                break  # frames parsed after a close in the same chunk are dropped
+                break  # every frame of a chunk that left OPEN is dropped
             elif event.opcode in (Opcode.BINARY, Opcode.CONT):
                 self._on_bytes(event.data)
             elif event.opcode is Opcode.TEXT:
