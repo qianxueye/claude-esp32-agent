@@ -16,10 +16,15 @@ _ACCOUNT_LINE = re.compile(r'"acct"<blob>="([^"]*)"')
 _SERVICE_LINE = re.compile(r'"svce"<blob>="([^"]*)"')
 _DUMP_ITEM = re.compile(r"^keychain: ", re.MULTILINE)
 _NOT_FOUND = 44
+DELETE_MAX = 16  # deletes of one identity, one per keychain in the search list
 
 
 class KeychainError(RuntimeError):
     pass
+
+
+class KeychainValueError(KeychainError):
+    """The item exists but its value is not a hex key."""
 
 
 def valid_identity(identity: str | None) -> bool:
@@ -27,10 +32,10 @@ def valid_identity(identity: str | None) -> bool:
 
 
 def psk_identity(serial: str) -> str:
-    """`clawd-` followed by the USB serial number without colons."""
+    """`clawd-` followed by the USB serial number without colons, in uppercase."""
     if not _SERIAL.fullmatch(serial):
         raise ValueError(f"not a USB serial number of the form AA:BB:CC:DD:EE:FF: {serial!r}")
-    return PSK_IDENTITY_PREFIX + serial.replace(":", "")
+    return PSK_IDENTITY_PREFIX + serial.replace(":", "").upper()
 
 
 class PskStore(Protocol):
@@ -96,7 +101,7 @@ class KeychainStore:
         try:
             key = bytes.fromhex(r.stdout.strip())
         except ValueError:
-            raise KeychainError(f"Keychain item {self.service}/{identity} is not a hex key") from None
+            raise KeychainValueError(f"Keychain item {self.service}/{identity} is not a hex key") from None
         return key or None
 
     def set(self, identity: str, key: bytes) -> None:
@@ -107,13 +112,17 @@ class KeychainStore:
             raise KeychainError(f"security add-generic-password exited with {r.returncode}")
 
     def delete(self, identity: str) -> bool:
+        """Delete every item of `identity`; `security` removes only the first match in the search list per call."""
         self._check(identity)
-        r = self._run(["delete-generic-password", "-s", self.service, "-a", identity])
-        if r.returncode == _NOT_FOUND:
-            return False
-        if r.returncode != 0:
-            raise KeychainError(f"security delete-generic-password exited with {r.returncode}")
-        return True
+        deleted = False
+        for _ in range(DELETE_MAX):
+            r = self._run(["delete-generic-password", "-s", self.service, "-a", identity])
+            if r.returncode == _NOT_FOUND:
+                return deleted
+            if r.returncode != 0:
+                raise KeychainError(f"security delete-generic-password exited with {r.returncode}")
+            deleted = True
+        raise KeychainError(f"Keychain item {self.service}/{identity} still found after {DELETE_MAX} deletes")
 
     def find_any(self) -> str | None:
         r = self._run(["find-generic-password", "-s", self.service])

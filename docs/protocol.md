@@ -16,7 +16,7 @@ The same frames run over USB and over two network links, Wi-Fi on the LAN and th
 
 ### Wi-Fi
 
-- TCP carrying TLS 1.2 with the single cipher suite `ECDHE-PSK-CHACHA20-POLY1305` (no fallback, no other version). Pre-shared key: 32 random bytes. PSK identity: `clawd-` followed by the USB serial number without colons.
+- TCP carrying TLS 1.2 with the single cipher suite `ECDHE-PSK-CHACHA20-POLY1305` (no fallback, no other version). Pre-shared key: 32 random bytes. PSK identity: `clawd-` followed by the USB serial number without colons, in uppercase.
 - The board is the TLS client; the relay is the server on TCP port 47801 on all LAN interfaces. Both sides set `TCP_NODELAY`. The board turns Wi-Fi power saving off while a relay session is open.
 - The board tries the relay addresses saved at pairing in order: the relay's `.local` host name (resolved by mDNS), then each saved IPv4 address. It retries with backoff (1 s doubling to 30 s).
 - The relay keeps one board session; a new authenticated session replaces the old one.
