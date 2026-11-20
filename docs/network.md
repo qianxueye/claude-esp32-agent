@@ -31,6 +31,7 @@ Code: `net.c` (task, Wi-Fi, both transports, inner TLS, PAIR/FORGET/SET_REMOTE),
 
 - `linkstate` decides per frame whether it is handled and whether it counts for liveness, as `protocol.md` "Active link" states. A network HOST_HELLO makes its session active only when no valid USB frame has arrived for 5000 ms; a board that has heard nothing on USB since boot counts as silent.
 - The board does not close its network session when USB HOST_HELLO arrives; the relay does that.
+- A HOST_HELLO with another protocol version is dropped before these rules, so it neither changes the active link nor counts as a USB frame.
 - Every end of a network session (relay close, silence close, read or write error, Wi-Fi loss, generation change, FORGET) runs one exit path: close_notify, then the active link drops from the network to none, then the session's queued frames are discarded. Only then can the next session start, and it cannot become active before its own HOST_HELLO.
 - The board closes a session on which no valid frame arrived for 5000 ms (`PROTO_HOST_SILENCE_TIMEOUT_MS`), active or not. A session ignored under the 5000 ms USB rule therefore ends within that time, and the board retries under the backoff.
 - Only a HOST_HELLO that made the session active resets the relay backoff. A session that ends without one counts as a failed attempt.
@@ -53,7 +54,7 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 - PAIR and SET_REMOTE are read by a strict reader for their fixed schemas, not a general JSON parser. It accepts RFC 8259 syntax with whitespace (space, tab, CR, LF) between tokens, UTF-8 strings and escapes (`\uXXXX` with surrogate pairs; an escaped NUL is refused), and skips unknown keys with values nested at most three levels.
 - PAIR text is at most 1023 bytes, SET_REMOTE text at most 511; each has its own static buffer, so neither runs on a task stack.
 - Checks and their order produce the PAIR_RESULT codes listed in `protocol.md`. The first failing check names the code; a refused PAIR keeps the previous configuration.
-- The PSK identity must equal `clawd-` plus the factory MAC (`esp_read_mac(…, ESP_MAC_EFUSE_FACTORY)`) in uppercase hex. The USB-Serial-JTAG peripheral is fixed-function hardware that reports this MAC as its serial number; the board test confirms both match.
+- The PSK identity must equal `clawd-` plus the factory MAC (`esp_read_mac(…, ESP_MAC_EFUSE_FACTORY)`) in uppercase hex. The USB-Serial-JTAG peripheral is fixed-function hardware whose serial number is expected to be this MAC; IDF has no software source for the descriptor, so the board test confirms that both match.
 - Access credentials (`access_id`, `access_secret`) are skipped by the reader and ignored in SET_REMOTE.
 
 ## Storage
@@ -93,15 +94,15 @@ The task checks the generation, Wi-Fi and the deadlines between blocking calls. 
 | Association and DHCP | `NET_ASSOC_TIMEOUT_MS` 20 s, event driven |
 | Relay name lookup (`.local`, mDNS) | lwIP retry schedule, about 7 s; not limited by the 1.5 s connect timeout |
 | LAN TCP connect | `LAN_CONNECT_TIMEOUT_MS` 1.5 s in 100 ms slices |
-| Tunnel host lookup | about 7 s per DNS server, at most two from DHCP, so about 14 s |
-| Tunnel TCP connect and outer handshake | `REMOTE_STEP_TIMEOUT_MS` 3 s per step; the overall check runs after a step, so up to about 6 s |
-| Upgrade request write | 3 s |
-| Upgrade response read | 3 s per read; a peer that sends a few bytes per read can stretch it, at most one read per byte of the 2048-byte buffer |
+| Tunnel host lookup alone | about 7 s per DNS server, at most two from DHCP, so about 14 s |
+| Tunnel host lookup, TCP connect and outer handshake | `REMOTE_STEP_TIMEOUT_MS` 5 s in total, checked after each step, so up to about 10 s; a slow lookup ends the attempt at its first check |
+| Upgrade request write | 5 s |
+| Upgrade response read | 5 s per read; a peer that sends a few bytes per read can stretch it, at most one read per byte of the 2048-byte buffer |
 | Inner handshake | `NET_INNER_HANDSHAKE_MS` 10 s, checked between steps; one step on the tunnel can add up to 5 s |
 | Session read | `NET_POLL_MS` 20 ms; on the tunnel up to 5 s for the rest of a message |
 | Session write | LAN non-blocking; tunnel 20 ms poll, then up to 5 s for the message |
 
-Without slow DNS or a slow peer, a tunnel attempt stays within `REMOTE_CONNECT_TIMEOUT_MS` 15 s.
+The three tunnel steps add up to `REMOTE_CONNECT_TIMEOUT_MS` 15 s. A slow lookup or a peer that answers just inside each step limit can exceed it, by the overrun shown above.
 
 ## Memory
 

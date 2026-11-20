@@ -222,11 +222,11 @@ static void drain_events(void)
     }
 }
 
+/* Initialises netif, driver and handlers once; a failed step is retried at the next PAIR. */
 static bool wifi_ensure_init(void)
 {
-    if (s_wifi_ready) {
-        return true;
-    }
+    static esp_netif_t *netif;
+    static bool driver, handlers;
     esp_err_t e = esp_netif_init();
     if (e == ESP_OK) {
         e = esp_event_loop_create_default();
@@ -234,30 +234,40 @@ static bool wifi_ensure_init(void)
             e = ESP_OK;
         }
     }
-    esp_netif_t *netif = NULL;
-    if (e == ESP_OK) {
+    if (e == ESP_OK && !netif) {
         esp_netif_config_t ncfg = ESP_NETIF_DEFAULT_WIFI_STA();
-        netif = esp_netif_new(&ncfg);
-        e = netif ? esp_netif_attach_wifi_station(netif) : ESP_ERR_NO_MEM;
+        esp_netif_t *n = esp_netif_new(&ncfg);
+        e = n ? esp_netif_attach_wifi_station(n) : ESP_ERR_NO_MEM;
+        if (e == ESP_OK) {
+            netif = n;
+        } else if (n) {
+            esp_netif_destroy(n);
+        }
     }
-    if (e == ESP_OK) {
-        e = esp_wifi_set_default_wifi_sta_handlers();
-    }
-    if (e == ESP_OK) {
+    if (e == ESP_OK && !driver) {
         wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
         e = esp_wifi_init(&wcfg);
+        if (e == ESP_OK) {
+            e = esp_wifi_set_default_wifi_sta_handlers();
+        }
+        if (e == ESP_OK) {
+            e = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+        }
+        if (e == ESP_OK) {
+            e = esp_wifi_set_mode(WIFI_MODE_STA);
+        }
+        if (e == ESP_OK) {
+            driver = true;
+        } else {
+            esp_wifi_deinit();
+        }
     }
-    if (e == ESP_OK) {
-        e = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    }
-    if (e == ESP_OK) {
-        e = esp_wifi_set_mode(WIFI_MODE_STA);
-    }
-    if (e == ESP_OK) {
+    if (e == ESP_OK && !handlers) {
         e = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL, NULL);
-    }
-    if (e == ESP_OK) {
-        e = esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, on_event, NULL, NULL);
+        if (e == ESP_OK) {
+            e = esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, on_event, NULL, NULL);
+        }
+        handlers = e == ESP_OK;
     }
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi init failed (%s)", esp_err_to_name(e));

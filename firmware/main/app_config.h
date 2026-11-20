@@ -30,7 +30,7 @@
 #define NET_BACKOFF_MAX_MS 30000
 #define NET_NVS_NAMESPACE "clawdnet"
 #define NET_INNER_HANDSHAKE_MS 10000 /* the relay's own handshake limit */
-#define REMOTE_STEP_TIMEOUT_MS 3000 /* per blocking step of the tunnel connect; docs/network.md "Bounds" */
+#define REMOTE_STEP_TIMEOUT_MS 5000 /* per blocking step of the tunnel connect; docs/network.md "Bounds" */
 #define NET_SCAN_TIMEOUT_MS 10000
 #define NET_ASSOC_TIMEOUT_MS 20000 /* association and DHCP */
 #define NET_POLL_MS 20 /* socket wait per network task loop */
