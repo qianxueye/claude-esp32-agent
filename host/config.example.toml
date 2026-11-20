@@ -23,3 +23,6 @@ vad_end_silence_ms = 800
 no_speech_timeout_s = 8.0
 max_listen_s = 30.0
 conversation_idle_reset_s = 600.0
+# Tunnel endpoint on 127.0.0.1 for the board over the internet; off when Wi-Fi is off or the board is not paired.
+# tunnel_enabled = true
+# tunnel_port = 47802

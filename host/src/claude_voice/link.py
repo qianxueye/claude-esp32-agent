@@ -184,8 +184,9 @@ def parse_hello(payload: bytes) -> dict:
 
 
 class Session:
-    def __init__(self, kind: str, transport: Transport) -> None:
+    def __init__(self, kind: str, transport: Transport, label: str | None = None) -> None:
         self.kind = kind
+        self.label = label or kind  # names the session in logs only
         self.t = transport
         self.dec = Decoder(PARTIAL_TIMEOUT if kind == "usb" else None)
         self.got_hello = False
@@ -252,26 +253,26 @@ class Link:
             if not heard:
                 await asyncio.sleep(backoff)
 
-    async def serve_wifi(self, t: Transport) -> None:
-        """Run an authenticated Wi-Fi session; it replaces an older Wi-Fi session but never USB."""
-        await self._session("wifi", t)
+    async def serve_wifi(self, t: Transport, label: str = "wifi") -> None:
+        """Run an authenticated network session; it replaces an older network session but never USB."""
+        await self._session("wifi", t, label)
 
     async def _activate(self, s: Session) -> bool:
         async with self._switch:
             old = self._active
             if s.kind == "wifi" and old is not None and old.kind == "usb":
-                log.info("Wi-Fi session refused: the board is on USB")
+                log.info("%s session refused: the board is on USB", s.label)
                 return False
             if old is not None:
-                log.info("%s session replaces the %s session", s.kind, old.kind)
+                log.info("%s session replaces the %s session", s.label, old.label)
                 await old.t.close()
                 await old.done.wait()
             self._active = s
             return True
 
-    async def _session(self, kind: str, t: Transport) -> bool:
+    async def _session(self, kind: str, t: Transport, label: str | None = None) -> bool:
         """Run one session; True if the board sent HELLO on it."""
-        s = Session(kind, t)
+        s = Session(kind, t, label)
         try:
             if not await self._activate(s):
                 return False
@@ -283,7 +284,7 @@ class Link:
 
     async def _run_session(self, s: Session) -> None:
         cfg = self._cfg
-        log.info("%s link open", s.kind)
+        log.info("%s link open", s.label)
         self._h.on_connect()
         pinger: asyncio.Task | None = None
         now = time.monotonic()
@@ -317,14 +318,14 @@ class Link:
                     else:
                         self._dispatch(s, ftype, payload)
                 if s.kind == "wifi" and now - last_valid > cfg.wifi_silence_timeout_s:
-                    log.warning("no frame on Wi-Fi for %.0f s; closing the session", cfg.wifi_silence_timeout_s)
+                    log.warning("no frame on %s for %.0f s; closing the session", s.label, cfg.wifi_silence_timeout_s)
                     return
         except TransportClosed:
             pass
         finally:
             if pinger is not None:
                 pinger.cancel()
-            log.info("%s link closed", s.kind)
+            log.info("%s link closed", s.label)
             if self._active is s:
                 self._active = None
                 self._h.on_disconnect()
@@ -342,7 +343,7 @@ class Link:
             return
         if s.refused:
             return
-        log.info("board HELLO on %s: %s", s.kind, payload.decode(errors="replace"))
+        log.info("board HELLO on %s: %s", s.label, payload.decode(errors="replace"))
         if info.get("paired") is False and s.kind == "usb":
             log.info("board is not paired for Wi-Fi; run `claude-voice pair`")
         s.ready = True
