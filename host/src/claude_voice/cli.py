@@ -18,6 +18,7 @@ from .cloudflared import Cloudflared
 from .keychain import KeychainError, KeychainStore, PskStore, psk_identity
 from .link import Link, Opener, SerialTransport, list_boards, serial_opener
 from .pairing import PairError, current_ssid, forget, pair
+from .protocol import PAIR_NETWORKS_MAX
 from .relay import Relay
 from .revoke import KeyReloader, revoke
 from .stt import WhisperStt
@@ -183,16 +184,38 @@ def _board(cfg: config_mod.Config) -> tuple[str, str]:
     return port, serial
 
 
+def _check_ssid(ssid: str) -> str:
+    if not ssid or len(ssid.encode()) > 32:
+        raise PairError("Wi-Fi 名称不能为空，且不能超过 32 字节。")
+    return ssid
+
+
+def _ask_password(prompt: str) -> str:
+    password = getpass.getpass(prompt)
+    if len(password.encode()) > 63 or 0 < len(password) < 8:
+        raise PairError("Wi-Fi 密码应为 8 到 63 个字符；没有密码的网络直接按回车。")
+    return password
+
+
 def _ask_wifi(cfg: config_mod.Config) -> tuple[str, str]:
     default = current_ssid(cfg)
     prompt = f"Wi-Fi 名称 [{default}]：" if default else "Wi-Fi 名称："
-    ssid = input(prompt).strip() or (default or "")
-    if not ssid or len(ssid.encode()) > 32:
-        raise PairError("Wi-Fi 名称不能为空，且不能超过 32 字节。")
-    password = getpass.getpass("Wi-Fi 密码（输入时不显示）：")
-    if len(password.encode()) > 63 or 0 < len(password) < 8:
-        raise PairError("Wi-Fi 密码应为 8 到 63 个字符；没有密码的网络直接按回车。")
-    return ssid, password
+    ssid = _check_ssid(input(prompt).strip() or (default or ""))
+    return ssid, _ask_password("Wi-Fi 密码（输入时不显示）：")
+
+
+def _ask_more_wifi(main_ssid: str) -> list[tuple[str, str]]:
+    """Up to the protocol's limit of further networks, such as a phone hotspot; an empty name ends the list."""
+    extra: list[tuple[str, str]] = []
+    while (left := PAIR_NETWORKS_MAX - 1 - len(extra)) > 0:
+        ssid = input(f"其他 Wi-Fi 名称（还可添加 {left} 个，例如手机热点；直接按回车结束）：").strip()
+        if not ssid:
+            break
+        _check_ssid(ssid)
+        if ssid == main_ssid or any(ssid == s for s, _ in extra):
+            raise PairError(f"Wi-Fi「{ssid}」已经输入过了。")
+        extra.append((ssid, _ask_password(f"「{ssid}」的密码（输入时不显示）：")))
+    return extra
 
 
 async def _usb(cfg: config_mod.Config, port: str) -> SerialTransport:
@@ -205,11 +228,12 @@ async def _usb(cfg: config_mod.Config, port: str) -> SerialTransport:
 async def pair_command(cfg: config_mod.Config) -> bool:
     port, serial = _board(cfg)
     ssid, password = _ask_wifi(cfg)
+    extra = _ask_more_wifi(ssid)
     print("正在连接设备（设备会重启，约 3 秒）……")
     transport = await _usb(cfg, port)
     return await pair(
         cfg, transport=transport, store=keychain(cfg),
-        serial=serial, ssid=ssid, password=password, out=print,
+        serial=serial, ssid=ssid, password=password, out=print, extra_networks=extra,
     )
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import json
 import logging
 import os
 import socket
@@ -354,3 +355,144 @@ def test_ask_wifi_validates_input(monkeypatch):
     monkeypatch.setattr(cli, "current_ssid", lambda c: None)
     with pytest.raises(PairError):
         cli._ask_wifi(cfg())
+
+
+HOTSPOT_PASSWORD = "hot-Sp0t-pass-Qx7"
+CAFE_PASSWORD = "cafe-Pa55-Wq2!xyz"
+
+
+async def test_pair_sends_every_network_with_lan_only_on_the_main_one(caplog, capsys):
+    caplog.set_level(logging.DEBUG)
+    store, out = MemoryStore(), []
+    extra = [("我的手机", HOTSPOT_PASSWORD), ("cafe", CAFE_PASSWORD), ("open-net", "")]
+    async with Board() as b:
+        b.dev.leaky_log = True
+        ok = await pair(
+            cfg(), transport=b.host, store=store, serial=FAKE_SERIAL, ssid="家里的网", password=PASSWORD,
+            out=out.append, extra_networks=extra,
+        )
+    assert ok, out
+    sent = b.dev.paired
+    assert sent["ssid"] == "家里的网" and sent["password"] == PASSWORD
+    assert sent["networks"] == [
+        {"ssid": "家里的网", "password": PASSWORD, "lan": True},
+        {"ssid": "我的手机", "password": HOTSPOT_PASSWORD, "lan": False},
+        {"ssid": "cafe", "password": CAFE_PASSWORD, "lan": False},
+        {"ssid": "open-net", "password": "", "lan": False},
+    ]
+    captured = capsys.readouterr()
+    everything = "\n".join([caplog.text, captured.out, captured.err, *out])
+    assert "careless" in caplog.text and "我的手机" in everything
+    for secret in (PASSWORD, HOTSPOT_PASSWORD, CAFE_PASSWORD, sent["psk"]):
+        assert secret not in everything
+
+
+async def test_pair_with_only_the_main_network_still_sends_networks():
+    async with Board() as b:
+        assert await run_pair(b)
+    assert b.dev.paired["networks"] == [{"ssid": "家里的网", "password": PASSWORD, "lan": True}]
+
+
+async def test_pair_refuses_more_than_three_extra_networks():
+    async with Board() as b:
+        with pytest.raises(ValueError):
+            await pair(
+                cfg(), transport=b.host, store=MemoryStore(), serial=FAKE_SERIAL, ssid="a", password=PASSWORD,
+                out=[].append, extra_networks=[(f"n{i}", PASSWORD) for i in range(4)],
+            )
+    assert b.dev.paired is None
+
+
+def _worst(char_ssid, char_password):
+    return [(char_ssid * 32, char_password * 63) for _ in range(3)]
+
+
+async def test_worst_case_plain_pair_fits_the_device_buffer():
+    from claude_voice.protocol import PAIR_PAYLOAD_MAX
+
+    c = cfg(pair_relay_names=["n" * 63 + ".local"], pair_relay_addrs=["192.168.100.200", "10.100.200.250"])
+    async with Board() as b:
+        assert await pair(
+            c, transport=b.host, store=MemoryStore(), serial=FAKE_SERIAL, ssid="s" * 32, password="p" * 63,
+            out=[].append, extra_networks=_worst("t", "q"),
+        )
+    payload = json.dumps(b.dev.paired, ensure_ascii=False, separators=(",", ":")).encode()
+    assert len(payload) <= PAIR_PAYLOAD_MAX and len(b.dev.paired["networks"]) == 4
+
+
+async def test_oversize_pair_is_refused_before_the_board_or_keychain_is_touched():
+    store = MemoryStore()
+    store.set(IDENTITY, OLD_KEY)
+    async with Board() as b:
+        with pytest.raises(PairError) as e:
+            await pair(
+                cfg(), transport=b.host, store=store, serial=FAKE_SERIAL, ssid='"' * 32, password='"' * 63,
+                out=[].append, extra_networks=_worst('"', '"'),
+            )
+    assert "超过了设备能接收的 1023 字节" in str(e.value) and '"' * 8 not in str(e.value)
+    assert b.dev.paired is None and b.dev.host_hellos == 0 and store.get(IDENTITY) == OLD_KEY
+
+
+def _prompts(monkeypatch, names, passwords):
+    from claude_voice import cli
+
+    asked = {"input": [], "getpass": []}
+    names, passwords = iter(names), iter(passwords)
+    monkeypatch.setattr("builtins.input", lambda prompt: (asked["input"].append(prompt), next(names))[1])
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: (asked["getpass"].append(prompt), next(passwords))[1])
+    return cli, asked
+
+
+def test_more_wifi_stops_at_an_empty_name(monkeypatch):
+    cli, asked = _prompts(monkeypatch, ["我的手机", ""], [HOTSPOT_PASSWORD])
+    assert cli._ask_more_wifi("家里的网") == [("我的手机", HOTSPOT_PASSWORD)]
+    assert asked["input"] == [
+        "其他 Wi-Fi 名称（还可添加 3 个，例如手机热点；直接按回车结束）：",
+        "其他 Wi-Fi 名称（还可添加 2 个，例如手机热点；直接按回车结束）：",
+    ]
+    assert asked["getpass"] == ["「我的手机」的密码（输入时不显示）："]
+
+
+def test_more_wifi_asks_for_at_most_three(monkeypatch):
+    cli, asked = _prompts(monkeypatch, ["a", "b", "c", "d"], [PASSWORD, "", PASSWORD])
+    assert cli._ask_more_wifi("home") == [("a", PASSWORD), ("b", ""), ("c", PASSWORD)]
+    assert len(asked["input"]) == 3 and len(asked["getpass"]) == 3
+
+
+@pytest.mark.parametrize(
+    "names,passwords,message",
+    [
+        (["home"], [], "已经输入过了"),
+        (["a", "a"], [PASSWORD], "已经输入过了"),
+        (["x" * 33], [], "不能超过 32 字节"),
+        (["a"], ["short"], "8 到 63 个字符"),
+        (["a"], ["p" * 64], "8 到 63 个字符"),
+    ],
+    ids=["same-as-main", "repeated", "long-name", "short-password", "long-password"],
+)
+def test_more_wifi_validates_like_the_main_network(monkeypatch, names, passwords, message):
+    cli, _ = _prompts(monkeypatch, names, passwords)
+    with pytest.raises(PairError, match=message):
+        cli._ask_more_wifi("home")
+
+
+async def test_pair_command_passes_the_extra_networks(monkeypatch):
+    from claude_voice import cli
+
+    seen = {}
+
+    async def fake_pair(c, **kw):
+        seen.update(kw)
+        return True
+
+    async def fake_usb(c, port):
+        return "transport"
+
+    monkeypatch.setattr(cli, "_board", lambda c: ("port", FAKE_SERIAL))
+    monkeypatch.setattr(cli, "_ask_wifi", lambda c: ("家里的网", PASSWORD))
+    monkeypatch.setattr(cli, "_ask_more_wifi", lambda main: [("我的手机", HOTSPOT_PASSWORD)] if main == "家里的网" else [])
+    monkeypatch.setattr(cli, "_usb", fake_usb)
+    monkeypatch.setattr(cli, "keychain", lambda c: MemoryStore())
+    monkeypatch.setattr(cli, "pair", fake_pair)
+    assert await cli.pair_command(cfg())
+    assert seen["extra_networks"] == [("我的手机", HOTSPOT_PASSWORD)] and seen["ssid"] == "家里的网"

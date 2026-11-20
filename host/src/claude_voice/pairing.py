@@ -12,12 +12,12 @@ import secrets
 import struct
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from .config import Config
 from .keychain import KeychainError, PskStore, psk_identity
 from .link import Transport, TransportClosed, parse_hello
-from .protocol import PROTO_VERSION, Decoder, T, encode
+from .protocol import PAIR_NETWORKS_MAX, PAIR_PAYLOAD_MAX, PROTO_VERSION, Decoder, T, encode
 from .wifi import PSK_BYTES, WifiServer
 
 log = logging.getLogger("claude_voice.pairing")
@@ -180,13 +180,27 @@ def _status_line(st: dict) -> str:
     return line + f"；中继：{relay}"
 
 
+def pair_payload(body: dict) -> bytes:
+    """PAIR as compact JSON, refused before sending when the device cannot hold it."""
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(payload) > PAIR_PAYLOAD_MAX:
+        raise PairError(
+            f"配对信息有 {len(payload)} 字节，超过了设备能接收的 {PAIR_PAYLOAD_MAX} 字节。"
+            "请少加几个 Wi-Fi，或换用较短的名称和密码。"
+        )
+    return payload
+
+
 async def pair(
-    cfg: Config, *, transport: Transport, store: PskStore, serial: str, ssid: str, password: str, out: Out
+    cfg: Config, *, transport: Transport, store: PskStore, serial: str, ssid: str, password: str, out: Out,
+    extra_networks: Sequence[tuple[str, str]] = (),
 ) -> bool:
     """Send PAIR over USB and wait until the board reaches this Mac over Wi-Fi."""
+    if len(extra_networks) > PAIR_NETWORKS_MAX - 1:
+        raise ValueError(f"at most {PAIR_NETWORKS_MAX - 1} extra networks")
     identity = psk_identity(serial)
     psk = secrets.token_bytes(PSK_BYTES)
-    hidden = [password, psk.hex()]
+    hidden = [password, *(p for _, p in extra_networks), psk.hex()]
     names, addrs = relay_names(cfg), private_ipv4(cfg)
     if not addrs and not names:
         raise PairError("找不到本机的局域网地址。请先连上局域网。")
@@ -208,16 +222,18 @@ async def pair(
     unknown = False  # PAIR sent; neither PAIR_RESULT nor a session with the new key yet
     try:
         try:
+            networks = [{"ssid": ssid, "password": password, "lan": True}]
+            networks += [{"ssid": s, "password": p, "lan": False} for s, p in extra_networks]
+            payload = pair_payload({
+                "ssid": ssid, "password": password, "psk_identity": identity, "psk": psk.hex(),
+                "relay_names": names, "relay_addrs": addrs, "relay_port": server.port, "networks": networks,
+            })
             await console.open()
             old = store.get(identity)
             store.set(identity, psk)
             stored = True
-            log.info("pairing with Wi-Fi %r", ssid)
-            body = {
-                "ssid": ssid, "password": password, "psk_identity": identity, "psk": psk.hex(),
-                "relay_names": names, "relay_addrs": addrs, "relay_port": server.port,
-            }
-            console.send(T.PAIR, json.dumps(body, ensure_ascii=False).encode())
+            log.info("pairing with Wi-Fi %r, other networks %r", ssid, [s for s, _ in extra_networks])
+            console.send(T.PAIR, payload)
             unknown = True
             result = await console.wait_for(T.PAIR_RESULT, cfg.pair_result_timeout_s)
             if result is None:
