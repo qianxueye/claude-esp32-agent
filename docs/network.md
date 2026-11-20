@@ -85,7 +85,7 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 
 ## Inner TLS
 
-TLS 1.2 only, the single suite `TLS-ECDHE-PSK-WITH-CHACHA20-POLY1305-SHA256`, no session tickets, no renegotiation, CTR-DRBG seeded from the hardware RNG. Each session uses fresh contexts, freed at the end, which also wipes the PSK copy in the configuration. The build enables only the ECDHE-PSK key exchange among the PSK modes.
+TLS 1.2 only, the single suite `TLS-ECDHE-PSK-WITH-CHACHA20-POLY1305-SHA256`, no session tickets, no renegotiation. The CTR-DRBG is seeded from the hardware RNG at the first session attempt after association and reseeded at the start of every later attempt; no TLS operation runs before that. The ESP32-S3 RNG gives true random numbers only while the RF subsystem is on (IDF "Random Number Generation"), and an associated station has it on. Each session uses fresh contexts, freed at the end, which also wipes the PSK copy in the configuration. The build enables only the ECDHE-PSK key exchange among the PSK modes.
 
 ## Bounds
 

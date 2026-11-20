@@ -91,7 +91,7 @@ static bool s_wifi_ready, s_wifi_started;
 static wifi_ap_record_t s_aps[NET_SCAN_MAX_AP];
 static np_ap_t s_picks[NET_SCAN_MAX_AP];
 static mbedtls_ctr_drbg_context s_drbg;
-static bool s_drbg_ok;
+static bool s_drbg_seeded;
 static mbedtls_ssl_context s_ssl;
 static mbedtls_ssl_config s_conf;
 static uint8_t *s_ws_tx, *s_rx_store;
@@ -437,9 +437,20 @@ static void on_net_frame(int kind, const proto_frame_t *f, uint32_t *last_rx)
 }
 
 /* Runs the inner TLS session over a connected BIO; returns SESSION_RAN or the NP_FAIL stage. */
+/* Seeds the DRBG on the first attempt and reseeds it on every later one.
+ * Called only while associated: the RNG is a true RNG only with the radio on (docs/network.md "Inner TLS"). */
+static bool drbg_fresh(void)
+{
+    static const char pers[] = "clawd-net";
+    int r = s_drbg_seeded ? mbedtls_ctr_drbg_reseed(&s_drbg, NULL, 0)
+                          : mbedtls_ctr_drbg_seed(&s_drbg, hw_entropy, NULL, (const unsigned char *)pers, sizeof pers - 1);
+    s_drbg_seeded = s_drbg_seeded || r == 0;
+    return r == 0;
+}
+
 static int run_session(int kind, mbedtls_ssl_send_t *snd, mbedtls_ssl_recv_t *rcv, void *bio)
 {
-    if (!s_drbg_ok) {
+    if (!t_joined || !drbg_fresh()) {
         return NP_FAIL_INNER;
     }
     static const int suites[] = {MBEDTLS_TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256, 0};
@@ -751,9 +762,7 @@ static void relay_round(void)
 
 static void net_task(void *arg)
 {
-    static const char pers[] = "clawd-net";
     mbedtls_ctr_drbg_init(&s_drbg);
-    s_drbg_ok = mbedtls_ctr_drbg_seed(&s_drbg, hw_entropy, NULL, (const unsigned char *)pers, sizeof pers - 1) == 0;
     t_gen = atomic_load(&s_gen) - 1;
     for (;;) {
         if (stop_now()) {
