@@ -16,6 +16,15 @@
 #define HOST_JSON_BYTES 128
 #define SNAPSHOT_QUEUE_DEPTH 8
 
+/* Network link (docs/protocol.md "Links", "Pairing") */
+#define NET_PAIR_MAX_BYTES 1023 /* PAIR text; its buffer keeps one more byte for the terminator */
+#define NET_REMOTE_MAX_BYTES 511 /* SET_REMOTE payload; its buffer keeps one more byte */
+#define NET_URL_MAX 255
+#define WIFI_NETWORKS_MAX 4
+#define NET_RELAY_NAMES_MAX 4
+#define NET_RELAY_NAME_MAX 63
+#define NET_RELAY_ADDRS_MAX 8
+
 /* USB-Serial-JTAG transport */
 #define USB_RX_BUFFER_BYTES 16384
 #define USB_TX_BUFFER_BYTES 32768
