@@ -21,6 +21,53 @@ needs_afconvert = pytest.mark.skipif(not os.path.exists("/usr/bin/afconvert"), r
 
 SAY_PCM = b"\x01\x00" * 100
 
+FAKE_SERVER = """
+import http.server, os, socketserver, sys, time
+def stamp(msg):
+    print(f"{time.time():.3f} {msg}", file=sys.stderr, flush=True)
+port = int(sys.argv[sys.argv.index('--port') + 1])
+here = os.path.dirname(os.path.abspath(__file__))
+post_status = POST_STATUS
+class Server(http.server.HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[0], self.server_address[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers()
+    def do_POST(self):
+        stamp("POST")
+        if post_status != 200:
+            self.send_response(post_status); self.send_header('Content-Length', '0'); self.end_headers(); return
+        d = open(os.path.join(here, 'ok.wav'), 'rb').read()
+        self.send_response(200); self.send_header('Content-Length', str(len(d))); self.end_headers(); self.wfile.write(d)
+    def log_message(self, *x): pass
+stamp("constructing server")
+srv = Server(('127.0.0.1', port), H)
+stamp("listening")
+srv.serve_forever()
+"""
+
+
+def write_fake_server(tmp_path, post_status=200):
+    """Write a fake speech server script; returns its path."""
+    (tmp_path / "ok.wav").write_bytes(wav24k())
+    srv = tmp_path / "srv.py"
+    srv.write_text(FAKE_SERVER.replace("POST_STATUS", str(post_status)))
+    return srv
+
+
+def server_cfg(tmp_path, srv, **over):
+    over.setdefault("qwen_ready_timeout_s", 20.0)
+    return dataclasses.replace(
+        Config(), tts_engine="qwen3", qwen_server_cmd=[sys.executable, str(srv)], log_dir=str(tmp_path), **over
+    )
+
+
+def server_log(tmp_path):
+    f = tmp_path / "qwen-tts-server.log"
+    return f.read_text(errors="replace") if f.exists() else "(no server log)"
+
 
 class FakeSay:
     def __init__(self):
@@ -174,33 +221,36 @@ async def test_server_command_that_exits_keeps_relay_on_say(tmp_path):
     await q.close()
 
 
-async def test_local_server_started_warmed_and_stopped(tmp_path):
-    srv = tmp_path / "srv.py"
-    (tmp_path / "ok.wav").write_bytes(wav24k())
-    srv.write_text(
-        "import sys, http.server\n"
-        "a = sys.argv\n"
-        "port = int(a[a.index('--port') + 1])\n"
-        "class H(http.server.BaseHTTPRequestHandler):\n"
-        "    def do_GET(self):\n        self.send_response(200); self.end_headers()\n"
-        "    def do_POST(self):\n"
-        "        d = open(sys.argv[0].replace('srv.py', 'ok.wav'), 'rb').read()\n"
-        "        self.send_response(200); self.send_header('Content-Length', str(len(d))); self.end_headers(); self.wfile.write(d)\n"
-        "    def log_message(self, *x): pass\n"
-        "http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()\n"
-    )
-    cfg = dataclasses.replace(
-        Config(), tts_engine="qwen3", qwen_server_cmd=[sys.executable, str(srv)], log_dir=str(tmp_path),
-        qwen_ready_timeout_s=20.0,
-    )
-    q = QwenTts(cfg, FakeSay())
+@needs_afconvert
+async def test_local_server_started_warmed_and_stopped(tmp_path, caplog):
+    caplog.set_level("INFO", logger="claude_voice.qwen_tts")
+    q = QwenTts(server_cfg(tmp_path, write_fake_server(tmp_path)), FakeSay())
     await q.start()
     proc = q._proc
-    assert proc is not None and proc.poll() is None
-    assert q._http is not None
+    msg = f"{caplog.text}\n--- server log ---\n{server_log(tmp_path)}"
+    assert proc is not None and proc.poll() is None, msg
+    assert q._http is not None, msg
     assert "--host" in proc.args and "127.0.0.1" in proc.args
     await q.close()
     assert proc.poll() is not None
+
+
+@needs_afconvert
+async def test_managed_server_exit_after_warmup_uses_say(tmp_path, caplog):
+    caplog.set_level("INFO", logger="claude_voice.qwen_tts")
+    q = QwenTts(server_cfg(tmp_path, write_fake_server(tmp_path), qwen_skip_s=0.0), FakeSay())
+    await q.start()
+    msg = f"{caplog.text}\n--- server log ---\n{server_log(tmp_path)}"
+    assert q._proc is not None and q._http is not None, msg
+    proc = q._proc
+    proc.kill()
+    proc.wait()
+    assert await q.synth("一。") == SAY_PCM
+    assert await q.synth("二。") == SAY_PCM
+    assert q._http is None and q._proc is None
+    exits = [r for r in caplog.records if r.levelname == "ERROR" and "exited with" in r.getMessage()]
+    assert len(exits) == 1
+    await q.close()
 
 
 @needs_afconvert
@@ -302,24 +352,16 @@ async def test_slow_warmup_longer_than_tts_timeout_is_ready():
     assert q._http is not None and q._skip_until == 0.0
 
 
-async def test_own_server_failed_warmup_drops_client(tmp_path):
-    srv = tmp_path / "srv.py"
-    srv.write_text(
-        "import sys, http.server\n"
-        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
-        "class H(http.server.BaseHTTPRequestHandler):\n"
-        "    def do_GET(self):\n        self.send_response(200); self.end_headers()\n"
-        "    def do_POST(self):\n        self.send_response(500); self.end_headers()\n"
-        "    def log_message(self, *x): pass\n"
-        "http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()\n"
-    )
-    cfg = dataclasses.replace(
-        Config(), tts_engine="qwen3", qwen_server_cmd=[sys.executable, str(srv)], log_dir=str(tmp_path),
-        qwen_ready_timeout_s=20.0, qwen_skip_s=0.0,
-    )
+async def test_own_server_failed_warmup_drops_client(tmp_path, caplog):
+    caplog.set_level("INFO", logger="claude_voice.qwen_tts")
+    srv = write_fake_server(tmp_path, post_status=500)
     say = FakeSay()
-    q = QwenTts(cfg, say)
+    q = QwenTts(server_cfg(tmp_path, srv, qwen_skip_s=0.0), say)
     await q.start()
+    msg = f"{caplog.text}\n--- server log ---\n{server_log(tmp_path)}"
+    assert "not ready in time" not in caplog.text, msg
+    assert "HTTPStatusError" in caplog.text, msg
+    assert server_log(tmp_path).count("POST") == 1, msg
     assert q._http is None and q._proc is None
     assert await q.synth("好。") == SAY_PCM
 
