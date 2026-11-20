@@ -28,6 +28,21 @@
 #define REMOTE_CONNECT_TIMEOUT_MS 15000 /* DNS, TCP, outer TLS and upgrade of the remote URL */
 #define NET_BACKOFF_MIN_MS 1000 /* relay and association retry, doubling */
 #define NET_BACKOFF_MAX_MS 30000
+#define NET_NVS_NAMESPACE "clawdnet"
+#define NET_INNER_HANDSHAKE_MS 10000 /* the relay's own handshake limit */
+#define REMOTE_STEP_TIMEOUT_MS 3000 /* per blocking step of the tunnel connect; docs/network.md "Bounds" */
+#define NET_SCAN_TIMEOUT_MS 10000
+#define NET_ASSOC_TIMEOUT_MS 20000 /* association and DHCP */
+#define NET_POLL_MS 20 /* socket wait per network task loop */
+#define NET_WS_READ_TIMEOUT_MS 5000 /* rest of a WebSocket message once its first byte is readable */
+#define NET_WS_WRITE_TIMEOUT_MS 5000
+#define NET_WS_TX_BYTES 4352 /* one inner TLS record per WebSocket message */
+#define NET_TX_RING_BYTES 32768 /* network frame queue; at least twice the largest frame */
+#define NET_TX_LOCK_WAIT_MS 5
+#define NET_READ_CHUNK_BYTES 1024
+#define NET_SCAN_MAX_AP 20
+#define NET_EVENT_QUEUE_DEPTH 16
+#define NET_STATUS_JSON_BYTES 128
 
 /* USB-Serial-JTAG transport */
 #define USB_RX_BUFFER_BYTES 16384
@@ -220,6 +235,7 @@
 #define PRIO_IMU 3
 #define PRIO_BLIT 5
 #define PRIO_WORKER 5
+#define PRIO_NET 5
 #define STACK_RX 4096
 #define STACK_TX 4096
 #define STACK_MIC 6144
@@ -229,3 +245,4 @@
 #define STACK_IMU 4096
 #define STACK_BLIT 3072
 #define STACK_WORKER 6144
+#define STACK_NET 12288 /* inner and outer mbedTLS calls nest on it */

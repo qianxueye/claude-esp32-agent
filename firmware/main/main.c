@@ -12,6 +12,9 @@
 #include "esp_log.h"
 #include "imu.h"
 #include "keydebounce.h"
+#include "linkstate.h"
+#include "net.h"
+#include "netcfg.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -38,15 +41,12 @@ static void send_hello(const char *reason)
     int vol;
     bool vol_set;
     volume_hello_fields(&vol, &vol_set);
+    int route = transport_route();
     int n = snprintf(json, sizeof(json),
-                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"usb\",\"paired\":false,\"vol\":%d,\"vol_set\":%s}",
-                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, vol, vol_set ? "true" : "false");
-    transport_send(T_HELLO, json, n);
-}
-
-static void send_json(uint8_t type, const char *json)
-{
-    transport_send(type, json, strlen(json));
+                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"%s\",\"paired\":%s,\"vol\":%d,\"vol_set\":%s}",
+                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, link_name(route), net_paired() ? "true" : "false", vol,
+                     vol_set ? "true" : "false");
+    transport_send_to(route, T_HELLO, json, n);
 }
 
 /* Finds "key": in a small JSON payload; returns the position after the colon or NULL. */
@@ -227,7 +227,20 @@ static void on_snapshot_request(lv_draw_buf_t *buf)
     }
 }
 
-static void on_frame(const proto_frame_t *f)
+static unsigned task_free_bytes(const char *name)
+{
+    TaskHandle_t t = xTaskGetHandle(name);
+    return t ? (unsigned)uxTaskGetStackHighWaterMark(t) : 0;
+}
+
+static void send_pairing_result(uint8_t type, const char *err)
+{
+    char json[64];
+    size_t n = netcfg_result_json(err, json, sizeof json);
+    transport_send_usb(type, json, n);
+}
+
+static void on_frame(const proto_frame_t *f, bool live)
 {
     if (!s_ready) {
         return;
@@ -236,10 +249,12 @@ static void on_frame(const proto_frame_t *f)
         ESP_LOGW(TAG, "HOST_HELLO ignored: proto mismatch (device speaks %d)", PROTO_VERSION);
         return;
     }
-    s_last_host_ms = now_ms();
+    if (live) {
+        s_last_host_ms = now_ms();
+    }
     lv_draw_buf_t *snap = f->type == T_SNAPSHOT ? ui_snapshot_take() : NULL;
     const char *reply = "reply";
-    if (s_state == ST_OFFLINE && f->type != T_SNAPSHOT) {
+    if (live && s_state == ST_OFFLINE && f->type != T_SNAPSHOT) {
         set_state(ST_IDLE);
         reply = "resume";
         if (f->type != T_HOST_HELLO) {
@@ -250,7 +265,11 @@ static void on_frame(const proto_frame_t *f)
     case T_HOST_HELLO:
         volume_session_reset();
         send_hello(reply);
-        send_json(T_WIFI_STATUS, "{\"wifi\":\"off\",\"relay\":\"none\"}");
+        {
+            char json[NET_STATUS_JSON_BYTES];
+            size_t n = net_status_json(json, sizeof json);
+            transport_send(T_WIFI_STATUS, json, n);
+        }
         break;
     case T_SET_STATE:
         if (f->len == 1 && f->payload[0] < ST_COUNT) {
@@ -263,10 +282,13 @@ static void on_frame(const proto_frame_t *f)
         }
         break;
     case T_PAIR:
-        send_json(T_PAIR_RESULT, "{\"ok\":false,\"error\":\"not implemented\"}");
+        send_pairing_result(T_PAIR_RESULT, net_pair(f->payload, f->len));
         break;
     case T_FORGET:
-        send_json(T_FORGET_RESULT, "{\"ok\":false,\"error\":\"not implemented\"}");
+        send_pairing_result(T_FORGET_RESULT, net_forget());
+        break;
+    case T_SET_REMOTE:
+        net_set_remote(f->payload, f->len);
         break;
     case T_SPK_AUDIO:
         if (f->len > 0 && (f->len & 1) == 0) {
@@ -328,6 +350,9 @@ static void life_task(void *arg)
                      (unsigned)st.tx_frames, (unsigned)st.tx_bytes, (unsigned)st.tx_dropped,
                      (unsigned)audio_spk_queued(), (unsigned)audio_spk_overflow_frames(), (int)audio_pa_is_on(),
                      (unsigned)ac.spk_underruns, (unsigned)ac.spk_slow_writes, (unsigned)ac.mic_gaps, (unsigned)ac.mic_dropped);
+            ESP_LOGI(TAG, "stack free B: rx=%u net=%u sys_evt=%u wifi=%u tiT=%u; net drop=%u", (unsigned)transport_rx_stack_hwm(),
+                     (unsigned)net_stack_hwm(), task_free_bytes("sys_evt"), task_free_bytes("wifi"), task_free_bytes("tiT"),
+                     (unsigned)net_tx_dropped());
             ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u pwr_err=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
                      (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)s_pwr_read_errors);
             volume_stats_t vs;
@@ -421,9 +446,11 @@ void app_main(void)
     audio_start();
     imu_start();
     ESP_LOGI(TAG, "audio up");
+    net_init();
     xTaskCreate(button_task, "button", STACK_BUTTON, NULL, PRIO_BUTTON, NULL);
     s_last_host_ms = now_ms();
     s_ready = true;
     xTaskCreate(life_task, "life", STACK_LIFE, NULL, PRIO_LIFE, NULL);
     send_hello("boot");
+    net_start();
 }
