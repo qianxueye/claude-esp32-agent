@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import sys
+import time
 
 import pytest
 from fake_device import FakeDevice, tls_connect
@@ -16,8 +17,8 @@ from test_wifi import IDENTITY, KEY, WifiHarness
 from claude_voice import cli
 from claude_voice.cloudflared import Backoff, Cloudflared, hostname_from_banner, metrics_hostname, remote_url
 from claude_voice.config import load
-from claude_voice.link import Link, TransportClosed
-from claude_voice.protocol import State, T
+from claude_voice.link import Link, TransportClosed, memory_pair
+from claude_voice.protocol import PROTO_VERSION, SYNC, Decoder, State, T, encode
 
 FAKE_CLOUDFLARED = r'''
 import http.server, json, os, signal, socketserver, sys, threading, time
@@ -364,6 +365,87 @@ async def test_set_remote_after_hello_on_the_tunnel():
         w.h.link.set_remote(url(2))
         await until(lambda: len(d.remotes) == 2)
         assert d.remotes == [{"url": url(1)}, {"url": url(2)}]
+
+
+class DropsRemote:
+    """Host transport that drops the next `drop` SET_REMOTE frames the way a full send buffer does."""
+
+    def __init__(self, t):
+        self.t, self.drop, self.attempts = t, 0, []
+
+    async def read(self, timeout):
+        return await self.t.read(timeout)
+
+    def write(self, data):
+        if data[len(SYNC)] == T.SET_REMOTE:
+            ok = self.drop == 0
+            self.drop = max(self.drop - 1, 0)
+            self.attempts.append(ok)
+            if not ok:
+                return False
+        return self.t.write(data)
+
+    async def close(self):
+        await self.t.close()
+
+
+async def test_dropped_set_remote_is_resent_within_a_ping_interval_and_after_each_hello():
+    h = make()
+    opener, wrapped = h.link._opener, []
+
+    def open_dropping():
+        t = opener()
+        if t is not None:
+            wrapped.append(t := DropsRemote(t))
+        return t
+
+    h.link._opener = open_dropping
+    await h.up()
+    try:
+        await until(lambda: h.dev.hellos == ["boot", "reply"])
+        await asyncio.sleep(0.1)
+        first = wrapped[0]
+        first.drop = 1
+        h.link.set_remote(url(1))
+        async with asyncio.timeout(h.cfg.ping_interval_s * 4):
+            await until(lambda: h.dev.remotes)
+        await asyncio.sleep(h.cfg.ping_interval_s * 6)
+        assert first.attempts == [False, True] and h.dev.remotes == [{"url": url(1)}]
+        assert h.dev.hellos == ["boot", "reply"]
+        h.dev.hello("resume")
+        await until(lambda: len(h.dev.remotes) == 2)
+        await asyncio.sleep(h.cfg.ping_interval_s * 4)
+        assert first.attempts == [False, True, True]
+        await first.close()
+        await until(lambda: len(wrapped) == 2 and h.dev.remotes)
+        assert h.dev.hellos and wrapped[1].attempts and all(wrapped[1].attempts)
+    finally:
+        await h.down()
+
+
+async def test_no_set_remote_on_ping_ticks_before_hello():
+    h = make()
+    h.allow_open = False
+    h.link.set_remote(url(1))
+    host, board = memory_pair()
+    task = asyncio.create_task(h.link.serve_wifi(host))
+    dec, got = Decoder(None), []
+
+    async def drain(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            got.extend(f for f, _ in dec.feed(await board.read(0.02), time.monotonic()))
+
+    try:
+        await drain(0.3)
+        assert got.count(T.PING) >= 3 and T.SET_REMOTE not in got, got
+        hello = {"proto": PROTO_VERSION, "fw": "fake", "rate": 16000, "reason": "boot", "link": "wifi"}
+        board.write(encode(T.HELLO, json.dumps(hello).encode()))
+        await drain(0.3)
+        assert got.count(T.SET_REMOTE) == 1, got
+    finally:
+        await host.close()
+        await task
 
 
 @pytest.mark.parametrize(
