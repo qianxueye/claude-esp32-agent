@@ -134,6 +134,14 @@ void np_wifi_rssi(netplan_t *np, int rssi)
     np->st.rssi = rssi;
 }
 
+void np_wifi_ip(netplan_t *np, const uint8_t ip[4], int rssi)
+{
+    if (np->st.wifi == NET_WIFI_CONNECTED) {
+        memcpy(np->st.ip, ip, 4);
+        np->st.rssi = rssi;
+    }
+}
+
 void np_wifi_down(netplan_t *np)
 {
     if (!np->paired) {

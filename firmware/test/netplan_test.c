@@ -241,6 +241,27 @@ static void test_status(void)
     CHECK("new IP during an open session keeps relay connected", np.st.relay == NET_RELAY_CONNECTED && np.st.ip[3] == 9);
 }
 
+static void test_new_address(void)
+{
+    netplan_t np;
+    np_reset(&np, true);
+    const uint8_t ip2[4] = {10, 0, 0, 9};
+    np_wifi_ip(&np, ip2, -60);
+    CHECK("an address before association is ignored", np.st.wifi == NET_WIFI_CONNECTING && np.st.ip[3] == 0);
+    np_wifi_up(&np, IP, -50, 1);
+    np_try_failed(&np, NET_RELAY_UNREACHABLE);
+    np_round_failed(&np);
+    net_status_t before = np.st;
+    np_wifi_ip(&np, ip2, -61);
+    CHECK("a new address while associated updates ip and rssi", np.st.ip[3] == 9 && np.st.rssi == -61);
+    CHECK("a new address keeps the relay failure", np.st.relay == NET_RELAY_UNREACHABLE && np.st.wifi == NET_WIFI_CONNECTED);
+    CHECK("a new address sends WIFI_STATUS", np_status_differs(&before, &np.st));
+    np_session_up(&np);
+    const uint8_t ip3[4] = {10, 0, 0, 10};
+    np_wifi_ip(&np, ip3, -62);
+    CHECK("a new address keeps an open session connected", np.session && np.st.relay == NET_RELAY_CONNECTED && np.st.ip[3] == 10);
+}
+
 static void test_refused_after_handshake(void)
 {
     netplan_t np = joined();
@@ -283,6 +304,7 @@ int main(void)
     test_status();
     test_refused_after_handshake();
     test_status_differs();
+    test_new_address();
     printf("netplan: %d checks, %d failed\n", s_checks, s_fail);
     return s_fail ? 1 : 0;
 }
