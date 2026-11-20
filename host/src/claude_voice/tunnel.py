@@ -24,6 +24,7 @@ HOST = "127.0.0.1"
 PATH = "/clawd/v1"
 HEADER_CHARS = 64  # longest header value kept for logs
 READ_CHUNK = 4096
+IPV6_KEY_PREFIX = 64  # one admission key per IPv6 network of this length
 
 SessionRunner = Callable[[Transport], Awaitable[None]]
 
@@ -61,10 +62,15 @@ def _header(headers: Headers, name: str) -> str | None:
 
 
 def peer_key(headers: Headers) -> str:
-    """Admission key from CF-Connecting-IP; `tunnel:?` when it is missing or not an IP address."""
+    """Admission key from CF-Connecting-IP: the IPv4 address or the IPv6 network, `tunnel:?` when not an address."""
     value = _header(headers, "CF-Connecting-IP")
     try:
-        return "tunnel:" + str(ipaddress.ip_address(value or ""))
+        ip = ipaddress.ip_address(value or "")
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if isinstance(ip, ipaddress.IPv4Address):
+            return f"tunnel:{ip}"
+        return f"tunnel:{ipaddress.ip_network(f'{ip}/{IPV6_KEY_PREFIX}', strict=False)}"
     except ValueError:
         return "tunnel:?"
 
