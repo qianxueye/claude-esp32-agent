@@ -53,6 +53,22 @@ class WarnLimiter:
         self._suppressed = 0
 
 
+class Keyring:
+    """PSKs by identity, shared by the listeners; `removed` counts key removals (docs/protocol.md, Revocation)."""
+
+    def __init__(self, keys: dict[str, bytes] | None = None) -> None:
+        self.keys = {} if keys is None else keys
+        self.removed = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.keys)
+
+
+def as_keyring(keys: Keyring | dict[str, bytes]) -> Keyring:
+    """`keys` itself, or a keyring over the same dict."""
+    return keys if isinstance(keys, Keyring) else Keyring(keys)
+
+
 def server_context(
     keys: dict[str, bytes], warn: Callable[..., None] = log.warning, name: str = "Wi-Fi"
 ) -> ssl.SSLContext:
@@ -202,18 +218,20 @@ class WifiServer:
     """Accepts TLS-PSK connections and hands each authenticated one to `run_session`."""
 
     def __init__(
-        self, cfg: Config, keys: dict[str, bytes], run_session: SessionRunner, peer_key: PeerKey = peer_ip
+        self, cfg: Config, keys: Keyring | dict[str, bytes], run_session: SessionRunner, peer_key: PeerKey = peer_ip
     ) -> None:
         self._cfg = cfg
+        self._ring = as_keyring(keys)
         self._admission = Admission(
             log, "Wi-Fi", cfg.wifi_preauth_max, cfg.wifi_preauth_per_addr_max, cfg.wifi_warn_interval_s
         )
         self._warn_identity, self._warn_resumed = (WarnLimiter(log, cfg.wifi_warn_interval_s) for _ in range(2))
-        self._ctx = server_context(keys, self._warn_identity.warn)
+        self._ctx = server_context(self._ring.keys, self._warn_identity.warn)
         self._run_session = run_session
         self._server: asyncio.Server | None = None
         self._peer_key = peer_key
         self._handshakes: set[asyncio.Task] = set()
+        self._live: set[TcpTransport] = set()
 
     @property
     def _preauth(self) -> int:
@@ -234,13 +252,13 @@ class WifiServer:
         return self._admission.admit(key)
 
     def _spawn(self, transport: asyncio.BaseTransport, key: str) -> None:
-        task = asyncio.get_running_loop().create_task(self._handshake(transport, key))
+        task = asyncio.get_running_loop().create_task(self._handshake(transport, key, self._ring.removed))
         self._handshakes.add(task)
         task.add_done_callback(self._handshakes.discard)
 
-    async def _handshake(self, raw: asyncio.BaseTransport, key: str) -> None:
+    async def _handshake(self, raw: asyncio.BaseTransport, key: str, admitted: int) -> None:
         reader = asyncio.StreamReader()
-        proto = asyncio.StreamReaderProtocol(reader, self._client)
+        proto = asyncio.StreamReaderProtocol(reader, lambda r, w: self._client(r, w, admitted))
         try:
             tls = await asyncio.get_running_loop().start_tls(
                 raw, proto, self._ctx, server_side=True, ssl_handshake_timeout=self._cfg.wifi_handshake_timeout_s,
@@ -258,14 +276,27 @@ class WifiServer:
     def _acceptable(self, tls: ssl.SSLObject | None) -> bool:
         return acceptable(tls, lambda: self._warn_resumed.warn("Wi-Fi session resumption refused"))
 
-    async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, admitted: int) -> None:
+        if self._ring.removed != admitted:
+            log.info("Wi-Fi session refused: a key was removed during its handshake")
+            writer.transport.abort()
+            return
+        cfg = self._cfg
+        transport = TcpTransport(reader, writer, cfg.wifi_write_buffer_max, cfg.wifi_close_timeout_s)
+        self._live.add(transport)
         sock = writer.get_extra_info("socket")
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         peer = writer.get_extra_info("peername")
         log.info("Wi-Fi session authenticated from %s", peer[0] if peer else "?")
-        cfg = self._cfg
-        await self._run_session(TcpTransport(reader, writer, cfg.wifi_write_buffer_max, cfg.wifi_close_timeout_s))
+        try:
+            await self._run_session(transport)
+        finally:
+            self._live.discard(transport)
+
+    async def close_sessions(self) -> None:
+        """Close every authenticated session, including one still waiting to become the active link."""
+        await asyncio.gather(*(t.close() for t in list(self._live)))
 
     async def close(self) -> None:
         if self._server is not None:

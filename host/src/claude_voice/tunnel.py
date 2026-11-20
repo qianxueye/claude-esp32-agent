@@ -17,7 +17,7 @@ from websockets.server import ServerProtocol
 
 from .config import Config
 from .link import Transport, TransportClosed
-from .wifi import Admission, WarnLimiter, acceptable, server_context
+from .wifi import Admission, Keyring, WarnLimiter, acceptable, as_keyring, server_context
 
 log = logging.getLogger("claude_voice.tunnel")
 HOST = "127.0.0.1"
@@ -127,6 +127,7 @@ class _Conn(asyncio.Protocol):
         self._outgoing = ssl.MemoryBIO()
         self._tls: ssl.SSLObject | None = None
         self._timer: asyncio.TimerHandle | None = None
+        self.admitted = 0
         self.reader = asyncio.StreamReader()
         self.authenticated = False
         self.lost = asyncio.get_running_loop().create_future()
@@ -196,6 +197,7 @@ class _Conn(asyncio.Protocol):
             self._abort()
             return
         self._key = key
+        self.admitted = self._srv.ring.removed
         self.peer = key.removeprefix("tunnel:")
         self.ray = (_header(request.headers, "CF-Ray") or "?")[:HEADER_CHARS]
         self._ws.send_response(response)
@@ -219,7 +221,7 @@ class _Conn(asyncio.Protocol):
             self._flush_tls()
             self._release()
             self._disarm()
-            if not acceptable(self._tls, self._srv.warn_resumed_refused):
+            if not acceptable(self._tls, self._srv.warn_resumed_refused) or not self._srv.keys_kept(self):
                 self._abort()
                 return
             self.authenticated = True
@@ -308,15 +310,17 @@ class _Conn(asyncio.Protocol):
 class TunnelServer:
     """Accepts WebSocket upgrades on 127.0.0.1 and hands each authenticated inner session to `run_session`."""
 
-    def __init__(self, cfg: Config, keys: dict[str, bytes], run_session: SessionRunner) -> None:
+    def __init__(self, cfg: Config, keys: Keyring | dict[str, bytes], run_session: SessionRunner) -> None:
         self.cfg = cfg
+        self.ring = as_keyring(keys)
         interval = cfg.wifi_warn_interval_s
         self.admission = Admission(log, "Tunnel", cfg.tunnel_preauth_max, cfg.tunnel_preauth_per_addr_max, interval)
         self._warn_identity, self._warn_resumed, self.warn_error = (WarnLimiter(log, interval) for _ in range(3))
-        self.ctx = server_context(keys, self._warn_identity.warn, "Tunnel")
+        self.ctx = server_context(self.ring.keys, self._warn_identity.warn, "Tunnel")
         self._run_session = run_session
         self._server: asyncio.Server | None = None
         self._sessions: set[asyncio.Task] = set()
+        self._live: set[TunnelTransport] = set()
 
     @property
     def port(self) -> int:
@@ -337,18 +341,35 @@ class TunnelServer:
     def warn_resumed_refused(self) -> None:
         self._warn_resumed.warn("Tunnel session resumption refused")
 
+    def keys_kept(self, conn: _Conn) -> bool:
+        """False when a key was removed since `conn` was admitted."""
+        if self.ring.removed == conn.admitted:
+            return True
+        log.info("tunnel session refused: a key was removed during its handshake")
+        return False
+
     def spawn(self, conn: _Conn) -> None:
         task = asyncio.get_running_loop().create_task(self._session(conn))
         self._sessions.add(task)
         task.add_done_callback(self._sessions.discard)
 
     async def _session(self, conn: _Conn) -> None:
+        if not self.keys_kept(conn):
+            conn._abort()
+            return
         cfg = self.cfg
+        transport = TunnelTransport(conn, cfg.tunnel_write_buffer_max, cfg.wifi_close_timeout_s)
+        self._live.add(transport)
         log.info("tunnel session open from %r, CF-Ray %r", conn.peer, conn.ray)
         try:
-            await self._run_session(TunnelTransport(conn, cfg.tunnel_write_buffer_max, cfg.wifi_close_timeout_s))
+            await self._run_session(transport)
         finally:
+            self._live.discard(transport)
             log.info("tunnel session closed from %r, CF-Ray %r", conn.peer, conn.ray)
+
+    async def close_sessions(self) -> None:
+        """Close every authenticated session, including one still waiting to become the active link."""
+        await asyncio.gather(*(t.close() for t in list(self._live)))
 
     async def close(self) -> None:
         if self._server is not None:

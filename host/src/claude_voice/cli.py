@@ -1,4 +1,4 @@
-"""Entry point: `uv run claude-voice [--config PATH] [run|pair|forget]`."""
+"""Entry point: `uv run claude-voice [--config PATH] [run|pair|forget|revoke]`."""
 
 from __future__ import annotations
 
@@ -19,11 +19,12 @@ from .keychain import KeychainError, KeychainStore, PskStore, psk_identity
 from .link import Link, Opener, SerialTransport, list_boards, serial_opener
 from .pairing import PairError, current_ssid, forget, pair
 from .relay import Relay
+from .revoke import KeyReloader, revoke
 from .stt import WhisperStt
 from .qwen_tts import QwenTts
 from .tts import SayTts
 from .tunnel import TunnelServer
-from .wifi import WifiServer, load_keys
+from .wifi import Keyring, WifiServer, load_keys
 
 
 def setup_logging(cfg: config_mod.Config, *, console: bool = True) -> None:
@@ -73,7 +74,7 @@ def wifi_keys(cfg: config_mod.Config, store: PskStore) -> dict[str, bytes]:
 
 
 async def start_wifi(
-    cfg: config_mod.Config, link: Link, store: PskStore, keys: dict[str, bytes] | None = None
+    cfg: config_mod.Config, link: Link, store: PskStore, keys: Keyring | dict[str, bytes] | None = None
 ) -> WifiServer | None:
     keys = wifi_keys(cfg, store) if keys is None else keys
     if not keys:
@@ -88,7 +89,9 @@ async def start_wifi(
     return server
 
 
-async def start_tunnel(cfg: config_mod.Config, link: Link, keys: dict[str, bytes]) -> TunnelServer | None:
+async def start_tunnel(
+    cfg: config_mod.Config, link: Link, keys: Keyring | dict[str, bytes]
+) -> TunnelServer | None:
     if not (cfg.tunnel_enabled and cfg.wifi_enabled and keys):
         return None
     server = TunnelServer(cfg, keys, lambda t: link.serve_wifi(t, "tunnel"))
@@ -99,6 +102,14 @@ async def start_tunnel(cfg: config_mod.Config, link: Link, keys: dict[str, bytes
         return None
     logging.info("tunnel link listening on %s:%d", server.address, server.port)
     return server
+
+
+def key_reloader(
+    cfg: config_mod.Config, store: PskStore, ring: Keyring, servers: list[WifiServer | TunnelServer | None]
+) -> KeyReloader | None:
+    """A reloader for the listeners that run; None when neither does."""
+    running = [s for s in servers if s is not None]
+    return KeyReloader(cfg, store, ring, running) if running else None
 
 
 def start_cloudflared(cfg: config_mod.Config, link: Link, tunnel: TunnelServer | None) -> Cloudflared | None:
@@ -132,11 +143,14 @@ async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
             await tts.start()
         agent.start()
         store = keychain(cfg)
-        keys = wifi_keys(cfg, store)
-        server = await start_wifi(cfg, link, store, keys)
-        tunnel = await start_tunnel(cfg, link, keys)
+        ring = Keyring(wifi_keys(cfg, store))
+        server = await start_wifi(cfg, link, store, ring)
+        tunnel = await start_tunnel(cfg, link, ring)
         quick = start_cloudflared(cfg, link, tunnel)
         tasks = [asyncio.create_task(link.run()), asyncio.create_task(relay.idle_reset_loop())]
+        reloader = key_reloader(cfg, store, ring, [server, tunnel])
+        if reloader is not None:
+            tasks.append(asyncio.create_task(reloader.run()))
         await asyncio.gather(*tasks)
     finally:
         for t in tasks:
@@ -205,10 +219,14 @@ async def forget_command(cfg: config_mod.Config) -> bool:
     return await forget(cfg, transport=transport, store=keychain(cfg), serial=serial, out=print)
 
 
+async def revoke_command(cfg: config_mod.Config) -> bool:
+    return revoke(cfg, store=keychain(cfg), out=print)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="claude-voice")
     ap.add_argument("--config", help="TOML file (default: host/config.toml if present)")
-    ap.add_argument("command", nargs="?", default="run", choices=["run", "pair", "forget"])
+    ap.add_argument("command", nargs="?", default="run", choices=["run", "pair", "forget", "revoke"])
     args = ap.parse_args()
     cfg = config_mod.load(args.config)
     setup_logging(cfg, console=args.command == "run")
@@ -217,7 +235,7 @@ def main() -> None:
         with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(run(cfg))
         return
-    command = pair_command if args.command == "pair" else forget_command
+    command = {"pair": pair_command, "forget": forget_command, "revoke": revoke_command}[args.command]
     try:
         ok = asyncio.run(command(cfg))
     except PairError as e:

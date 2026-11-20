@@ -13,6 +13,8 @@ _IDENTITY = re.compile(re.escape(PSK_IDENTITY_PREFIX) + r"[0-9A-Fa-f]{12}")
 _SERIAL = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
 _SERVICE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _ACCOUNT_LINE = re.compile(r'"acct"<blob>="([^"]*)"')
+_SERVICE_LINE = re.compile(r'"svce"<blob>="([^"]*)"')
+_DUMP_ITEM = re.compile(r"^keychain: ", re.MULTILINE)
 _NOT_FOUND = 44
 
 
@@ -36,6 +38,7 @@ class PskStore(Protocol):
     def set(self, identity: str, key: bytes) -> None: ...
     def delete(self, identity: str) -> bool: ...
     def find_any(self) -> str | None: ...
+    def identities(self) -> list[str]: ...
 
 
 class MemoryStore:
@@ -55,6 +58,9 @@ class MemoryStore:
 
     def find_any(self) -> str | None:
         return next(iter(self.items), None)
+
+    def identities(self) -> list[str]:
+        return list(self.items)
 
 
 class KeychainStore:
@@ -115,3 +121,18 @@ class KeychainStore:
             return None
         m = _ACCOUNT_LINE.search(r.stdout)
         return m.group(1) if m and valid_identity(m.group(1)) else None
+
+    def identities(self) -> list[str]:
+        """Every valid PSK identity under this service, from item attributes only (no passwords are read)."""
+        r = self._run(["dump-keychain"])
+        if r.returncode != 0:
+            raise KeychainError(f"security dump-keychain exited with {r.returncode}")
+        found: list[str] = []
+        for item in _DUMP_ITEM.split(r.stdout):
+            if 'class: "genp"' not in item:
+                continue
+            service, account = _SERVICE_LINE.search(item), _ACCOUNT_LINE.search(item)
+            if service and account and service.group(1) == self.service and valid_identity(account.group(1)):
+                if account.group(1) not in found:
+                    found.append(account.group(1))
+        return found
