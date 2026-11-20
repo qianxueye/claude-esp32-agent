@@ -58,6 +58,7 @@ class Config:
     cloudflared_url_timeout_s: float = 30.0  # no public hostname by then: restart cloudflared
     cloudflared_restart_min_s: float = 1.0
     cloudflared_restart_max_s: float = 60.0  # a run longer than this resets the delay to the minimum
+    key_reload_interval_s: float = 10.0  # the running relay re-reads its PSKs; a deleted one stops working
     keychain_service: str = "claude-voice"
     keychain_timeout_s: float = 30.0  # `security` may wait for the user to unlock the Keychain
 
@@ -142,6 +143,7 @@ POSITIVE_KEYS = (
     "tunnel_preauth_max", "tunnel_preauth_per_addr_max", "tunnel_upgrade_timeout_s",
     "tunnel_ws_max_message", "tunnel_preauth_bytes_max", "tunnel_write_buffer_max",
     "cloudflared_url_timeout_s", "cloudflared_restart_min_s", "cloudflared_restart_max_s",
+    "key_reload_interval_s",
 )
 
 

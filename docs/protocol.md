@@ -43,6 +43,13 @@ Pairing happens once over USB and carries everything the Wi-Fi link needs.
 - The PAIR and SET_REMOTE payloads are never logged: the relay log, `devctl` and LOG frames show at most the SSID and the remote URL.
 - The device stores the Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials in NVS. Flash encryption is not enabled, so anyone with physical access to the board can read them.
 
+### Revocation
+
+- `claude-voice revoke` deletes a board's PSK from the Keychain without USB. The running relay re-reads the PSK of every identity it serves every 10 s (`key_reload_interval_s`). Only an item the Keychain reports as not found, or a different key, ends a PSK; a read error keeps it.
+- When a PSK ends, the relay refuses new handshakes with it and closes every Wi-Fi and tunnel session, because its TLS library does not tell which identity a connection used. USB sessions stay open.
+- The relay counts PSK removals. A connection notes the count when it is admitted and opens no session if the count changed before its session starts: the PSK is looked up at ClientKeyExchange, and a client may hold its Finished for up to the 10 s handshake timeout.
+- The board keeps its saved Wi-Fi passwords, which can be read from its flash; change them after a board is lost.
+
 ### Active link
 
 USB takes precedence. A HOST_HELLO on USB makes USB the active link and closes the Wi-Fi session. Wi-Fi becomes the active link when an authenticated TLS session sends HOST_HELLO and no valid frame has arrived on USB for 5000 ms. Device-to-host frames go to the active link only; host-to-device frames from the inactive link are ignored, except PAIR and FORGET on USB.

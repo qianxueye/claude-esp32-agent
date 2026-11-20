@@ -31,3 +31,4 @@ conversation_idle_reset_s = 600.0
 # cloudflared_url_timeout_s = 30.0             # no public hostname by then: restart cloudflared
 # cloudflared_restart_min_s = 1.0              # restart delay doubles from this ...
 # cloudflared_restart_max_s = 60.0             # ... up to this; a longer run resets it
+# key_reload_interval_s = 10.0                 # the running relay re-reads its PSKs; `claude-voice revoke` takes effect within this
