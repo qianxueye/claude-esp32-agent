@@ -24,6 +24,7 @@ typedef struct {
 
 static QueueHandle_t s_tx_queue;
 static frame_handler_t s_handler;
+static frame_filter_t s_accept;
 static transport_stats_t s_stats;
 static vprintf_like_t s_orig_vprintf;
 static uint8_t s_parser_store[PROTO_MAX_PAYLOAD + FRAME_OVERHEAD + USB_RX_READ_CHUNK_BYTES];
@@ -95,6 +96,9 @@ bool transport_send_reliable(uint8_t type, const void *payload, size_t len)
 
 static void dispatch(int src, int kind, const proto_frame_t *f)
 {
+    if (s_accept && !s_accept(f)) {
+        return;
+    }
     xSemaphoreTake(s_dispatch_mtx, portMAX_DELAY);
     link_verdict_t v = link_on_frame(&s_link, src, kind, f->type, now_ms());
     atomic_store(&s_active, s_link.active);
@@ -212,9 +216,10 @@ static int log_vprintf(const char *fmt, va_list ap)
     return ret;
 }
 
-void transport_start(frame_handler_t on_frame)
+void transport_start(frame_handler_t on_frame, frame_filter_t accept)
 {
     s_handler = on_frame;
+    s_accept = accept;
     link_init(&s_link);
     s_dispatch_mtx = xSemaphoreCreateMutex();
     usb_serial_jtag_driver_config_t cfg = {

@@ -233,6 +233,15 @@ static unsigned task_free_bytes(const char *name)
     return t ? (unsigned)uxTaskGetStackHighWaterMark(t) : 0;
 }
 
+static bool accept_frame(const proto_frame_t *f)
+{
+    if (f->type == T_HOST_HELLO && !host_hello_proto_ok(f)) {
+        ESP_LOGW(TAG, "HOST_HELLO ignored: proto mismatch (device speaks %d)", PROTO_VERSION);
+        return false;
+    }
+    return true;
+}
+
 static void send_pairing_result(uint8_t type, const char *err)
 {
     char json[64];
@@ -243,10 +252,6 @@ static void send_pairing_result(uint8_t type, const char *err)
 static void on_frame(const proto_frame_t *f, bool live)
 {
     if (!s_ready) {
-        return;
-    }
-    if (f->type == T_HOST_HELLO && !host_hello_proto_ok(f)) {
-        ESP_LOGW(TAG, "HOST_HELLO ignored: proto mismatch (device speaks %d)", PROTO_VERSION);
         return;
     }
     if (live) {
@@ -437,7 +442,7 @@ void app_main(void)
     s_snap_queue = xQueueCreate(SNAPSHOT_QUEUE_DEPTH, sizeof(lv_draw_buf_t *));
     xTaskCreate(snapshot_task, "snap", STACK_WORKER, NULL, PRIO_WORKER, NULL);
     s_last_host_ms = now_ms();
-    transport_start(on_frame);
+    transport_start(on_frame, accept_frame);
     ESP_LOGI(TAG, "boot fw=%s reset_reason=%d", FW_VERSION, (int)esp_reset_reason());
     volume_init();
     ui_start();

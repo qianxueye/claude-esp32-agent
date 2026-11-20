@@ -5,6 +5,8 @@
 
 /* live: the frame came on the active link (or USB while none is) and counts for host liveness. */
 typedef void (*frame_handler_t)(const proto_frame_t *f, bool live);
+/* Refuses a frame before the active-link rules see it. */
+typedef bool (*frame_filter_t)(const proto_frame_t *f);
 
 typedef struct {
     uint32_t tx_frames;
@@ -16,7 +18,7 @@ typedef struct {
     uint32_t tx_bytes;
 } transport_stats_t;
 
-void transport_start(frame_handler_t on_frame);
+void transport_start(frame_handler_t on_frame, frame_filter_t accept);
 /* Queues one frame on the active link; drops it when the queue is full or no host is attached. */
 bool transport_send(uint8_t type, const void *payload, size_t len);
 /* Queues one frame on a route read earlier with transport_route. */
