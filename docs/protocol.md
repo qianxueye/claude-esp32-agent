@@ -4,7 +4,7 @@ Single source of truth for `firmware/` and `host/`. Change both sides and this f
 
 ## Links
 
-The same frames run over two links. Only one link is active at a time (see Active link).
+The same frames run over USB and over two network links, Wi-Fi on the LAN and the tunnel. Only one link is active at a time (see Active link).
 
 ### USB
 
@@ -23,20 +23,32 @@ The same frames run over two links. Only one link is active at a time (see Activ
 - Over TCP a frame is dropped only before its first byte is written; the 200 ms partial-frame rule does not apply.
 - A sleeping Mac or a stopped relay shows on the board as OFFLINE.
 
+### Tunnel
+
+- The board opens `wss://<host>/clawd/v1`, the remote URL from PAIR or SET_REMOTE. The outer TLS ends at the tunnel provider's edge, which forwards the WebSocket connection to the relay on `127.0.0.1` (TCP port 47802). The relay does not listen for the tunnel on any other interface.
+- The relay answers only `GET /clawd/v1` with a WebSocket upgrade; any other request gets 404 with an empty body. No WebSocket extension is negotiated, so there is no compression.
+- Inside the WebSocket connection runs the same TLS session as on Wi-Fi: TLS 1.2, `ECDHE-PSK-CHACHA20-POLY1305`, the same PSK identity and key, no session tickets, no resumption. Binary messages carry the inner TLS byte stream; neither side relies on message boundaries. A text message closes the connection.
+- The tunnel provider sees the upgrade request, message sizes and timing, and the inner ClientHello with the PSK identity. It sees no frame content and cannot inject or change frames.
+- The relay closes a tunnel connection that has not finished the upgrade within 10 s, has not finished the inner handshake 10 s after the upgrade, sends a message larger than 32 768 bytes, or sends more than 32 768 bytes before the inner session is authenticated.
+- Liveness is the PING and PONG frames of the session. Neither side sends WebSocket pings; both answer them.
+- A frame is dropped only whole and before encryption; an encrypted record is never dropped. The 200 ms partial-frame rule does not apply.
+- Try order: on a network saved with `lan` true, the board tries the Wi-Fi relay addresses first and then the remote URL; on any other saved network it tries only the remote URL.
+
 ### Pairing
 
 Pairing happens once over USB and carries everything the Wi-Fi link needs.
 
 - The user runs `claude-voice pair` in their own terminal and types the Wi-Fi name and password there. The relay generates the PSK, stores it in the macOS Keychain (generic password, service `claude-voice`, account = PSK identity) and sends PAIR.
 - The device accepts PAIR and FORGET only on the USB link.
-- The PAIR payload is never logged: the relay log, `devctl` and LOG frames show at most the SSID.
-- The device stores the Wi-Fi credentials, PSK and relay addresses in NVS. Flash encryption is not enabled, so anyone with physical access to the board can read them.
+- The PAIR and SET_REMOTE payloads are never logged: the relay log, `devctl` and LOG frames show at most the SSID and the remote URL.
+- The device stores the Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials in NVS. Flash encryption is not enabled, so anyone with physical access to the board can read them.
 
 ### Active link
 
 USB takes precedence. A HOST_HELLO on USB makes USB the active link and closes the Wi-Fi session. Wi-Fi becomes the active link when an authenticated TLS session sends HOST_HELLO and no valid frame has arrived on USB for 5000 ms. Device-to-host frames go to the active link only; host-to-device frames from the inactive link are ignored, except PAIR and FORGET on USB.
 
 - Before the first HOST_HELLO after boot, no link is active and the device sends its frames on USB.
+- The tunnel is a network link like Wi-Fi: USB takes precedence over both, and between a Wi-Fi and a tunnel session the newer authenticated one replaces the older.
 - When paired, the device connects to the relay whether or not USB is active. The relay may close that session while USB is active; the device then retries with the usual backoff.
 
 ## Frame
@@ -75,8 +87,10 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0x33` | SNAP_DATA       | Next bytes of the snapshot, ≤ 4096 per frame, in order. |
 | `0x34` | SNAP_END        | `u32` total byte count. |
 | `0x35` | PAIR_RESULT     | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. |
-| `0x36` | WIFI_STATUS     | JSON `{"wifi":"off"|"connecting"|"connected"|"failed","ip":"…","rssi":-55,"relay":"none"|"connecting"|"connected"|"auth_failed"|"unreachable"}`. Sent on every change and in reply to HOST_HELLO. |
+| `0x36` | WIFI_STATUS     | JSON `{"wifi":"off"|"connecting"|"connected"|"failed","ip":"…","rssi":-55,"relay":"none"|"connecting"|"connected"|"auth_failed"|"unreachable"|"captive"|"tls_failed"}`. `captive`: the network intercepts the tunnel (name lookup fails, or the upgrade gets a redirect or another answer than 101); `tls_failed`: the outer TLS certificate check failed. Sent on every change and in reply to HOST_HELLO. |
 | `0x37` | FORGET_RESULT   | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. |
+
+HELLO `link` is `"tunnel"` when the board sends it over the tunnel.
 
 ## Host → device
 
@@ -85,8 +99,9 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0x81` | HOST_HELLO | JSON `{"proto":3}`. |
 | `0x82` | SET_STATE  | `u8` state (table below). |
 | `0x83` | SET_VOLUME | `u8` volume (values above 100 are clamped to 100), then an optional `u8` mode: `0` transient (also when absent), `1` persist, `2` seed. Other modes and other lengths are ignored, as is any set while the knob is armed. See Volume. |
-| `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. |
-| `0x85` | FORGET     | USB only. Empty. Erase Wi-Fi credentials, PSK and relay addresses; disconnect Wi-Fi; then send FORGET_RESULT. |
+| `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. Optional: `networks`, up to 4 `{"ssid":"…","password":"…","lan":true|false}` that replace all saved networks (`lan` true where the relay addresses are reachable); `remote_url` (`"wss://…/clawd/v1"`); `access_id` and `access_secret` (tunnel provider credentials sent as headers on the upgrade). |
+| `0x85` | FORGET     | USB only. Empty. Erase Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials; disconnect Wi-Fi; then send FORGET_RESULT. |
+| `0x86` | SET_REMOTE | JSON `{"url":"wss://…/clawd/v1"}`, optionally with `access_id` and `access_secret`. Sent by the relay after HELLO on any authenticated link; the device stores the values only when they changed. |
 | `0x90` | SPK_AUDIO  | PCM, ≤ 4096 bytes, even length. Appended to the playback queue. |
 | `0x91` | SPK_FLUSH  | Empty. Stop playback now and clear the queue. |
 | `0x92` | SPK_END    | Empty. No more audio for this reply. |
