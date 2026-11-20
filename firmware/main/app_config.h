@@ -236,7 +236,7 @@
 #define PRIO_BLIT 5
 #define PRIO_WORKER 5
 #define PRIO_NET 5
-#define STACK_RX 4096
+#define STACK_RX 6144 /* PAIR parsing and its NVS write run on it */
 #define STACK_TX 4096
 #define STACK_MIC 6144
 #define STACK_SPK 6144
