@@ -256,7 +256,8 @@ class FakeDevice:
             return
         self.send(T.LOG, f"pair: ssid={info['ssid']}".encode())
         if self.leaky_log:
-            self.send(T.LOG, f"careless: {info['password']} {info['psk']}".encode())
+            extra = " ".join(n["password"] for n in info.get("networks", []))
+            self.send(T.LOG, f"careless: {info['password']} {info['psk']} {extra}".encode())
         if self.refuse_pair:
             self.send(T.PAIR_RESULT, b'{"ok":false,"error":"nvs full"}')
             return
