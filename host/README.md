@@ -43,7 +43,12 @@ uv run claude-voice [--config config.toml]
 
 ## 远程连接端点
 
-中继还在本机回环地址 `127.0.0.1` 的 47802 端口（`tunnel_port`）上提供 WebSocket 端点 `/clawd/v1`，隧道程序（如 cloudflared）把设备从互联网发来的连接转到这里。端点里传的是与 Wi-Fi 相同的加密连接，没有配对密钥的连接会被断开；局域网上的其他设备连不到这个端口。中继本身不启动隧道程序。这个端点和 Wi-Fi 端口一样，只在 Wi-Fi 开启且设备已配对时启动；不需要时在 `config.toml` 里设 `tunnel_enabled = false`。
+中继在本机 `127.0.0.1` 的 47802 端口（`tunnel_port`）上提供 WebSocket 端点 `/clawd/v1`，用来接收隧道程序（如 cloudflared）从互联网转来的开发板连接。
+
+- 只有这台 Mac 上的程序能连到这个端口，局域网上的其他设备连不到。
+- 端点里传的是与 Wi-Fi 相同的加密连接，没有配对密钥的连接会被断开。
+- 中继不会启动隧道程序，要另外运行。
+- 和 Wi-Fi 端口一样，只在 Wi-Fi 开启、这台 Mac 已和开发板配对时启动。不需要时，在 `config.toml` 里设 `tunnel_enabled = false`。
 
 ## 前提
 
