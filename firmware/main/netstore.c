@@ -5,11 +5,13 @@
 #include "freertos/semphr.h"
 #include "mbedtls/platform_util.h"
 #include "nvs.h"
+#include "nvs_flash.h"
 #include "pairrec.h"
 
 static const char *TAG = "netstore";
 
 static SemaphoreHandle_t s_mtx;
+static bool s_usable; /* the partition is initialised */
 static uint32_t s_cur_id; /* id of the stored PAIR record, 0 for none */
 static uint32_t s_max_id; /* largest id still in storage */
 static uint8_t s_blob[PR_PAIR_BLOB_MAX];
@@ -27,13 +29,34 @@ static void unlock(void)
 
 static esp_err_t open_rw(nvs_open_mode_t mode, nvs_handle_t *h)
 {
+    if (!s_usable) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
     return nvs_open_from_partition(NET_NVS_PARTITION, NET_NVS_NAMESPACE, mode, h);
+}
+
+/* Initialises the partition; it holds only the pairing, so an unreadable one is erased once. */
+static esp_err_t start_partition(void)
+{
+    esp_err_t e = nvs_flash_init_partition(NET_NVS_PARTITION);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "pairing partition unreadable (%s): erased", esp_err_to_name(e));
+        e = nvs_flash_erase_partition(NET_NVS_PARTITION);
+        if (e == ESP_OK) {
+            e = nvs_flash_init_partition(NET_NVS_PARTITION);
+        }
+    }
+    s_usable = e == ESP_OK;
+    if (!s_usable) {
+        ESP_LOGE(TAG, "pairing partition unusable (%s)", esp_err_to_name(e));
+    }
+    return e;
 }
 
 bool netstore_init(void)
 {
     s_mtx = xSemaphoreCreateMutex();
-    return s_mtx != NULL;
+    return s_mtx && start_partition() == ESP_OK;
 }
 
 /* Reads one record into s_blob; returns its decoded data or NULL. */
@@ -142,14 +165,11 @@ bool netstore_forget(void)
     if (!lock()) {
         return false;
     }
-    nvs_handle_t h;
-    esp_err_t e = open_rw(NVS_READWRITE, &h);
-    if (e == ESP_OK) {
-        e = nvs_erase_all(h);
-        if (e == ESP_OK) {
-            e = nvs_commit(h);
-        }
-        nvs_close(h);
+    /* Erases every sector of the partition (it deinitialises it first), then starts it empty. */
+    esp_err_t e = nvs_flash_erase_partition(NET_NVS_PARTITION);
+    s_usable = nvs_flash_init_partition(NET_NVS_PARTITION) == ESP_OK;
+    if (!s_usable) {
+        ESP_LOGE(TAG, "pairing partition unusable after FORGET");
     }
     s_cur_id = 0;
     if (e == ESP_OK) {

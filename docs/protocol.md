@@ -42,7 +42,8 @@ Pairing happens once over USB and carries everything the Wi-Fi link needs.
 - The user runs `claude-voice pair` in their own terminal and types the Wi-Fi name and password there. The relay generates the PSK, stores it in the macOS Keychain (generic password, service `claude-voice`, account = PSK identity) and sends PAIR.
 - The device accepts PAIR and FORGET only on the USB link.
 - The PAIR and SET_REMOTE payloads are never logged: the relay log, `devctl` and LOG frames show at most the SSID and the remote URL.
-- The device stores the Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials in NVS. Flash encryption is not enabled, so anyone with physical access to the board can read them.
+- The device stores the Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials in NVS, in a flash partition of their own. Flash encryption is not enabled, so anyone with physical access to the board can read them.
+- FORGET erases that partition's flash. A pairing replaced by a later PAIR can stay in flash until FORGET, because NVS marks replaced entries erased without erasing them.
 
 ### Revocation
 

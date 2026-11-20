@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include "app_config.h"
 
-/* Pairing storage: key "pair" holds a record of the PAIR text, "remote" one of the SET_REMOTE URL (docs/network.md "Storage").
+/* Pairing storage in its own NVS partition: key "pair" holds a record of the PAIR text, "remote" one of the SET_REMOTE URL (docs/network.md "Storage").
  * Every function takes the store's own lock and no other. */
 
 enum { NS_SAVED, NS_FAILED, NS_STALE };
