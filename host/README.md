@@ -38,7 +38,7 @@ uv run claude-voice [--config config.toml]
 
 - 换了 Wi-Fi 或本机地址变了，重新运行一次 `pair` 即可。
 - 清除配对：`uv run claude-voice forget`（设备要用 USB 连着）。它清除设备上的 Wi-Fi 设置，并删除钥匙串里的密钥。
-- 设备丢失时：运行 `uv run claude-voice revoke`，不需要连接设备。它删除钥匙串里这台设备的配对密钥，正在运行的中继会在 10 秒内断开这台设备。设备里保存的 Wi-Fi 密码仍能被读出，请修改这些 Wi-Fi 的密码。钥匙串里有多台设备的密钥时，先在 `config.toml` 里用 `device_serial` 指定要撤销的设备。
+- 设备丢失时：运行 `uv run claude-voice revoke`，不需要连接设备。它删除钥匙串里这台设备的配对密钥，正在运行的中继会在 10 秒内断开这台设备。拿到设备的人仍能读出其中保存的 Wi-Fi 密码，请修改这些 Wi-Fi 的密码。钥匙串里有多台设备的密钥时，先在 `config.toml` 里用 `device_serial` 指定要撤销的设备。
 - Mac 睡眠或中继没在运行时，设备屏幕显示「离线」；Mac 唤醒、中继启动后设备会自动重连。
 - 设备没有开启闪存加密，拿到设备的人可以读出其中的 Wi-Fi 密码和配对密钥。
 

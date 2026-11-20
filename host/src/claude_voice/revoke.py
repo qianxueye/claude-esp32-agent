@@ -108,10 +108,10 @@ def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
     if deleted:
         out(f"已删除本机钥匙串中设备 {identity} 的配对密钥。")
         out(
-            f"正在运行的 claude-voice 会在 {cfg.key_reload_interval_s:g} 秒内断开这台设备，之后不再接受它连接；"
-            "如果它是用更新前的版本启动的，要重新启动后才会断开。"
+            f"正在运行的中继会在 {cfg.key_reload_interval_s:g} 秒内断开这台设备，之后不再接受它连接。"
+            "中继如果是在这次更新之前启动的，要重启后才会断开。"
         )
-        out("设备里保存的 Wi-Fi 密码仍能被读出，请修改这些 Wi-Fi 的密码。")
+        out("拿到设备的人仍能读出其中保存的 Wi-Fi 密码，请修改这些 Wi-Fi 的密码。")
     else:
         out(f"本机钥匙串中没有设备 {identity} 的配对密钥。")
     try:
