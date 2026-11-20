@@ -316,6 +316,35 @@ async def test_unreadable_keychain_keeps_the_key_and_the_session(error, caplog):
     assert len(warnings) == 1, warnings
 
 
+class NotHex(MemoryStore):
+    def get(self, identity):
+        raise KeychainValueError("not a hex key")
+
+
+@pytest.mark.parametrize("kind", ["lan", "tunnel"])
+@pytest.mark.parametrize("value", ["short", "not-hex"])
+async def test_a_keychain_value_that_is_not_a_key_drops_the_identity(kind, value, caplog):
+    caplog.set_level(logging.WARNING, logger="claude_voice.revoke")
+    store = stored((IDENTITY, bytes(16))) if value == "short" else NotHex()
+    async with Live(store, {IDENTITY: KEY}) as w:
+        d = await w.board(kind)
+        await until(lambda: closed(d) and w.h.link.active_kind is None, timeout=2)
+        await _refused(w, "lan" if kind == "tunnel" else "tunnel")
+        assert w.ring.keys == {} and w.ring.removed == 1
+    assert any("is not a 32-byte hex key; dropping it" in r.getMessage() for r in caplog.records)
+
+
+def test_keychain_value_that_is_not_hex_is_a_distinct_error(monkeypatch):
+    out = {"value": "zz-not-hex\n"}
+    monkeypatch.setattr(
+        keychain_mod.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, out["value"], "")
+    )
+    with pytest.raises(KeychainValueError):
+        KeychainStore("claude-voice", 5.0).get(IDENTITY)
+    out["value"] = KEY.hex()[:32] + "\n"
+    assert KeychainStore("claude-voice", 5.0).get(IDENTITY) == KEY[:16]
+
+
 async def test_removal_closes_every_network_session_and_a_still_valid_identity_reconnects():
     store = stored((IDENTITY, KEY), (OTHER, KEY2))
     async with Live(store, {IDENTITY: KEY, OTHER: KEY2}) as w:

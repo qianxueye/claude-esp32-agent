@@ -21,7 +21,7 @@ class Sweepable(Protocol):
 
 
 class KeyReloader:
-    """Re-reads the PSK of every identity in `ring`; only a definite "not found" or a new key drops one."""
+    """Re-reads the PSK of every identity in `ring`; a definite "not found" or any other value drops one."""
 
     def __init__(self, cfg: Config, store: PskStore, ring: Keyring, servers: Sequence[Sweepable]) -> None:
         self._cfg = cfg
@@ -56,13 +56,15 @@ class KeyReloader:
         found = await asyncio.to_thread(self._read, list(keys))
         dropped = []
         for identity, value in found.items():
-            if isinstance(value, Exception):
+            if isinstance(value, KeychainValueError) or (isinstance(value, bytes) and len(value) != PSK_BYTES):
+                log.warning("Keychain PSK of %s is not a %d-byte hex key; dropping it", identity, PSK_BYTES)
+                keys.pop(identity, None)
+                dropped.append(identity)
+            elif isinstance(value, Exception):
                 self._warn.warn("cannot re-read the PSK of %s, keeping it: %s", identity, type(value).__name__)
             elif value is _MISSING:
                 keys.pop(identity, None)
                 dropped.append(identity)
-            elif not isinstance(value, bytes) or len(value) != PSK_BYTES:
-                self._warn.warn("Keychain PSK of %s is not %d bytes, keeping the current one", identity, PSK_BYTES)
             elif value != keys.get(identity):
                 keys[identity] = value
                 dropped.append(identity)
