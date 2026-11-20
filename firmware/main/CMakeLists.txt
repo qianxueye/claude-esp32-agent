@@ -1,6 +1,6 @@
 idf_component_register(
-    SRCS "main.c" "proto.c" "transport.c" "audio.c" "ui.c" "orient.c" "dpower.c" "keydebounce.c" "motion.c" "imu.c" "font/clawd_font_48.c" "rotblit.c" "volknob.c" "volarc.c" "arcvis.c" "volstate.c" "volume.c" "netcfg.c" "linkstate.c" "netplan.c" "wsmap.c" "netwrite.c"
+    SRCS "main.c" "proto.c" "transport.c" "audio.c" "ui.c" "orient.c" "dpower.c" "keydebounce.c" "motion.c" "imu.c" "font/clawd_font_48.c" "rotblit.c" "volknob.c" "volarc.c" "arcvis.c" "volstate.c" "volume.c" "netcfg.c" "linkstate.c" "netplan.c" "wsmap.c" "netwrite.c" "netstore.c" "net.c"
     INCLUDE_DIRS "."
-    REQUIRES esp_driver_usb_serial_jtag esp_driver_i2c esp_driver_gpio esp_timer esp_system nvs_flash
+    REQUIRES esp_driver_usb_serial_jtag esp_driver_i2c esp_driver_gpio esp_timer esp_system nvs_flash esp_wifi esp_netif esp_event lwip mbedtls tcp_transport esp-tls
     PRIV_REQUIRES esp_hw_support
 )
