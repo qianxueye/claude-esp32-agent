@@ -643,7 +643,10 @@ def test_revoke_fails_when_the_key_is_still_readable_after_the_delete(error):
     store.set(IDENTITY, KEY)
     ok, out = revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
     assert not ok
-    assert out == [f"删除后本机钥匙串中仍能读到设备 {IDENTITY} 的配对密钥，撤销没有完成。"]
+    assert out == [
+        f"删除后本机钥匙串中仍能读到设备 {IDENTITY} 的配对密钥，撤销没有完成。"
+        f"请在「钥匙串访问」中搜索 {IDENTITY}，删除找到的条目，再运行一次 claude-voice revoke。"
+    ]
 
 
 def test_revoke_lets_an_unreadable_keychain_after_the_delete_propagate():
