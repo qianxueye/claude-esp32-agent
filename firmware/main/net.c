@@ -60,6 +60,8 @@ static bool s_paired;
 static uint32_t s_pair_id;
 static char s_remote[NET_URL_MAX + 1];
 static bool s_has_remote;
+static char s_stored[NET_URL_MAX + 1]; /* the remote URL in effect in flash */
+static bool s_has_stored;
 static _Atomic uint32_t s_gen, s_remote_gen;
 
 /* Handler scratch; handlers run one at a time under the dispatch lock. */
@@ -797,7 +799,9 @@ void net_init(void)
             s_has_remote = remote != NULL;
             if (remote) {
                 memmove(s_remote, remote, strlen(remote) + 1);
+                memcpy(s_stored, s_remote, sizeof s_stored);
             }
+            s_has_stored = s_has_remote;
         }
     }
     mbedtls_platform_zeroize(s_pair_text, sizeof s_pair_text);
@@ -848,6 +852,8 @@ const char *net_pair(const uint8_t *payload, size_t len)
         s_pair_id = id;
         memcpy(s_remote, s_pair_tmp.remote_url, sizeof s_remote);
         s_has_remote = s_pair_tmp.has_remote;
+        memcpy(s_stored, s_remote, sizeof s_stored);
+        s_has_stored = s_has_remote;
         xSemaphoreGive(s_cfg_mtx);
         atomic_fetch_add(&s_gen, 1);
         post(EV_CONFIG, 0);
@@ -870,6 +876,8 @@ const char *net_forget(void)
     s_pair_id = 0;
     s_remote[0] = 0;
     s_has_remote = false;
+    s_stored[0] = 0;
+    s_has_stored = false;
     xSemaphoreGive(s_cfg_mtx);
     atomic_fetch_add(&s_gen, 1);
     post(EV_CONFIG, 0);
@@ -879,6 +887,7 @@ const char *net_forget(void)
 
 void net_set_remote(const uint8_t *payload, size_t len)
 {
+    static char failed[NET_URL_MAX + 1]; /* the URL whose save failed last, logged once */
     if (!s_cfg_mtx) {
         return;
     }
@@ -894,23 +903,42 @@ void net_set_remote(const uint8_t *payload, size_t len)
         return;
     }
     xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
-    bool apply = s_paired && (!s_has_remote || strcmp(s_remote, s_url_tmp) != 0);
+    bool paired = s_paired;
+    pr_remote_plan_t plan = pr_remote_plan(s_has_stored ? s_stored : NULL, s_has_remote ? s_remote : NULL, s_url_tmp);
     uint32_t pair_id = s_pair_id, gen = atomic_load(&s_gen);
     xSemaphoreGive(s_cfg_mtx);
-    if (!apply) {
+    if (!paired || (!plan.save && !plan.apply)) {
         return;
     }
-    int saved = netstore_save_remote(pair_id, &s_gen, gen, s_url_tmp);
+    int saved = plan.save ? netstore_save_remote(pair_id, &s_gen, gen, s_url_tmp) : NS_SAVED;
     if (saved == NS_STALE) {
         return;
     }
     xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
-    memcpy(s_remote, s_url_tmp, sizeof s_remote);
-    s_has_remote = true;
+    bool current = atomic_load(&s_gen) == gen;
+    if (current && plan.save && saved == NS_SAVED) {
+        memcpy(s_stored, s_url_tmp, sizeof s_stored);
+        s_has_stored = true;
+    }
+    if (current && plan.apply) {
+        memcpy(s_remote, s_url_tmp, sizeof s_remote);
+        s_has_remote = true;
+    }
     xSemaphoreGive(s_cfg_mtx);
-    atomic_fetch_add(&s_remote_gen, 1);
-    post(EV_REMOTE, 0);
-    ESP_LOGI(TAG, "remote URL %s", s_url_tmp);
+    if (!current) {
+        return;
+    }
+    if (saved == NS_FAILED && strcmp(failed, s_url_tmp) != 0) {
+        memcpy(failed, s_url_tmp, sizeof failed);
+        ESP_LOGW(TAG, "remote URL %s not saved; used until restart", s_url_tmp);
+    } else if (saved == NS_SAVED) {
+        failed[0] = 0;
+    }
+    if (plan.apply) {
+        atomic_fetch_add(&s_remote_gen, 1);
+        post(EV_REMOTE, 0);
+        ESP_LOGI(TAG, "remote URL %s", s_url_tmp);
+    }
 }
 
 size_t net_status_json(char *buf, size_t cap)
