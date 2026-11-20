@@ -31,6 +31,7 @@
 #include "netcfg.h"
 #include "netplan.h"
 #include "netstore.h"
+#include "pairrec.h"
 #include "netwrite.h"
 #include "proto.h"
 #include "transport.h"
@@ -56,6 +57,7 @@ static TaskHandle_t s_task;
 /* Shared configuration, under s_cfg_mtx. */
 static netcfg_t s_cfg;
 static bool s_paired;
+static uint32_t s_pair_id;
 static char s_remote[NET_URL_MAX + 1];
 static bool s_has_remote;
 static _Atomic uint32_t s_gen, s_remote_gen;
@@ -780,15 +782,22 @@ void net_init(void)
         ESP_LOGE(TAG, "network module not started: out of memory");
         return;
     }
-    size_t len = netstore_load_pair(s_pair_text, NET_PAIR_MAX_BYTES);
+    uint32_t pair_id, remote_id;
+    size_t len = netstore_init() ? netstore_load(s_pair_text, NET_PAIR_MAX_BYTES, &pair_id, s_url_tmp, &remote_id) : 0;
     if (len) {
         const char *err = netcfg_parse_pair(s_pair_text, len, s_identity, &s_cfg);
         if (err) {
             mbedtls_platform_zeroize(&s_cfg, sizeof s_cfg);
             ESP_LOGW(TAG, "saved pairing refused (%s): unpaired", err);
         } else {
+            bool url_ok = s_url_tmp[0] && netcfg_url_split(s_url_tmp, strlen(s_url_tmp), NULL);
+            const char *remote = pr_effective_remote(pair_id, &s_cfg, remote_id, url_ok ? s_url_tmp : NULL);
             s_paired = true;
-            s_has_remote = netstore_load_remote(s_remote) && netcfg_url_split(s_remote, strlen(s_remote), NULL);
+            s_pair_id = pair_id;
+            s_has_remote = remote != NULL;
+            if (remote) {
+                memmove(s_remote, remote, strlen(remote) + 1);
+            }
         }
     }
     mbedtls_platform_zeroize(s_pair_text, sizeof s_pair_text);
@@ -828,13 +837,15 @@ const char *net_pair(const uint8_t *payload, size_t len)
     }
     memcpy(s_pair_text, payload, len);
     const char *err = netcfg_parse_pair(s_pair_text, len, s_identity, &s_pair_tmp);
-    if (!err && !netstore_save_pair(s_pair_text, len, s_pair_tmp.has_remote ? s_pair_tmp.remote_url : NULL)) {
+    uint32_t id = 0;
+    if (!err && !netstore_save_pair(s_pair_text, len, &id)) {
         err = "storage error";
     }
     if (!err) {
         xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
         s_cfg = s_pair_tmp;
         s_paired = true;
+        s_pair_id = id;
         memcpy(s_remote, s_pair_tmp.remote_url, sizeof s_remote);
         s_has_remote = s_pair_tmp.has_remote;
         xSemaphoreGive(s_cfg_mtx);
@@ -856,6 +867,7 @@ const char *net_forget(void)
     xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
     mbedtls_platform_zeroize(&s_cfg, sizeof s_cfg);
     s_paired = false;
+    s_pair_id = 0;
     s_remote[0] = 0;
     s_has_remote = false;
     xSemaphoreGive(s_cfg_mtx);
@@ -883,11 +895,15 @@ void net_set_remote(const uint8_t *payload, size_t len)
     }
     xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
     bool apply = s_paired && (!s_has_remote || strcmp(s_remote, s_url_tmp) != 0);
+    uint32_t pair_id = s_pair_id, gen = atomic_load(&s_gen);
     xSemaphoreGive(s_cfg_mtx);
     if (!apply) {
         return;
     }
-    netstore_save_remote(s_url_tmp);
+    int saved = netstore_save_remote(pair_id, &s_gen, gen, s_url_tmp);
+    if (saved == NS_STALE) {
+        return;
+    }
     xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
     memcpy(s_remote, s_url_tmp, sizeof s_remote);
     s_has_remote = true;

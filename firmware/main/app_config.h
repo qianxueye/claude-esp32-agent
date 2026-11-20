@@ -28,6 +28,7 @@
 #define REMOTE_CONNECT_TIMEOUT_MS 15000 /* DNS, TCP, outer TLS and upgrade of the remote URL */
 #define NET_BACKOFF_MIN_MS 1000 /* relay and association retry, doubling */
 #define NET_BACKOFF_MAX_MS 30000
+#define NET_NVS_PARTITION "nvs"
 #define NET_NVS_NAMESPACE "clawdnet"
 #define NET_INNER_HANDSHAKE_MS 10000 /* the relay's own handshake limit */
 #define REMOTE_STEP_TIMEOUT_MS 5000 /* per blocking step of the tunnel connect; docs/network.md "Bounds" */
