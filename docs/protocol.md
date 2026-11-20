@@ -20,6 +20,7 @@ The same frames run over USB and over two network links, Wi-Fi on the LAN and th
 - The board is the TLS client; the relay is the server on TCP port 47801 on all LAN interfaces. Both sides set `TCP_NODELAY`. The board turns Wi-Fi power saving off while a relay session is open.
 - The board tries the relay addresses saved at pairing in order: the relay's `.local` host name (resolved by mDNS), then each saved IPv4 address. It retries with backoff (1 s doubling to 30 s).
 - The relay keeps one board session; a new authenticated session replaces the old one.
+- The board closes a network session, Wi-Fi or tunnel, active or not, on which no valid frame has arrived for 5000 ms, and reconnects with the backoff above.
 - Over TCP a frame is dropped only before its first byte is written; the 200 ms partial-frame rule does not apply.
 - A sleeping Mac or a stopped relay shows on the board as OFFLINE.
 
@@ -93,9 +94,9 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0x32` | SNAP_BEGIN      | JSON `{"w":466,"h":466,"fmt":"RGB565"}` (RGB565 little-endian, row-major). |
 | `0x33` | SNAP_DATA       | Next bytes of the snapshot, ≤ 4096 per frame, in order. |
 | `0x34` | SNAP_END        | `u32` total byte count. |
-| `0x35` | PAIR_RESULT     | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. |
+| `0x35` | PAIR_RESULT     | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. Reasons: `too long`, `bad json`, `bad field <name>` (a required field is missing or has the wrong type, or `networks` is malformed), `bad psk`, `identity mismatch`, `bad ssid`, `bad password`, `too many networks`, `bad relay`, `bad remote_url`, `storage error`. A refused PAIR keeps the previous pairing. |
 | `0x36` | WIFI_STATUS     | JSON `{"wifi":"off"|"connecting"|"connected"|"failed","ip":"…","rssi":-55,"relay":"none"|"connecting"|"connected"|"auth_failed"|"unreachable"|"captive"|"tls_failed"}`. `captive`: the network intercepts the tunnel (name lookup fails, or the upgrade gets a redirect or another answer than 101); `tls_failed`: the outer TLS certificate check failed. Sent on every change and in reply to HOST_HELLO. |
-| `0x37` | FORGET_RESULT   | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. |
+| `0x37` | FORGET_RESULT   | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. Reason: `storage error` (the pairing is dropped from RAM and Wi-Fi stops anyway). |
 
 HELLO `link` is `"tunnel"` when the board sends it over the tunnel.
 
@@ -106,9 +107,9 @@ HELLO `link` is `"tunnel"` when the board sends it over the tunnel.
 | `0x81` | HOST_HELLO | JSON `{"proto":3}`. |
 | `0x82` | SET_STATE  | `u8` state (table below). |
 | `0x83` | SET_VOLUME | `u8` volume (values above 100 are clamped to 100), then an optional `u8` mode: `0` transient (also when absent), `1` persist, `2` seed. Other modes and other lengths are ignored, as is any set while the knob is armed. See Volume. |
-| `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. Optional: `networks`, up to 4 `{"ssid":"…","password":"…","lan":true|false}` that replace all saved networks (`lan` true where the relay addresses are reachable); `remote_url` (`"wss://…/clawd/v1"`); `access_id` and `access_secret` (tunnel provider credentials sent as headers on the upgrade). The relay sends `networks` with the main network first. Payload at most 1023 bytes (the device keeps 1024 bytes for the text and its terminator); the relay refuses a longer PAIR before sending it. |
+| `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. Optional: `networks`, up to 4 `{"ssid":"…","password":"…","lan":true|false}` that replace all saved networks (`lan` true where the relay addresses are reachable); `remote_url` (`"wss://…/clawd/v1"`); `access_id` and `access_secret` (tunnel provider credentials sent as headers on the upgrade). The relay sends `networks` with the main network first. At most 4 `relay_names` of at most 63 bytes each and at most 8 `relay_addrs` (dotted-quad IPv4). Payload at most 1023 bytes (the device keeps 1024 bytes for the text and its terminator); the relay refuses a longer PAIR before sending it. |
 | `0x85` | FORGET     | USB only. Empty. Erase the saved networks and Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials; disconnect Wi-Fi; then send FORGET_RESULT. |
-| `0x86` | SET_REMOTE | JSON `{"url":"wss://…/clawd/v1"}`, optionally with `access_id` and `access_secret`. Sent by the relay after HELLO on any authenticated link; the device stores the values only when they changed. |
+| `0x86` | SET_REMOTE | JSON `{"url":"wss://…/clawd/v1"}`, optionally with `access_id` and `access_secret`. Sent by the relay after HELLO on any authenticated link; the device stores the values only when they changed. Payload at most 511 bytes; the device ignores a longer one. |
 | `0x90` | SPK_AUDIO  | PCM, ≤ 4096 bytes, even length. Appended to the playback queue. |
 | `0x91` | SPK_FLUSH  | Empty. Stop playback now and clear the queue. |
 | `0x92` | SPK_END    | Empty. No more audio for this reply. |
