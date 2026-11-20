@@ -26,3 +26,8 @@ conversation_idle_reset_s = 600.0
 # Tunnel endpoint on 127.0.0.1 for the board over the internet; off when Wi-Fi is off or the board is not paired.
 # tunnel_enabled = true
 # tunnel_port = 47802
+# cloudflared Quick Tunnel to that endpoint, started and restarted by the relay; empty leaves it off.
+# cloudflared_bin = "/opt/homebrew/bin/cloudflared"
+# cloudflared_url_timeout_s = 30.0             # no public hostname by then: restart cloudflared
+# cloudflared_restart_min_s = 1.0              # restart delay doubles from this ...
+# cloudflared_restart_max_s = 60.0             # ... up to this; a longer run resets it

@@ -34,6 +34,7 @@ class T(enum.IntEnum):
     SET_VOLUME = 0x83
     PAIR = 0x84
     FORGET = 0x85
+    SET_REMOTE = 0x86
     SPK_AUDIO = 0x90
     SPK_FLUSH = 0x91
     SPK_END = 0x92
