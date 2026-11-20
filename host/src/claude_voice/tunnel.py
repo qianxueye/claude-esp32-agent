@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from websockets.datastructures import Headers
 from websockets.frames import CloseCode, Opcode
 from websockets.http11 import Request, Response
-from websockets.protocol import OPEN
+from websockets.protocol import CONNECTING, OPEN
 from websockets.server import ServerProtocol
 
 from .config import Config
@@ -35,13 +35,24 @@ class _QuietLog(logging.LoggerAdapter):
         return level >= logging.WARNING and self.logger.isEnabledFor(level)
 
 
+def _not_found() -> Response:
+    return Response(404, "Not Found", Headers([("Content-Length", "0"), ("Connection", "close")]))
+
+
 class _WsProtocol(ServerProtocol):
-    """Sends every HTTP answer other than the 101 upgrade as a 404 without a body."""
+    """Sends every HTTP answer other than the 101 upgrade, unparseable requests included, as a bodiless 404."""
+
+    responded = False
 
     def send_response(self, response: Response) -> None:
-        if response.status_code != 101:
-            response = Response(404, "Not Found", Headers([("Content-Length", "0"), ("Connection", "close")]))
-        super().send_response(response)
+        self.responded = True
+        super().send_response(response if response.status_code == 101 else _not_found())
+
+    def send_eof(self) -> None:
+        if self.state is CONNECTING and not self.responded:
+            self.responded = True
+            self.writes.append(_not_found().serialize())
+        super().send_eof()
 
 
 def _header(headers: Headers, name: str) -> str | None:
