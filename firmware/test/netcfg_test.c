@@ -227,7 +227,7 @@ static void test_size(void)
     const char *base = mk("\"HomeNet\"", "\"correct horse\"", ID, PSK64, "");
     size_t n = strlen(base) - 1;
     memcpy(big, base, n);
-    n += (size_t)sprintf(big + n, ",\"pad\":\"");
+    n += (size_t)snprintf(big + n, sizeof big - n, ",\"pad\":\"");
     size_t pad = 1023 - n - 2;
     memset(big + n, 'p', pad);
     memcpy(big + n + pad, "\"}", 3);
