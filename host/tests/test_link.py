@@ -122,7 +122,7 @@ async def test_usb_open_without_reset_syncs_counter_by_flush():
         await until(lambda: h.relay.speaker.synced)
         n = h.dev.host_hellos
         assert h.dev.hellos == ["reply"] * n and 1 <= n <= 2 and h.dev.flushes >= 1
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states)
     finally:
         await h.down()
@@ -148,7 +148,7 @@ async def test_v1_board_is_refused():
     h.task = asyncio.create_task(h.link.run())
     try:
         await until(lambda: h.devices and h.dev.state == State.ERROR)
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await asyncio.sleep(0.3)
         assert h.dev.state == State.ERROR and T.SET_VOLUME not in h.dev.received
         assert not h.link.connected and h.relay.state == State.IDLE
@@ -161,7 +161,7 @@ async def test_counter_wraps_during_playback():
     h = make(tts=FakeTts(ms=2500), boot_delay=None, consumed0=MOD - 50000)
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states, timeout=10)
         assert h.dev.consumed > MOD and h.dev.max_queued <= 64000
     finally:
@@ -172,7 +172,7 @@ async def test_whole_reply_is_delivered_in_order():
     h = make(tts=FakeTts(ms=700))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states)
         clip = tone(300, 700, 0.2)
         assert bytes(h.dev.spk).count(clip) == 2
@@ -184,7 +184,7 @@ async def test_listening_and_mic_require_v3_hello():
     h = make()
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.LISTENING)
         assert h.link.active_kind == "usb"
     finally:
@@ -207,7 +207,7 @@ async def test_non_v3_hello_after_v3_stops_processing():
         h.dev.proto = 1
         h.dev.hello("resume")
         await until(lambda: h.dev.state == State.ERROR)
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await asyncio.sleep(0.3)
         assert h.dev.state == State.ERROR and not h.link.connected and h.relay.state == State.IDLE
     finally:

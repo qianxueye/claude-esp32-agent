@@ -22,11 +22,16 @@ typedef struct {
 typedef struct {
     uint32_t last_act, last_lift, state_since, ramp_t0;
     int state, level, force, ramp_from, ramp_to;
+    int active; /* ACTIVE level in percent: the user level, or DISP_ACTIVE_PERCENT until one is set */
     bool hold, lift_seen, quick;
     dp_cause_t cause;
 } dpower_t;
 
 void dp_init(dpower_t *d, uint32_t now);
+/* Sets the ACTIVE level, clamped to BRT_MIN_PERCENT..100; a settled ACTIVE panel follows at once and a ramp toward ACTIVE keeps its end time. */
+void dp_set_active(dpower_t *d, int pct);
+/* Shows pct at once and ramps back to the ACTIVE level; ignored unless the panel is settled at ACTIVE. */
+void dp_bump(dpower_t *d, uint32_t now, int pct);
 /* Touch, button or pickup (DP_CAUSE_MOTION) activity. */
 void dp_activity(dpower_t *d, uint32_t now, dp_cause_t cause);
 /* A rest ended a pickup: in IDLE the pickup hold shrinks to DISP_SETDOWN_HOLD_MS. */

@@ -8,7 +8,7 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 
 | Stage | Panel | Entered |
 |---|---|---|
-| ACTIVE | `DISP_ACTIVE_PERCENT` (100 %) | any activity |
+| ACTIVE | the user brightness (see User brightness); `DISP_ACTIVE_PERCENT` (100 %) until one is set | any activity |
 | DIM | `DISP_DIM_PERCENT` (10 %) | `DISP_HOLD_MS` after the last activity |
 | OFF | fade to `DISP_FLOOR_PERCENT` (1 %), then display-off | `DISP_DIM_TO_OFF_MS` (30 min) after DIM begins |
 
@@ -19,7 +19,8 @@ Constant classes: **M** mathematical model, **C** plain configuration. Every val
 
 | Constant | Class | Meaning |
 |---|---|---|
-| `DISP_ACTIVE_PERCENT`, `DISP_DIM_PERCENT` | C | the two levels |
+| `DISP_ACTIVE_PERCENT` | C | ACTIVE level until the user sets one; also the maximum |
+| `DISP_DIM_PERCENT` | C | DIM level, absolute |
 | `DISP_HOLD_MS` | C | ACTIVE time after the last activity |
 | `DISP_DIM_TO_OFF_MS` | C | DIM time before OFF |
 | `DISP_ATTN_CAP_MS` | C | ACTIVE limit in one unchanged non-IDLE state |
@@ -37,13 +38,78 @@ Activity restarts the hold and returns the stage to ACTIVE at once. Sources:
 - a change into or out of LISTENING, THINKING, SPEAKING or ERROR;
 - boot.
 
-A touch that begins while the stage is DIM or OFF only wakes the screen: it sends no TAP on release, no LONG_PRESS at 1500 ms and no volume change however far it moves. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`); a tap after the wake is sent as usual. The BOOT and PWR keys are always sent.
+A touch that begins while the stage is DIM or OFF only wakes the screen: it changes no volume or brightness however far it moves. The decision is taken when the press starts, before the wake is posted (`dp_touch_press`). The BOOT and PWR keys are always sent.
 
 Not activity: PING and other host frames, a SET_STATE that repeats the current state, any change with OFFLINE at either end (including the OFFLINE to IDLE resume), and playback outside SPEAKING. A sleeping host would otherwise keep the screen lit overnight.
 
 Attention cap: LISTENING, THINKING, SPEAKING and ERROR hold ACTIVE, but after `DISP_ATTN_CAP_MS` in one unchanged state the stage drops to DIM and never reaches OFF while that state lasts. A touch gives ACTIVE for another hold.
 
 The IDLE palette dim is gone; the panel level carries the stage. The palette keeps only the OFFLINE look (`MASCOT_DIM_PERCENT`).
+
+## User brightness
+
+The ACTIVE level is a user setting kept on the board. A vertical swipe on a lit screen that starts in the centre, or at the top or bottom rim and runs inward, changes it. While it is adjusted, an arc on the left rim shows the level (`mascot.md`, Brightness arc). The host never sees or sets it, and no protocol frame changes.
+
+Gesture (`volknob.c`, the one touch classifier):
+
+- Start, centre: a centre touch (start radius below `VOL_R_MIN_PX`) on a lit screen that moves more than `TOUCH_SLOP_PX` before the 1500 ms long-press threshold becomes a swipe candidate instead of being dropped. A touch that moves after the threshold is still dropped (`why=moved`). A dark press only wakes.
+- Start, rim: an edge touch on a lit screen keeps its knob path unchanged and, once it has moved more than `TOUCH_SLOP_PX`, also carries a rim candidate. The candidate is tested on each changed sample before the knob, while the knob has not armed. It arms with the same tests as a centre candidate plus one: with `d` the displacement from the press point and `r̂0` the unit vector from the centre to the press point, the inward travel `−d·r̂0` must be at least the travel along the rim `|d × r̂0|`, otherwise it drops with `why=tangent`. A dropped rim candidate never ends the touch: the knob, its zone rule and the edge tap run as before. An armed rim swipe is the same armed swipe as a centre one and keeps `cls=edge`.
+- Which rim starts arm: a stroke in the cone that starts on the top or bottom rim and runs inward arms brightness; a stroke along the rim, an outward stroke, and an up–down stroke that starts on the left or right rim (more than about 45° from the UI's vertical axis) stay with the knob. The swipe arms after 48 px of travel, before a knob turn from that start has swept 15°.
+- Frame: "up" is the top of the UI as drawn, read once at press from the quadrant target (`orient_target`), not from the eased angle. With UI angle φ, UI-up in the touch frame is `(sin φ, −cos φ)`, taken from a table at the four quadrants; this is the inverse of the transform `rotblit` draws with. Travel `up` and sideways `lat` are measured from the press point in that frame. A UI rotation during the touch changes nothing: re-projecting would turn the same motion on the glass into sideways motion mid-gesture.
+- Arming, tested in this order on every sample whose point changed:
+  1. jump: the step from the previous changed sample exceeds `BRT_JUMP_MIN_PX` plus `BRT_V_MAX_PX_S` times the sample gap (gap capped at `VOL_JUMP_DT_CAP_MS`): dropped, `why=jump`;
+  2. `|lat| > BRT_LAT_PX` and `|lat| > |up| · BRT_CONE_NUM / BRT_CONE_DEN`: dropped, `why=lateral`;
+  3. more than `BRT_ARM_MAX_MS` since the sample that left the slop: dropped, `why=slow`;
+  4. `|up| ≥ BRT_ARM_PX`: armed (a rim candidate first passes the inward test above).
+
+  So a candidate arms only if it reaches 48 px of UI-up travel within 500 ms inside a cone of 26.6° either side of the UI vertical, with sideways travel up to 24 px always allowed. For a continuously sampled touch this is the box `|lat| ≤ 24, |up| < 48` left through the top or bottom; the cone form also arms a coarse sample that jumps past the box corner while staying in the cone. The centre zone is a start condition only.
+- Armed: the arming travel is dead, so the level starts from the user level read when the swipe arms (a level set between press and arming is the start). Sideways travel, radius and time are no longer tested. A jump cancels the swipe and restores that level. Release or a lost touch commits; an armed swipe never sends TAP, and no swipe sends any INPUT.
+
+Mapping (`brtmap.c`):
+
+- Ladder: `L(i) = round(BRT_MIN_PERCENT · (100 / BRT_MIN_PERCENT)^(i / BRT_STEPS))`, i = 0…32: 20 21 22 23 24 26 27 28 30 31 33 35 37 38 40 43 45 47 49 52 55 58 60 64 67 70 74 78 82 86 90 95 100. Equal ratios are equal perceived steps to first order, and an equal-ratio ladder stays equal-ratio under any power-law response of register 0x51. 32 steps is the finest ladder whose levels stay distinct in integer percent at the minimum (each step at least 21/20); every unrounded level is at least 0.008 from a rounding boundary, so no maths library can flip one.
+- Step rule: the knob's truncating accumulator, kept in pixels: travel along UI-up (times `BRT_UP_SIGN`) accumulates, and each `BRT_TRAVEL_PX / BRT_STEPS` (7.5 px) is one step. A reversal needs up to one extra step, so noise at a boundary does not flicker.
+- Ends saturate and do not wrap. Outward travel at an end is counted as push and the accumulator is cleared, so turning back responds within one step. The push still counts (`stops=` counts each arrival at an end whose push reaches one step), and the arc stretches past its end by up to three cells while the level rests there, springing back on release (`mascot.md` "End cue"). The panel dip (`BRT_BOUNCE_STEPS` steps inward, ramping back over `DISP_RAMP_MS`) is off; setting `BRT_BOUNCE_STEPS` above 0 brings it back beside the stretch.
+- Every value, from storage, the swipe or a DEBUG key, is clamped to `BRT_MIN_PERCENT`..100 and snapped to the nearest ladder level.
+
+Display power:
+
+- `dp_set_active` is the one entry for the ACTIVE level and clamps it again. `BRT_MIN_PERCENT ≥ 2 · DISP_DIM_PERCENT` is a static assert in `dpower.c` (a compile with 19 must fail, checked by `run.sh`), so DIM is never brighter than ACTIVE.
+- Following the finger is decided by level, not by the clock: settled at ACTIVE, the panel takes the new level in the next update; during a ramp toward ACTIVE (a wake, or a dip when it is on) only the end moves and the end time stays; in DIM or OFF only the target changes and the next wake ramps to it. A clock-based restart would lag the finger by 300 ms.
+- Boot writes the stored level to the panel before the first frame. Restarting the timeline (`disp_scale`) keeps the level.
+- DIM stays at 10 % absolute. Since the user level is at most 100 %, every burn-in figure computed for 100 % is an upper bound.
+
+Storage: namespace `clawd`, key `brt`, one byte, through `nvstore.c`, which also holds the volume. The save rules are the volume's (`protocol.md`, Volume): only a swipe release that changed the level, or `brt_set`, marks a write; never during a swipe, never for a pin, never after a cancel; the write waits for the amplifier off and a state other than LISTENING, and 5 s after the previous write of either key (one clock for both). When both keys are due in the same slot, the key that was not attempted last writes (the volume when neither was); a failed attempt counts, so a key that keeps failing cannot hold the slot, and a due key waits at most one extra slot. Absent or out-of-range values give 100 % and write nothing; an off-ladder value loads as the nearest level and is rewritten once; a read error keeps 100 % in RAM for that boot and writes nothing. Boot line: `bright <n> loaded`, `bright 100 default, none stored` or `bright 100 default, storage off`.
+
+Known limits: a straight vertical stroke that starts in the centre of a lit screen, or at the top or bottom rim and runs inward, such as a wipe or a thumb sliding in while picking the board up, arms. Its effect is bounded: the arming travel is dead, one step is 7.5 px and ×1.05, the floor is 20 %, nothing reaches the host, and one swipe undoes it. The touch controller reports one point and no contact size, so a palm cannot be told from a finger.
+
+Logged data, so that the placeholders can be fitted:
+
+- every 2 s, cumulative: `bright lvl= eff= panel= set= arms= rim= cancels= slides= stops= saves= ov=`. `panel` is the percent last written to the panel, `rim` counts the arms that started at the rim, `slides` counts lit centre touches that became candidates, and `ov=a/b/c` counts the times the end cue reached one, two and three cells (each capped at `ARC_OV_LOG_MAX`, so the line fits the 199 bytes a LOG frame keeps). The volume line `knob vol= eff= set= arms= cancels= edge= saves= ov=` ends with the same counters for the knob;
+- for every touch that moved more than the slop: `swipe: end cls= q= why= arm= b0= b= dx= dy= up= pk= lat= arm_ms= r1= rev= gap= stp= ku= kl= dur=`. `q` is the latched quadrant, `why` the first reason recorded for the touch: the swipe candidate's drop reason, else the reason the touch was ended (`none` when the swipe armed and was released or lost, or when an edge touch armed the knob before its candidate dropped and was released; `jump` when such an armed swipe or knob was cancelled by a jump, so `why=jump arm=1` is a cancelled swipe), `b0` and `b` the start and end level in percent (−1 when the swipe never armed), `dx` and `dy` the raw displacement at the last sample, `up` the signed UI-up travel, `pk` its peak and `lat` the peak sideways travel, `r1` the last radius and `rev` the direction reversals while armed. `gap` is the longest time between changed samples in ms and `stp` the longest step in px, both counted from the press, so they are the inputs of the jump test. `ku` and `kl` are the signed `up` and `lat` at the sample where the candidate armed or dropped, 0 when it did neither. `rev` is capped at 999, `gap` and `dur` at 999999, so the line always fits the 199 bytes a LOG frame keeps. The `knob: end` line is unchanged and keeps the knob's reason, for example `why=zone` for a rim swipe.
+- every 2 s, the `fps=` line ends with `stk=` before its bracket: the fewest bytes of the LVGL task's stack left free since boot. That task runs the touch handling and writes the `swipe: end` line.
+
+| Constant | Class | Meaning |
+|---|---|---|
+| `BRT_MIN_PERCENT` | C | lowest user level, at least twice `DISP_DIM_PERCENT` |
+| `BRT_STEPS` | M | ladder steps; the finest that integer percent keeps distinct |
+| `BRT_TRAVEL_PX` | C, placeholder | UI-up travel for the whole range |
+| `BRT_ARM_PX` | M, placeholder | dead travel before the level responds; about the knob's 15° at radius 190 |
+| `BRT_LAT_PX` | M, placeholder | sideways travel always allowed before arming; half the arming travel |
+| `BRT_CONE_NUM`, `BRT_CONE_DEN` | M, placeholder | beyond the floor, sideways travel may be at most 1/2 of the UI-up travel (26.6°) |
+| rim inward test | M, placeholder | inward travel at least the travel along the rim (45°); fitted from `ku`, `kl` of `cls=edge` lines |
+| `BRT_ARM_MAX_MS` | M, placeholder | arming deadline; at least 6.7 mm/s through the box |
+| `BRT_JUMP_MIN_PX`, `BRT_V_MAX_PX_S` | M, placeholder | per-sample distance limit: 32 px plus 4800 px/s, the fastest logged stroke (2298 px/s mean) times the peak-to-mean ratio of a minimum-jerk stroke (1.875) plus 11 %; 109 px at 16 ms, 272 px at 50 ms or more. Fitted from `gap` and `stp` |
+| `BRT_UP_SIGN` | C, board fact | +1 when travel toward the top of the UI raises the level |
+| `BRT_BOUNCE_STEPS` | C | steps of the end-stop panel dip; 0, off |
+| `ARC_OVER_CELLS` | C | most cells either rim arc reaches past an end (`mascot.md` "End cue") |
+| `ARC_OVER_C_NUM`, `ARC_OVER_C_DEN` | M, placeholder | stretch gain at the end relative to the in-range rate, 1/1; fitted from `ov=` |
+| `ARC_SPRING_STEP_MS` | C | time per cell while the stretch springs back |
+| `ARC_OV_LOG_MAX` | C | log cap on the `ov=` counters |
+| `BRT_ARC_START_DEG`, `BRT_ARC_SWEEP_DEG`, `BRT_ARC_CHUNK_CELLS`, `BRT_ARC_FILL_COLOR`, `BRT_ARC_TRACK_COLOR` | C | brightness arc (`mascot.md`) |
+| `BRT_NVS_KEY` | C | storage key |
+
+The touch frame is a board fact. A frame turned 180° reverses the swipe at every orientation and is fixed with `BRT_UP_SIGN`; a single mirrored axis reverses it at two orientations 90° apart and must be fixed in the touch flags (`display_start` in `ui.c`), not with a sign.
 
 ## Orbit
 
@@ -61,7 +127,7 @@ The panel's TE output may stop while it is off. `refr_cb` therefore does not wai
 
 ## Test aids
 
-DEBUG keys in `protocol.md`: `disp_scale` runs the timeline N times faster (and restarts it), `disp_force` pins a stage, `orbit` pins a lattice index, `fill` shows a flat grey for ghost inspection. `devctl disp` sends them. `devctl imu-dump SECONDS FILE` records raw samples for threshold calibration and rejects a trace with lost lines. Host tests: `firmware/test/run.sh`.
+DEBUG keys in `protocol.md`: `disp_scale` runs the timeline N times faster (and restarts it), `disp_force` pins a stage, `orbit` pins a lattice index, `fill` shows a flat grey for ghost inspection, `brt` pins the ACTIVE brightness without storing it, `brt_set` sets and stores it, `brt_arc` shows the brightness arc at a ladder index, `arc_over` stretches the forced arc by −3 to 3 cells. `devctl disp` sends them (`--brt N|null` for the pin, `--brt-arc N|null` for the arc, `--arc-over N|null`); `devctl brightness [N]` stores a level and prints the next `bright` line, failing after 5 s without one. `devctl swipecheck SECONDS --label grip|wipe|free` holds ACTIVE and pings the board so it stays out of OFFLINE. It waits up to 5 s for a baseline `bright` line, runs the window from there, and then takes as final the first `bright` line whose board time (the `I (<ms>)` uptime) is at least the baseline line's board time plus the window plus `SWIPE_FINAL_GUARD_S` (0.5 s), waiting up to 5 s on the host clock; a `bright` line without a board time never qualifies; swipe lines are collected until the final line, and the pin is released last. It reports the counter deltas, the unarmed slides by `why` with the largest `pk`, and each armed swipe. Verdict: no baseline or no final line fails; a counter lower in the final line than in the baseline (a board reset) fails; `grip` and `wipe` pass only when `arms` did not change, the level is unchanged and no swipe line has `arm=1`; `free`, where swipes are made on purpose, passes otherwise. The tool needs the `rim=` counter, so it finds no `bright` line on firmware without it. `devctl imu-dump SECONDS FILE` records raw samples for threshold calibration and rejects a trace with lost lines. Host tests: `firmware/test/run.sh`.
 
 ## Motion
 
