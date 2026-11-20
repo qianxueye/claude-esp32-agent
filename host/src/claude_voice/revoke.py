@@ -112,7 +112,10 @@ def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
     except KeychainValueError:
         still = True
     if still:
-        out(f"删除后本机钥匙串中仍能读到设备 {identity} 的配对密钥，撤销没有完成。")
+        out(
+            f"删除后本机钥匙串中仍能读到设备 {identity} 的配对密钥，撤销没有完成。"
+            f"请在「钥匙串访问」中搜索 {identity}，删除找到的条目，再运行一次 claude-voice revoke。"
+        )
         return False
     if deleted:
         out(f"已删除本机钥匙串中设备 {identity} 的配对密钥。")
