@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Sequence
 from typing import Protocol
 
 from .config import Config
-from .keychain import PskStore, psk_identity
+from .keychain import KeychainError, PskStore, psk_identity
 from .pairing import Out, PairError
 from .wifi import PSK_BYTES, Keyring, WarnLimiter
 
@@ -73,22 +73,32 @@ class KeyReloader:
         await asyncio.gather(*(s.close_sessions() for s in self._servers))
 
 
+ASK_SERIAL = "请在 config.toml 中用 device_serial 指定要撤销的设备，再运行 claude-voice revoke。"
+
+
+def _stored(store: PskStore) -> list[str]:
+    """Identities the listing shows, plus the one the relay's own lookup finds if the listing missed it."""
+    found = store.identities()
+    first = store.find_any()
+    return found + [first] if first and first not in found else found
+
+
 def revoke_identity(cfg: Config, store: PskStore) -> str:
-    """The identity to delete: the one for `device_serial` when set, else the only one in the store."""
+    """The identity to delete: `device_serial`'s, else the only one both the listing and the relay's lookup find."""
     if cfg.device_serial:
         try:
             return psk_identity(cfg.device_serial)
         except ValueError:
             raise PairError(f"config.toml 中的 device_serial 格式不对：{cfg.device_serial!r}") from None
-    found = store.identities()
-    if not found:
+    listed, first = store.identities(), store.find_any()
+    if not listed and first is None:
         raise PairError("本机钥匙串中没有配对密钥，没有可撤销的设备。")
-    if len(found) > 1:
-        raise PairError(
-            f"本机钥匙串中有 {len(found)} 台设备的配对密钥：{'、'.join(found)}。"
-            "请在 config.toml 中用 device_serial 指定要撤销的设备，再运行 claude-voice revoke。"
-        )
-    return found[0]
+    if len(listed) > 1:
+        raise PairError(f"本机钥匙串中有 {len(listed)} 台设备的配对密钥：{'、'.join(listed)}。" + ASK_SERIAL)
+    if listed != [first]:
+        found = "、".join(dict.fromkeys(i for i in [*listed, first] if i))
+        raise PairError(f"无法确认本机钥匙串中只有设备 {found} 的配对密钥。" + ASK_SERIAL)
+    return listed[0]
 
 
 def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
@@ -104,7 +114,11 @@ def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
         out("设备里保存的 Wi-Fi 密码仍能被读出，请修改这些 Wi-Fi 的密码。")
     else:
         out(f"本机钥匙串中没有设备 {identity} 的配对密钥。")
-    left = store.identities()
+    try:
+        left = _stored(store)
+    except KeychainError:
+        out("无法检查本机钥匙串中是否还有其他设备的配对密钥。")
+        return deleted
     if left:
         out(f"本机钥匙串中还有这些设备的配对密钥：{'、'.join(left)}。")
     return deleted
