@@ -53,7 +53,9 @@ class WarnLimiter:
         self._suppressed = 0
 
 
-def server_context(keys: dict[str, bytes], warn: Callable[..., None] = log.warning) -> ssl.SSLContext:
+def server_context(
+    keys: dict[str, bytes], warn: Callable[..., None] = log.warning, name: str = "Wi-Fi"
+) -> ssl.SSLContext:
     """TLS 1.2 only, one cipher suite, PSK from `keys`; any other identity fails the handshake."""
     if not ssl.HAS_PSK:
         raise RuntimeError("this Python's OpenSSL has no PSK support")
@@ -66,12 +68,55 @@ def server_context(keys: dict[str, bytes], warn: Callable[..., None] = log.warni
     def lookup(identity: str | None) -> bytes:
         key = keys.get(identity) if valid_identity(identity) else None
         if key is None:
-            warn("Wi-Fi handshake with unknown PSK identity %r", (identity or "")[:40])
+            warn("%s handshake with unknown PSK identity %r", name, (identity or "")[:40])
             return b""
         return key
 
     ctx.set_psk_server_callback(lookup)
     return ctx
+
+
+def acceptable(tls: ssl.SSLObject | None, on_resumed: Callable[[], None]) -> bool:
+    """True for a TLS 1.2 session with the one suite that is not a resumption."""
+    if tls is None or tls.version() != "TLSv1.2" or tls.cipher()[0] != CIPHER:
+        return False
+    if tls.session_reused:
+        on_resumed()
+        return False
+    return True
+
+
+class Admission:
+    """Counts connections still in the handshake, in total and per peer key, and refuses those over a cap."""
+
+    def __init__(self, logger: logging.Logger, name: str, total_max: int, per_key_max: int, interval_s: float) -> None:
+        self._name = name
+        self._max = total_max
+        self._per_key_max = per_key_max
+        self._warn_cap, self._warn_key = (WarnLimiter(logger, interval_s) for _ in range(2))
+        self.count = 0
+        self._by: dict[str, int] = {}
+
+    def admit(self, key: str) -> bool:
+        if self.count >= self._max:
+            self._warn_cap.warn("%s connection refused: %d already in the TLS handshake", self._name, self.count)
+            return False
+        if self._by.get(key, 0) >= self._per_key_max:
+            self._warn_key.warn("%s connection from %s refused: its handshake limit is reached", self._name, key)
+            return False
+        self.count += 1
+        self._by[key] = self._by.get(key, 0) + 1
+        return True
+
+    def release(self, key: str) -> None:
+        self.count -= 1
+        left = self._by.pop(key) - 1
+        if left:
+            self._by[key] = left
+
+    def flush(self) -> None:
+        self._warn_cap.flush()
+        self._warn_key.flush()
 
 
 def load_keys(cfg: Config, store: PskStore) -> dict[str, bytes]:
@@ -160,16 +205,19 @@ class WifiServer:
         self, cfg: Config, keys: dict[str, bytes], run_session: SessionRunner, peer_key: PeerKey = peer_ip
     ) -> None:
         self._cfg = cfg
-        self._warn_cap, self._warn_addr, self._warn_identity, self._warn_resumed = (
-            WarnLimiter(log, cfg.wifi_warn_interval_s) for _ in range(4)
+        self._admission = Admission(
+            log, "Wi-Fi", cfg.wifi_preauth_max, cfg.wifi_preauth_per_addr_max, cfg.wifi_warn_interval_s
         )
+        self._warn_identity, self._warn_resumed = (WarnLimiter(log, cfg.wifi_warn_interval_s) for _ in range(2))
         self._ctx = server_context(keys, self._warn_identity.warn)
         self._run_session = run_session
         self._server: asyncio.Server | None = None
-        self._preauth = 0
-        self._preauth_by: dict[str, int] = {}
         self._peer_key = peer_key
         self._handshakes: set[asyncio.Task] = set()
+
+    @property
+    def _preauth(self) -> int:
+        return self._admission.count
 
     @property
     def port(self) -> int:
@@ -183,21 +231,7 @@ class WifiServer:
         )
 
     def _admit(self, key: str) -> bool:
-        if self._preauth >= self._cfg.wifi_preauth_max:
-            self._warn_cap.warn("Wi-Fi connection refused: %d already in the TLS handshake", self._preauth)
-            return False
-        if self._preauth_by.get(key, 0) >= self._cfg.wifi_preauth_per_addr_max:
-            self._warn_addr.warn("Wi-Fi connection from %s refused: its handshake limit is reached", key)
-            return False
-        self._preauth += 1
-        self._preauth_by[key] = self._preauth_by.get(key, 0) + 1
-        return True
-
-    def _release(self, key: str) -> None:
-        self._preauth -= 1
-        left = self._preauth_by.pop(key) - 1
-        if left:
-            self._preauth_by[key] = left
+        return self._admission.admit(key)
 
     def _spawn(self, transport: asyncio.BaseTransport, key: str) -> None:
         task = asyncio.get_running_loop().create_task(self._handshake(transport, key))
@@ -214,7 +248,7 @@ class WifiServer:
         except Exception:
             tls = None
         finally:
-            self._release(key)
+            self._admission.release(key)
         # start_tls returns None when the peer closes during the handshake
         if tls is None or not self._acceptable(tls.get_extra_info("ssl_object")):
             (tls or raw).abort()  # type: ignore[attr-defined]
@@ -222,12 +256,7 @@ class WifiServer:
         proto.connection_made(tls)
 
     def _acceptable(self, tls: ssl.SSLObject | None) -> bool:
-        if tls is None or tls.version() != "TLSv1.2" or tls.cipher()[0] != CIPHER:
-            return False
-        if tls.session_reused:
-            self._warn_resumed.warn("Wi-Fi session resumption refused")
-            return False
-        return True
+        return acceptable(tls, lambda: self._warn_resumed.warn("Wi-Fi session resumption refused"))
 
     async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         sock = writer.get_extra_info("socket")
@@ -245,5 +274,6 @@ class WifiServer:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._server.wait_closed(), self._cfg.wifi_close_timeout_s)
             self._server = None
-        for limiter in (self._warn_cap, self._warn_addr, self._warn_identity, self._warn_resumed):
+        self._admission.flush()
+        for limiter in (self._warn_identity, self._warn_resumed):
             limiter.flush()
