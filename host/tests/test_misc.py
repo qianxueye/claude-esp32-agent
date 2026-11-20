@@ -219,7 +219,10 @@ import asyncio, sys
 from claude_voice.cli import run_until_signal
 
 async def main():
-    child = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)")
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(60)",
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
     print(child.pid, flush=True)
     try:
         await asyncio.Event().wait()
@@ -230,7 +233,10 @@ async def main():
         await child.wait()
         print("stopped", flush=True)
 
-run_until_signal(main())
+try:
+    run_until_signal(main())
+except KeyboardInterrupt:
+    pass
 print("exit", flush=True)
 '''
 
@@ -273,8 +279,9 @@ def _alive(pid):
 
 
 @pytest.mark.parametrize(
-    "signals, slow", [(["SIGTERM"], 0.0), (["SIGHUP"], 0.0), (["SIGHUP", "SIGTERM"], 0.5)],
-    ids=["term", "hup", "second-signal-during-cleanup"],
+    "signals, slow",
+    [(["SIGTERM"], 0.0), (["SIGHUP"], 0.0), (["SIGHUP", "SIGTERM"], 0.5), (["SIGINT", "SIGHUP", "SIGTERM"], 0.5)],
+    ids=["term", "hup", "second-signal-during-cleanup", "signal-after-ctrl-c"],
 )
 def test_stop_signal_runs_the_cleanup_and_exits_quietly(tmp_path, signals, slow):
     import os
@@ -330,5 +337,6 @@ def test_run_command_runs_under_the_signal_helper(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "run", stub)
     monkeypatch.setattr(cli, "run_until_signal", helper)
     monkeypatch.setattr(cli, "setup_logging", lambda c, console: None)
+    monkeypatch.setattr(cli, "raise_open_files_limit", lambda target: None)
     cli.main()
     assert ran == ["helper", "run"]

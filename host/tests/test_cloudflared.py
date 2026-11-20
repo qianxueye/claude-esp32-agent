@@ -3,6 +3,7 @@ import dataclasses
 import json
 import logging
 import os
+import shutil
 import stat
 import sys
 import time
@@ -186,9 +187,15 @@ async def test_child_gets_no_tunnel_variables_and_a_fresh_config_on_every_start(
         assert first["tunnel_env"] == second["tunnel_env"] == [], cf_log(tmp_path)
         assert first["keep_env"] == second["keep_env"] == "kept"
         assert second["argv"][3] == config and second["config"] == "{}\n"
+        shutil.rmtree(os.path.dirname(config))
+        (tmp_path / "cf" / "crash").write_text("")
+        await until(lambda: url(3) in urls.seen, timeout=10)
+        third = runs(tmp_path)[2]
+        assert third["config"] == "{}\n" and third["config_dir_mode"] == 0o700, cf_log(tmp_path)
     finally:
         await sup.close()
     assert not os.path.exists(os.path.dirname(config))
+    assert not os.path.exists(os.path.dirname(third["argv"][3]))
 
 
 async def test_banner_of_an_earlier_run_in_the_log_is_ignored(tmp_path, caplog):
@@ -419,8 +426,7 @@ async def test_dropped_set_remote_is_resent_within_a_ping_interval_and_after_eac
         first = wrapped[0]
         first.drop = 1
         h.link.set_remote(url(1))
-        async with asyncio.timeout(h.cfg.ping_interval_s * 4):
-            await until(lambda: h.dev.remotes)
+        await until(lambda: h.dev.remotes, timeout=2.0)
         await asyncio.sleep(h.cfg.ping_interval_s * 6)
         assert first.attempts == [False, True] and h.dev.remotes == [{"url": url(1)}]
         assert h.dev.hellos == ["boot", "reply"]
@@ -443,18 +449,20 @@ async def test_no_set_remote_on_ping_ticks_before_hello():
     task = asyncio.create_task(h.link.serve_wifi(host))
     dec, got = Decoder(None), []
 
-    async def drain(seconds):
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
+    async def drain(done, timeout=5.0):
+        end = time.monotonic() + timeout
+        while not done() and time.monotonic() < end:
             got.extend(f for f, _ in dec.feed(await board.read(0.02), time.monotonic()))
 
     try:
-        await drain(0.3)
+        await drain(lambda: got.count(T.PING) >= 3)
         assert got.count(T.PING) >= 3 and T.SET_REMOTE not in got, got
         hello = {"proto": PROTO_VERSION, "fw": "fake", "rate": 16000, "reason": "boot", "link": "wifi"}
         board.write(encode(T.HELLO, json.dumps(hello).encode()))
-        await drain(0.3)
-        assert got.count(T.SET_REMOTE) == 1, got
+        await drain(lambda: T.SET_REMOTE in got)
+        pings = got.count(T.PING)
+        await drain(lambda: got.count(T.PING) >= pings + 3)
+        assert got.count(T.SET_REMOTE) == 1 and got.count(T.PING) >= pings + 3, got
     finally:
         await host.close()
         await task

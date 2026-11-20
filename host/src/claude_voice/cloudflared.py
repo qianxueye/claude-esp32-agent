@@ -25,7 +25,7 @@ POLL_S = 0.2
 STOP_TIMEOUT_S = 5.0
 BANNER_READ_MAX = 256 * 1024  # bytes of one run's log searched for the banner
 HOST_CHARS = 80  # longest refused hostname kept for logs
-EMPTY_CONFIG = "{}\n"  # no ingress rules, so `--url` applies and no default config file is loaded
+EMPTY_CONFIG = "{}\n"  # content of the file passed as `--config`
 ENV_PREFIX = "TUNNEL_"  # cloudflared reads its flags from these variables
 
 
@@ -117,7 +117,7 @@ class Cloudflared:
 
     def _write_config(self) -> str:
         """Rewrite the empty config in the supervisor's private directory and return its path."""
-        if self._config_dir is None:
+        if self._config_dir is None or not os.path.isdir(self._config_dir):
             self._config_dir = tempfile.mkdtemp(prefix="clawd-cloudflared-")
         path = os.path.join(self._config_dir, "config.yml")
         with open(path, "w", encoding="utf-8") as f:
