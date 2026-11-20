@@ -193,6 +193,7 @@ class Session:
         self.got_hello = False
         self.ready = False
         self.refused = False
+        self.remote_sent: str | None = None  # remote URL this session has accepted a SET_REMOTE for
         self.done = asyncio.Event()
 
 
@@ -232,11 +233,16 @@ class Link:
         if url == self._remote_url:
             return
         self._remote_url = url
-        self._send_remote()
+        if self._active is not None:
+            self._send_remote(self._active)
 
-    def _send_remote(self) -> None:
-        if self._remote_url:
-            self.send(T.SET_REMOTE, json.dumps({"url": self._remote_url}).encode())
+    def _send_remote(self, s: Session) -> None:
+        """Send the remote URL on `s` if it is the ready active session and has not taken this URL yet."""
+        url = self._remote_url
+        if not url or not s.ready or self._active is not s or s.remote_sent == url:
+            return
+        if self._write(s, T.SET_REMOTE, json.dumps({"url": url}).encode()):
+            s.remote_sent = url
 
     def _write(self, s: Session, ftype: int, payload: bytes = b"") -> bool:
         try:
@@ -366,8 +372,8 @@ class Link:
         reason = str(info.get("reason", ""))
         self._h.on_hello(reason, info)
         self.send_state(self._h.current_state())
-        if self._active is s:
-            self._send_remote()
+        s.remote_sent = None
+        self._send_remote(s)
         if s.kind == "usb" and first and reason == "boot":
             # the board reset when the port opened, so it never saw the HOST_HELLO of this open
             self._send_host_hello(s)
@@ -385,3 +391,4 @@ class Link:
             await asyncio.sleep(self._cfg.ping_interval_s)
             self._nonce = (self._nonce + 1) & 0xFFFFFFFF
             self._write(s, T.PING, struct.pack("<I", self._nonce))
+            self._send_remote(s)
