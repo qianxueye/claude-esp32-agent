@@ -9,7 +9,7 @@ import sys
 import pytest
 from fake_device import FAKE_SERIAL, FakeDevice, client_context, tls_connect
 from test_relay import make, settle, until
-from test_tunnel import WsBoard
+from test_tunnel import TURN_INPUT, WsBoard
 
 from claude_voice import cli
 from claude_voice import keychain as keychain_mod
@@ -17,7 +17,7 @@ from claude_voice.config import Config
 from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, psk_identity
 from claude_voice.link import TransportClosed
 from claude_voice.pairing import PairError
-from claude_voice.protocol import Input, State, T
+from claude_voice.protocol import State, T
 from claude_voice.revoke import KeyReloader, revoke
 from claude_voice.tunnel import TunnelServer
 from claude_voice.wifi import Keyring, WifiServer
@@ -310,7 +310,7 @@ async def test_unreadable_keychain_keeps_the_key_and_the_session(error, caplog):
         await asyncio.sleep(0.4)
         assert not closed(d) and d.pings > pings and w.ring.keys == {IDENTITY: KEY} and w.ring.removed == 0
         second = await w.board("tunnel")
-        second.inject(Input.TAP)
+        second.inject(TURN_INPUT)
         await settle(second, State.LISTENING)
     warnings = [r.getMessage() for r in caplog.records if "cannot re-read" in r.getMessage()]
     assert len(warnings) == 1, warnings
@@ -324,7 +324,7 @@ async def test_removal_closes_every_network_session_and_a_still_valid_identity_r
         await until(lambda: closed(d), timeout=2)
         await _refused(w, "lan")
         again = await w.board("lan", OTHER, KEY2)
-        again.inject(Input.TAP)
+        again.inject(TURN_INPUT)
         await settle(again, State.LISTENING)
         assert w.ring.keys == {OTHER: KEY2}
 
@@ -349,7 +349,7 @@ async def test_usb_session_survives_a_removal():
         await until(lambda: w.ring.removed == 1)
         await asyncio.sleep(0.2)
         assert w.h.link.active_kind == "usb"
-        w.h.dev.inject(Input.TAP)
+        w.h.dev.inject(TURN_INPUT)
         await settle(w.h.dev, State.LISTENING)
 
 
@@ -453,6 +453,66 @@ attributes:
     "cdat"<timedate>=0x32303236313132303030303030305A00  "20261120000000Z\\000"
     "svce"<blob>="claude-voice"
 """
+
+
+class Disagreeing(MemoryStore):
+    """A store whose listing misses items or fails while the relay's lookup still finds one."""
+
+    def __init__(self, listed, fail_after=None):
+        super().__init__()
+        self.listed, self.fail_after, self.listings = listed, fail_after, 0
+
+    def identities(self):
+        self.listings += 1
+        if self.fail_after is not None and self.listings > self.fail_after:
+            raise KeychainError("dump failed")
+        return list(self.listed)
+
+
+@pytest.mark.parametrize("listed", [[], [OTHER]], ids=["listing-empty", "listing-other"])
+def test_revoke_deletes_nothing_when_listing_and_lookup_disagree(listed):
+    store = Disagreeing(listed)
+    store.set(IDENTITY, KEY)
+    with pytest.raises(PairError, match="device_serial") as e:
+        revoke_out(Config(), store)
+    assert store.items == {IDENTITY: KEY} and IDENTITY in str(e.value)
+
+
+def test_revoke_reports_a_lookup_only_key_and_a_failed_final_listing():
+    store = Disagreeing([], fail_after=0)
+    store.set(OTHER, KEY2)
+    store.set(IDENTITY, KEY)
+    ok, out = revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+    assert ok and store.items == {OTHER: KEY2}
+    assert out[-1] == "无法检查本机钥匙串中是否还有其他设备的配对密钥。"
+    store = Disagreeing([])
+    store.set(OTHER, KEY2)
+    store.set(IDENTITY, KEY)
+    ok, out = revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+    assert ok and out[-1] == f"本机钥匙串中还有这些设备的配对密钥：{OTHER}。"
+
+
+async def test_cli_listeners_share_one_keyring_with_the_reloader():
+    from claude_voice.link import Link
+
+    c = rcfg()
+    store = stored((IDENTITY, KEY))
+    link = Link(c, lambda: None, None)
+    ring = Keyring(cli.wifi_keys(c, store))
+    lan, tun = await cli.start_wifi(c, link, store, ring), await cli.start_tunnel(c, link, ring)
+    try:
+        reloader = cli.key_reloader(c, store, ring, [lan, tun])
+        t = await tls_connect(lan.port, IDENTITY, KEY)
+        await t.close()
+        store.delete(IDENTITY)
+        await reloader.reload()
+        with pytest.raises(HANDSHAKE_ERRORS):
+            await tls_connect(lan.port, IDENTITY, KEY)
+        with pytest.raises(ConnectionError):
+            await WsBoard.connect(tun.port)
+    finally:
+        await lan.close()
+        await tun.close()
 
 
 def test_keychain_identities_lists_this_service_from_attributes_only(monkeypatch):
