@@ -9,6 +9,7 @@ import sys
 import pytest
 from fake_device import FakeDevice, tls_connect
 from test_relay import make, settle, until
+from test_tunnel import TURN_INPUT
 from test_tunnel import Harness as TunnelHarness
 from test_wifi import IDENTITY, KEY, WifiHarness
 
@@ -16,7 +17,7 @@ from claude_voice import cli
 from claude_voice.cloudflared import Backoff, Cloudflared, hostname_from_banner, metrics_hostname, remote_url
 from claude_voice.config import load
 from claude_voice.link import Link, TransportClosed
-from claude_voice.protocol import Input, State, T
+from claude_voice.protocol import State, T
 
 FAKE_CLOUDFLARED = r'''
 import http.server, json, os, signal, socketserver, sys, threading, time
@@ -110,11 +111,13 @@ def url(n):
     return f"wss://run{n}-quick.trycloudflare.com/clawd/v1"
 
 
-async def supervised(tmp_path, on_url=None, cfg=None, port=47999, url_timeout=5.0, **mode):
+async def supervised(tmp_path, on_url=None, cfg=None, port=47999, url_timeout=5.0, restart_max=0.5, **mode):
     from claude_voice.config import Config
 
     binary = fake_cloudflared(tmp_path, **mode)
-    c = cf_cfg(cfg or Config(), tmp_path, binary, cloudflared_url_timeout_s=url_timeout)
+    c = cf_cfg(
+        cfg or Config(), tmp_path, binary, cloudflared_url_timeout_s=url_timeout, cloudflared_restart_max_s=restart_max
+    )
     sup = Cloudflared(c, port, on_url or Urls(), stop_timeout_s=0.5)
     sup.start()
     return sup
@@ -235,7 +238,7 @@ def _delays(caplog):
 
 async def test_restart_delay_grows_and_resets_after_a_long_run(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="claude_voice.cloudflared")
-    sup = await supervised(tmp_path, lifetimes=[0, 0, 0, 1.0, 0, 0])
+    sup = await supervised(tmp_path, restart_max=1.5, lifetimes=[0, 0, 0, 2.0, 0, 0])
     try:
         await until(lambda: len(_delays(caplog)) >= 6, timeout=15)
         assert _delays(caplog)[:6] == [0.05, 0.1, 0.2, 0.05, 0.1, 0.2], cf_log(tmp_path)
@@ -276,7 +279,7 @@ async def test_readiness_timeout_leaves_the_relay_running(tmp_path):
     sup = await supervised(tmp_path, h.link.set_remote, cfg=h.cfg, url_timeout=0.3, metrics=False, banner=False)
     try:
         await until(lambda: len(runs(tmp_path)) >= 2, timeout=10)
-        h.dev.inject(Input.TAP)
+        h.dev.inject(TURN_INPUT)
         await settle(h.dev, State.LISTENING)
         assert h.dev.remotes == [] and not sup._task.done(), cf_log(tmp_path)
     finally:
@@ -324,7 +327,7 @@ async def test_no_set_remote_while_no_url_is_known():
     h = make()
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(TURN_INPUT)
         await settle(h.dev, State.LISTENING)
         assert T.SET_REMOTE not in h.dev.received
     finally:
