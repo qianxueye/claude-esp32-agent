@@ -364,8 +364,8 @@ def test_revoke_deletes_the_only_key_and_warns_about_wifi_passwords():
     assert ok and store.items == {}
     assert out == [
         f"已删除本机钥匙串中设备 {IDENTITY} 的配对密钥。",
-        "正在运行的 claude-voice 会在 10 秒内断开这台设备，之后不再接受它连接；如果它是用更新前的版本启动的，要重新启动后才会断开。",
-        "设备里保存的 Wi-Fi 密码仍能被读出，请修改这些 Wi-Fi 的密码。",
+        "正在运行的中继会在 10 秒内断开这台设备，之后不再接受它连接。中继如果是在这次更新之前启动的，要重启后才会断开。",
+        "拿到设备的人仍能读出其中保存的 Wi-Fi 密码，请修改这些 Wi-Fi 的密码。",
     ]
 
 
