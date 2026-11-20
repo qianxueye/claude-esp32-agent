@@ -14,7 +14,7 @@ from test_tunnel import TURN_INPUT, WsBoard
 from claude_voice import cli
 from claude_voice import keychain as keychain_mod
 from claude_voice.config import Config
-from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, psk_identity
+from claude_voice.keychain import KeychainError, KeychainStore, KeychainValueError, MemoryStore, psk_identity
 from claude_voice.link import TransportClosed
 from claude_voice.pairing import PairError
 from claude_voice.protocol import State, T
@@ -546,3 +546,108 @@ def test_reloader_runs_only_with_a_listener():
     ring = Keyring({IDENTITY: KEY})
     assert cli.key_reloader(Config(), MemoryStore(), ring, [None, None]) is None
     assert cli.key_reloader(Config(), MemoryStore(), ring, [None, object()]) is not None
+
+
+class SearchList:
+    """Fake `security` whose search list holds `copies` keychains with the same item."""
+
+    def __init__(self, copies, value=None):
+        self.copies, self.value, self.deleted, self.calls = copies, value or KEY.hex(), 0, []
+
+    def __call__(self, args, **kw):
+        self.calls.append(args[1])
+        if args[1] == "delete-generic-password":
+            if not self.copies:
+                return subprocess.CompletedProcess(args, 44, "", "")
+            self.copies -= 1
+            self.deleted += 1
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[1] == "find-generic-password":
+            if not self.copies:
+                return subprocess.CompletedProcess(args, 44, "", "")
+            return subprocess.CompletedProcess(args, 0, self.value + "\n", "")
+        raise AssertionError(args)
+
+
+def test_keychain_delete_removes_the_item_from_every_keychain(monkeypatch):
+    fake = SearchList(2)
+    monkeypatch.setattr(keychain_mod.subprocess, "run", fake)
+    store = KeychainStore("claude-voice", 5.0)
+    assert store.delete(IDENTITY) and store.get(IDENTITY) is None
+    assert fake.deleted == 2 and fake.calls == ["delete-generic-password"] * 3 + ["find-generic-password"]
+    assert not store.delete(IDENTITY)
+
+
+def test_keychain_delete_that_never_reaches_not_found_fails(monkeypatch):
+    fake = SearchList(10**6)
+    monkeypatch.setattr(keychain_mod.subprocess, "run", fake)
+    with pytest.raises(KeychainError, match="still found"):
+        KeychainStore("claude-voice", 5.0).delete(IDENTITY)
+    assert fake.deleted == keychain_mod.DELETE_MAX
+    monkeypatch.setattr(keychain_mod.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 51, "", ""))
+    with pytest.raises(KeychainError, match="exited with 51"):
+        KeychainStore("claude-voice", 5.0).delete(IDENTITY)
+
+
+class StillThere(MemoryStore):
+    """A store whose delete reports success while its lookup still reads a value."""
+
+    def __init__(self, error=None):
+        super().__init__()
+        self.error = error
+
+    def delete(self, identity):
+        super().delete(identity)
+        return True
+
+    def get(self, identity):
+        if self.error is not None:
+            raise self.error
+        return KEY
+
+
+@pytest.mark.parametrize(
+    "error", [None, KeychainValueError("not hex")], ids=["key-readable", "not-a-key"]
+)
+def test_revoke_fails_when_the_key_is_still_readable_after_the_delete(error):
+    store = StillThere(error)
+    store.set(IDENTITY, KEY)
+    ok, out = revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+    assert not ok
+    assert out == [f"删除后本机钥匙串中仍能读到设备 {IDENTITY} 的配对密钥，撤销没有完成。"]
+
+
+def test_revoke_lets_an_unreadable_keychain_after_the_delete_propagate():
+    store = StillThere(KeychainError("locked"))
+    store.set(IDENTITY, KEY)
+    with pytest.raises(KeychainError, match="locked"):
+        revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+
+
+def test_psk_identity_is_uppercase_whatever_the_serial_case():
+    assert psk_identity("aa:bb:cc:dd:ee:ff") == "clawd-AABBCCDDEEFF" == psk_identity("AA:bb:CC:dd:EE:ff")
+
+
+@pytest.mark.parametrize(
+    "paired, revoked", [("aa:bb:cc:dd:ee:ff", "AA:BB:CC:DD:EE:FF"), ("AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff")]
+)
+async def test_revoke_finds_the_key_paired_under_the_other_serial_case(paired, revoked):
+    from test_pairing import PASSWORD, Board
+    from test_pairing import cfg as pair_cfg
+
+    from claude_voice.pairing import pair
+
+    store = MemoryStore()
+    async with Board() as b:
+        assert await pair(pair_cfg(), transport=b.host, store=store, serial=paired, ssid="家里的网",
+                          password=PASSWORD, out=[].append)
+    assert list(store.items) == [IDENTITY] and b.dev.paired["psk_identity"] == IDENTITY
+    ok, out = revoke_out(dataclasses.replace(Config(), device_serial=revoked), store)
+    assert ok and store.items == {}, out
+
+
+def test_relay_lookup_finds_a_key_whatever_the_device_serial_case():
+    from claude_voice.wifi import load_keys
+
+    store = stored((psk_identity("AA:BB:CC:DD:EE:FF"), KEY))
+    assert load_keys(dataclasses.replace(Config(), device_serial="aa:bb:cc:dd:ee:ff"), store) == {IDENTITY: KEY}
