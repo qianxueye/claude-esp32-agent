@@ -33,6 +33,18 @@ int main(void)
     assert(!proto_parser_next(&p, 2000, &f));
     assert(!proto_parser_next(&p, 2300, &f));
     assert(p.fill < 5);
+    /* stream mode: a partial frame waits for its bytes however long they take */
+    proto_parser_init(&p, store, sizeof store);
+    proto_parser_set_stream(&p, true);
+    fl = proto_encode(fr, T_PING, pl, 4);
+    proto_parser_feed(&p, fr, 5);
+    assert(!proto_parser_next(&p, 1000, &f));
+    assert(!proto_parser_next(&p, 60000, &f));
+    assert(p.fill == 5 && p.bytes_skipped == 0);
+    proto_parser_feed(&p, fr + 5, fl - 5);
+    assert(proto_parser_next(&p, 120000, &f) == 1 && f.type == T_PING && f.len == 4);
+    proto_parser_release(&p, &f);
+    assert(T_SET_REMOTE == 0x86);
     puts("ok");
     return 0;
 }
