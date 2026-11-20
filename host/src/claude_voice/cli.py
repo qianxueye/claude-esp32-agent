@@ -17,7 +17,7 @@ from .agent import ClaudeAgent
 from .cloudflared import Cloudflared
 from .keychain import KeychainError, KeychainStore, PskStore, psk_identity
 from .link import Link, Opener, SerialTransport, list_boards, serial_opener
-from .pairing import PairError, current_ssid, forget, pair
+from .pairing import PairError, check_pair_size, current_ssid, forget, pair
 from .protocol import PAIR_NETWORKS_MAX
 from .relay import Relay
 from .revoke import KeyReloader, revoke
@@ -229,6 +229,7 @@ async def pair_command(cfg: config_mod.Config) -> bool:
     port, serial = _board(cfg)
     ssid, password = _ask_wifi(cfg)
     extra = _ask_more_wifi(ssid)
+    check_pair_size(cfg, serial=serial, ssid=ssid, password=password, extra_networks=extra)
     print("正在连接设备（设备会重启，约 3 秒）……")
     transport = await _usb(cfg, port)
     return await pair(
