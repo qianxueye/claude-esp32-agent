@@ -191,6 +191,10 @@ static int pump_events(uint32_t ms, net_ev_t *out)
     take_remote();
     if (got && (e.ev == EV_DISCONNECTED || e.ev == EV_LOST_IP)) {
         wifi_lost();
+    } else if (got && e.ev == EV_GOT_IP && t_joined) {
+        wifi_ap_record_t ap;
+        np_wifi_ip(&s_np, (const uint8_t *)&e.ip, esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : s_np.st.rssi);
+        publish();
     }
     if (out) {
         *out = e;

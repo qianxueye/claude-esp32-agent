@@ -54,6 +54,8 @@ uint32_t np_scan_none(netplan_t *np);
 uint32_t np_assoc_failed(netplan_t *np);
 void np_wifi_up(netplan_t *np, const uint8_t ip[4], int rssi, size_t n_tries);
 void np_wifi_rssi(netplan_t *np, int rssi);
+/* A new DHCP address while associated; the relay state and any session are kept. */
+void np_wifi_ip(netplan_t *np, const uint8_t ip[4], int rssi);
 void np_wifi_down(netplan_t *np);
 /* One attempt of the round failed with a relay value from np_fail_status. */
 void np_try_failed(netplan_t *np, int relay);
