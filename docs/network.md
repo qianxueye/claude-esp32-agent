@@ -59,11 +59,14 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 
 ## Storage
 
-- NVS namespace `clawdnet`: key `pair` holds the PAIR text exactly as received, key `remote` the remote URL.
-- PAIR writes in this order: validate, erase `remote`, set `pair`, set `remote` if the PAIR has one, commit, reply. A later SET_REMOTE sets `remote` only when the URL changed.
-- At boot the stored text goes through the same reader with the identity check. A failure leaves the board unpaired and logs one line with the error code only.
-- FORGET erases the namespace and commits. If that fails, the board still drops the configuration from RAM, stops Wi-Fi and replies `storage error`.
-- Flash encryption is off, so the stored text can be read with physical access.
+- The pairing has its own NVS partition `clawdnet` (12 KiB, the NVS minimum of three pages; the records take under two). The volume setting and the Wi-Fi driver use the default `nvs` partition, so its one-time full erase never touches the pairing.
+- Two records, each written with one `nvs_set_blob`: `pair` holds a pairing id and the PAIR text exactly as received (its own `remote_url` included); `remote` holds the id of the pairing it belongs to and the URL from SET_REMOTE. Each record starts with a version byte, the id and the data length, and is read back only when all three check out.
+- The remote URL in effect is `remote` when its id equals the id in `pair`, else the PAIR text's `remote_url`, else none. PAIR writes only `pair`, with an id one higher than any id in storage, so an older `remote` stops applying in the same write. SET_REMOTE rewrites only `remote`; the PSK and passwords are not rewritten.
+- NVS writes a replaced blob in full before it erases the old one, and a power loss keeps the old value. A failed PAIR write therefore keeps the previous pairing in flash and in RAM, and PAIR_RESULT reports `storage error`.
+- A store lock serialises loading, the PAIR write, the SET_REMOTE save and FORGET, and is never held while taking another lock. Under it a SET_REMOTE save checks that the pairing id and the generation are still the ones it was planned under, and otherwise writes nothing.
+- At boot the stored text goes through the same reader with the identity check. A malformed record or a refused text leaves the board unpaired and logs one line without the payload. A partition that does not initialise (for example after power loss during an erase) is erased once and initialised again, which leaves the board unpaired; if that fails too, the store is unusable for this boot and PAIR replies `storage error`.
+- FORGET erases every sector of the partition and initialises it again. An erase failure still drops the configuration from RAM and stops Wi-Fi, and FORGET replies `storage error`. If only the re-initialisation fails, FORGET replies `{"ok":true}` and a later PAIR replies `storage error`. The erase takes three sector erases; IDF allows each up to 600 ms, so at most about 1.8 s, inside the host's 5 s wait.
+- NVS marks replaced entries erased but does not erase their flash, so a pairing replaced by a later PAIR can stay readable in flash until FORGET. Flash encryption is off, so the stored text can be read with physical access.
 
 ## TX
 
