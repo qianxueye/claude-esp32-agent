@@ -108,8 +108,24 @@ static void test_none_and_end(void)
                                   && strcmp(link_name(ROUTE_TUNNEL), "tunnel") == 0);
 }
 
+static void test_generation(void)
+{
+    linkstate_t s;
+    link_init(&s);
+    link_verdict_t v = link_on_net_frame(&s, LINK_TUNNEL, 4, 5, T_HOST_HELLO, 100);
+    CHECK("HOST_HELLO from a session of generation 4 after PAIR made it 5 does not activate",
+          !v.handle && !v.activated && s.active == LINK_NONE);
+    v = link_on_net_frame(&s, LINK_TUNNEL, 5, 5, T_HOST_HELLO, 100);
+    CHECK("HOST_HELLO from a current session activates", v.handle && v.activated && s.active == LINK_TUNNEL);
+    v = link_on_net_frame(&s, LINK_TUNNEL, 5, 6, T_SET_REMOTE, 200);
+    CHECK("SET_REMOTE read before a USB PAIR changed the generation is dropped", !v.handle && !v.live);
+    v = link_on_net_frame(&s, LINK_TUNNEL, 6, 6, T_SET_REMOTE, 200);
+    CHECK("SET_REMOTE of the current generation on the active session is handled", v.handle && v.live);
+}
+
 int main(void)
 {
+    test_generation();
     test_usb_silence_window();
     test_usb_precedence();
     test_none_and_end();

@@ -24,6 +24,8 @@ typedef struct {
 void link_init(linkstate_t *s);
 /* Judges one valid frame; net_kind is LINK_WIFI or LINK_TUNNEL for the session that sent a network frame. */
 link_verdict_t link_on_frame(linkstate_t *s, int src, int net_kind, uint8_t type, uint32_t now_ms);
+/* Judges a network frame from a session opened under session_gen; frames of an older configuration are dropped. */
+link_verdict_t link_on_net_frame(linkstate_t *s, int net_kind, uint32_t session_gen, uint32_t gen, uint8_t type, uint32_t now_ms);
 /* The network session ended; an active network link becomes none. */
 void link_net_ended(linkstate_t *s);
 int link_route(const linkstate_t *s);

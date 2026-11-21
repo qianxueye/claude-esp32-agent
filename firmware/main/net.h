@@ -22,5 +22,7 @@ size_t net_status_json(char *buf, size_t cap);
 bool net_send(uint8_t type, const void *payload, size_t len, bool reliable);
 /* The relay's HOST_HELLO made the open session the active link. */
 void net_session_activated(void);
+/* The configuration generation; PAIR and FORGET advance it. */
+uint32_t net_generation(void);
 uint32_t net_stack_hwm(void);
 uint32_t net_tx_dropped(void);

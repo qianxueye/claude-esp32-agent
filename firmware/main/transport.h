@@ -26,8 +26,8 @@ bool transport_send_to(int route, uint8_t type, const void *payload, size_t len)
 bool transport_send_usb(uint8_t type, const void *payload, size_t len);
 /* Queues one frame that must reach the host; waits for queue room and USB room. */
 bool transport_send_reliable(uint8_t type, const void *payload, size_t len);
-/* Dispatches one frame from the open network session; kind is LINK_WIFI or LINK_TUNNEL. */
-void transport_net_frame(int kind, const proto_frame_t *f);
+/* Dispatches one frame from the open network session; kind is LINK_WIFI or LINK_TUNNEL, gen its configuration generation. */
+void transport_net_frame(int kind, uint32_t gen, const proto_frame_t *f);
 /* The network session ended; call before the next session can start. */
 void transport_net_ended(void);
 /* The ROUTE_ value for device-to-host frames, readable without the dispatch lock. */

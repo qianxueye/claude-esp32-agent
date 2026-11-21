@@ -441,7 +441,7 @@ static int inner_write(void *ctx, const uint8_t *buf, size_t len)
 static void on_net_frame(int kind, const proto_frame_t *f, uint32_t *last_rx)
 {
     *last_rx = now_ms();
-    transport_net_frame(kind, f);
+    transport_net_frame(kind, t_gen, f);
 }
 
 /* Runs the inner TLS session over a connected BIO; returns SESSION_RAN or the NP_FAIL stage. */
@@ -1000,6 +1000,11 @@ bool net_send(uint8_t type, const void *payload, size_t len, bool reliable)
         }
         vTaskDelay(1);
     }
+}
+
+uint32_t net_generation(void)
+{
+    return atomic_load(&s_gen);
 }
 
 void net_session_activated(void)

@@ -24,6 +24,7 @@ Code: `net.c` (task, Wi-Fi, both transports, inner TLS, PAIR/FORGET/SET_REMOTE),
 ## Generation counter
 
 - PAIR and FORGET store the new configuration (or erase it), then increment the generation. The task compares its copy's generation between blocking steps; on a change it ends the session or the attempt in progress, stops Wi-Fi, clears the station configuration in the driver, copies the new configuration and starts again.
+- Every network frame carries the generation of the session that read it. The dispatch drops a frame whose generation is no longer current, under the same lock as the PAIR and FORGET handlers, so frames an old relay sent before a USB PAIR (a SET_REMOTE, say) never reach the new pairing.
 - SET_REMOTE does not change the generation. It updates the URL and its own counter; the next tunnel attempt uses the new URL, an open session is kept, and the relay backoff resets to 1 s.
 - Worst case from FORGET to the radio stopping is the longest blocking step in progress (see Bounds), typically well under a second outside a tunnel connect.
 

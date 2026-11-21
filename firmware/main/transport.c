@@ -94,13 +94,15 @@ bool transport_send_reliable(uint8_t type, const void *payload, size_t len)
     return net_send(type, payload, len, !in_dispatch());
 }
 
-static void dispatch(int src, int kind, const proto_frame_t *f)
+static void dispatch(int src, int kind, uint32_t gen, const proto_frame_t *f)
 {
     if (s_accept && !s_accept(f)) {
         return;
     }
     xSemaphoreTake(s_dispatch_mtx, portMAX_DELAY);
-    link_verdict_t v = link_on_frame(&s_link, src, kind, f->type, now_ms());
+    /* PAIR and FORGET change the generation under this lock, so the check sees the current one. */
+    link_verdict_t v = src == LINK_SRC_NET ? link_on_net_frame(&s_link, kind, gen, net_generation(), f->type, now_ms())
+                                           : link_on_frame(&s_link, src, kind, f->type, now_ms());
     atomic_store(&s_active, s_link.active);
     atomic_store(&s_route, link_route(&s_link));
     if (v.activated) {
@@ -114,9 +116,9 @@ static void dispatch(int src, int kind, const proto_frame_t *f)
     xSemaphoreGive(s_dispatch_mtx);
 }
 
-void transport_net_frame(int kind, const proto_frame_t *f)
+void transport_net_frame(int kind, uint32_t gen, const proto_frame_t *f)
 {
-    dispatch(LINK_SRC_NET, kind, f);
+    dispatch(LINK_SRC_NET, kind, gen, f);
 }
 
 void transport_net_ended(void)
@@ -185,7 +187,7 @@ static void rx_task(void *arg)
             }
             proto_frame_t f;
             while (proto_parser_next(&parser, now_ms(), &f)) {
-                dispatch(LINK_SRC_USB, LINK_USB, &f);
+                dispatch(LINK_SRC_USB, LINK_USB, 0, &f);
                 if (f.type == T_PAIR) {
                     secret = true;
                     proto_parser_release_wipe(&parser, &f);
