@@ -91,8 +91,19 @@ static void test_save_recheck(void)
     CHECK("an unpaired plan never saves", !pr_save_current(0, 0, 10, 10));
 }
 
+static void test_boot_action(void)
+{
+    CHECK("init ok: use the partition", pr_boot_action(0) == PR_BOOT_OK);
+    CHECK("no free pages (0x110d): erase and init again", pr_boot_action(0x110d) == PR_BOOT_REFORMAT);
+    CHECK("new NVS version (0x1110): erase and init again", pr_boot_action(0x1110) == PR_BOOT_REFORMAT);
+    CHECK("out of memory (0x101): unusable, nothing erased", pr_boot_action(0x101) == PR_BOOT_UNUSABLE);
+    CHECK("flash operation failed (0x6001): unusable, nothing erased", pr_boot_action(0x6001) == PR_BOOT_UNUSABLE);
+    CHECK("partition not found (0x105): unusable", pr_boot_action(0x105) == PR_BOOT_UNUSABLE);
+}
+
 int main(void)
 {
+    test_boot_action();
     test_round_trip();
     test_ids_and_remote();
     test_remote_plan();
