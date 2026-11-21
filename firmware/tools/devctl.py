@@ -618,6 +618,7 @@ def cmd_v3check(link, args):
     h = link.hellos[-1] if link.hellos else {}
     paired = h.get("paired")
     ok &= expect("hello fields", h.get("proto") == PROTO and h.get("link") == "usb" and isinstance(paired, bool)
+                 and h.get("store") in ("ok", "error")
                  and h.get("reason") in ("boot", "reply") and isinstance(h.get("vol"), int) and isinstance(h.get("vol_set"), bool),
                  json.dumps(h))
     vol0 = h.get("vol")
@@ -672,10 +673,17 @@ def cmd_v3check(link, args):
     p = link.wait_for(T_PAIR_RESULT, 1.0, show=False)
     r = json.loads(p) if p else {}
     ok &= expect("PAIR {} refused", r.get("ok") is False and isinstance(r.get("error"), str), p.decode() if p else "no reply")
-    if paired is False:
-        link.send(T_FORGET)
-        ok &= expect("FORGET while unpaired", link.wait_for(T_FORGET_RESULT, 1.0, show=False) == b'{"ok":true}')
+    ok &= forget_check(link, h)
     print("v3check", "PASS" if ok else "FAIL")
+
+
+def forget_check(link, hello):
+    """FORGET only a board whose HELLO says it holds no usable pairing; any other board keeps its pairing."""
+    if hello.get("paired") is False and hello.get("store") == "ok":
+        link.send(T_FORGET)
+        return expect("FORGET while unpaired", link.wait_for(T_FORGET_RESULT, 1.0, show=False) == b'{"ok":true}')
+    print("SKIP FORGET while unpaired: paired=%s store=%s" % (json.dumps(hello.get("paired")), json.dumps(hello.get("store"))))
+    return True
 
 
 def main():
