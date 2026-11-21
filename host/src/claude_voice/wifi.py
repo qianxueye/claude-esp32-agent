@@ -5,18 +5,27 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import socket
 import ssl
 import time
 from collections.abc import Awaitable, Callable
 
 from .config import Config
-from .keychain import PskStore, psk_identity, valid_identity
+from .keychain import KeychainValueError, PskStore, key_id, psk_identity, wire_identity
 from .link import Transport, TransportClosed
+from .protocol import PSK_IDENTITY_PREFIX
 
 log = logging.getLogger("claude_voice.wifi")
 CIPHER = "ECDHE-PSK-CHACHA20-POLY1305"
 PSK_BYTES = 32
+_WIRE = re.compile(f"({re.escape(PSK_IDENTITY_PREFIX)}[0-9A-Fa-f]{{12}})-([0-9A-F]{{8}})")
+
+
+def parse_wire_identity(identity: str | None) -> tuple[str, str] | None:
+    """The board identity and key id of a handshake identity `clawd-<MAC>-<KID>`, or None."""
+    m = _WIRE.fullmatch(identity) if identity else None
+    return (m.group(1), m.group(2)) if m else None
 
 
 class WarnLimiter:
@@ -54,7 +63,7 @@ class WarnLimiter:
 
 
 class Keyring:
-    """PSKs by identity, shared by the listeners; `removed` counts key removals (docs/protocol.md, Revocation)."""
+    """PSKs by wire identity, shared by the listeners; `removed` counts key removals (docs/protocol.md, Revocation)."""
 
     def __init__(self, keys: dict[str, bytes] | None = None) -> None:
         self.keys = {} if keys is None else keys
@@ -82,7 +91,7 @@ def server_context(
     ctx.options |= ssl.OP_NO_TICKET
 
     def lookup(identity: str | None) -> bytes:
-        key = keys.get(identity) if valid_identity(identity) else None
+        key = keys.get(identity) if parse_wire_identity(identity) else None
         if key is None:
             warn("%s handshake with unknown PSK identity %r", name, (identity or "")[:40])
             return b""
@@ -135,15 +144,32 @@ class Admission:
         self._warn_key.flush()
 
 
+def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> dict[str, bytes]:
+    """Every PSK the store keeps for one board, by wire identity with the key id derived from the key.
+    A value that is not a key goes to `bad` and is skipped; any other read error propagates."""
+    reads: list[tuple[str, Callable[[], bytes | None]]] = [(identity, lambda: store.get(identity))]
+    found: dict[str, bytes] = {}
+    for name, read in reads:
+        try:
+            key = read()
+        except KeychainValueError:
+            bad(name)
+            continue
+        if key is None:
+            continue
+        if len(key) != PSK_BYTES:
+            bad(name)
+            continue
+        found[wire_identity(identity, key_id(key))] = key
+    return found
+
+
 def load_keys(cfg: Config, store: PskStore) -> dict[str, bytes]:
-    """The paired board's identity and PSK, or nothing when it is not paired."""
+    """The paired board's PSKs by wire identity, or nothing when it is not paired."""
     identity = psk_identity(cfg.device_serial) if cfg.device_serial else store.find_any()
     if not identity:
         return {}
-    key = store.get(identity)
-    if key is None or len(key) != PSK_BYTES:
-        return {}
-    return {identity: key}
+    return board_keys(store, identity, lambda name: log.warning("Keychain item %s is not a %d-byte hex key", name, PSK_BYTES))
 
 
 class TcpTransport:

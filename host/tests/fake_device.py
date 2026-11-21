@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import random
+import re
 import ssl
 import struct
 import time
@@ -250,6 +251,7 @@ class FakeDevice:
         try:
             info = json.loads(payload)
             ok = len(bytes.fromhex(info["psk"])) == 32 and bool(info["ssid"]) and bool(info["relay_port"])
+            ok = ok and re.fullmatch(r"[0-9A-F]{8}", info["key_id"]) is not None
         except (ValueError, KeyError, TypeError):
             ok = False
         if not ok:
@@ -300,4 +302,9 @@ class FakeDevice:
             await asyncio.sleep(tick)
 
 
-__all__ = ["FAKE_SERIAL", "FakeDevice", "MemoryTransport", "client_context", "speech_pcm", "tls_connect"]
+def board_identity(info: dict) -> str:
+    """The handshake identity a board uses for a PAIR text: psk_identity, "-" and key_id."""
+    return f"{info['psk_identity']}-{info['key_id']}"
+
+
+__all__ = ["FAKE_SERIAL", "FakeDevice", "MemoryTransport", "board_identity", "client_context", "speech_pcm", "tls_connect"]

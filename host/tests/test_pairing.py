@@ -9,11 +9,11 @@ import subprocess
 import uuid
 
 import pytest
-from fake_device import FAKE_SERIAL, FakeDevice, tls_connect
+from fake_device import FAKE_SERIAL, FakeDevice, board_identity, tls_connect
 
 from claude_voice import keychain as keychain_mod
 from claude_voice.config import Config
-from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, psk_identity
+from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, key_id, psk_identity, wire_identity
 from claude_voice.link import memory_pair
 from claude_voice.pairing import PairError, forget, pair, private_ipv4
 from claude_voice.protocol import T
@@ -45,7 +45,7 @@ class Board:
     async def _connect(self, info):
         key = self.key_override or bytes.fromhex(info["psk"])
         try:
-            t = await tls_connect(info["relay_port"], info["psk_identity"], key)
+            t = await tls_connect(info["relay_port"], board_identity(info), key)
             self.sessions.append(t)
             self.wifi_rx = await t.read(0.2)
         except (ssl.SSLError, ConnectionError):
@@ -78,7 +78,7 @@ async def test_pair_end_to_end_without_leaking_secrets(caplog, capsys):
     assert ok, out
     sent = b.dev.paired
     key = store.get(IDENTITY)
-    assert key is not None and len(key) == 32 and sent["psk"] == key.hex()
+    assert key is not None and len(key) == 32 and sent["psk"] == key.hex() and sent["key_id"] == key_id(key)
     assert sent["password"] == PASSWORD and sent["ssid"] == "家里的网" and sent["psk_identity"] == IDENTITY
     assert sent["relay_names"] == ["relay-test.local"] and sent["relay_addrs"] == ["10.0.0.2"]
     assert b.sessions and b.wifi_rx == b"", "TLS-PSK session with the new key, held without HOST_HELLO"
@@ -335,7 +335,7 @@ async def test_relay_starts_wifi_only_when_paired():
     server = await cli.start_wifi(c, link, store)
     try:
         assert server is not None and server.port > 0
-        t = await tls_connect(server.port, IDENTITY, KEY32)
+        t = await tls_connect(server.port, wire_identity(IDENTITY, key_id(KEY32)), KEY32)
         await t.close()
     finally:
         await server.close()

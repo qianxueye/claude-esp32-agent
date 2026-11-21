@@ -17,14 +17,15 @@ static void check(const char *name, int ok, int line)
 
 #define ID "clawd-AABBCCDDEE01"
 #define PSK64 "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+#define KID "630DCD29" /* first 8 hex digits of SHA-256 of the PSK bytes 0x00..0x1f */
 
 static netcfg_t cfg;
 static char J[2048];
 
 /* PAIR as pairing.py pair_payload encodes it (json.dumps, ensure_ascii=False, compact separators), four networks. */
-static const char FULL4[] = "{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"psk_identity\":\"clawd-AABBCCDDEE01\",\"psk\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"relay_names\":[\"relay.local\"],\"relay_addrs\":[\"10.0.0.2\",\"192.168.1.20\"],\"relay_port\":47801,\"networks\":[{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"lan\":true},{\"ssid\":\"Caf\xC3\xA9 5G\",\"password\":\"pass\\\"word\\\\x\",\"lan\":false},{\"ssid\":\"Phone \xF0\x9F\x90\xB1\",\"password\":\"12345678\",\"lan\":false},{\"ssid\":\"Office\",\"password\":\"\",\"lan\":false}]}";
+static const char FULL4[] = "{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"psk_identity\":\"clawd-AABBCCDDEE01\",\"psk\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"key_id\":\"630DCD29\",\"relay_names\":[\"relay.local\"],\"relay_addrs\":[\"10.0.0.2\",\"192.168.1.20\"],\"relay_port\":47801,\"networks\":[{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"lan\":true},{\"ssid\":\"Caf\xC3\xA9 5G\",\"password\":\"pass\\\"word\\\\x\",\"lan\":false},{\"ssid\":\"Phone \xF0\x9F\x90\xB1\",\"password\":\"12345678\",\"lan\":false},{\"ssid\":\"Office\",\"password\":\"\",\"lan\":false}]}";
 /* The same encoder with a fifth network. */
-static const char FIVE[] = "{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"psk_identity\":\"clawd-AABBCCDDEE01\",\"psk\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"relay_names\":[\"relay.local\"],\"relay_addrs\":[\"10.0.0.2\",\"192.168.1.20\"],\"relay_port\":47801,\"networks\":[{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"lan\":true},{\"ssid\":\"Caf\xC3\xA9 5G\",\"password\":\"pass\\\"word\\\\x\",\"lan\":false},{\"ssid\":\"Phone \xF0\x9F\x90\xB1\",\"password\":\"12345678\",\"lan\":false},{\"ssid\":\"Office\",\"password\":\"\",\"lan\":false},{\"ssid\":\"Extra\",\"password\":\"87654321\",\"lan\":false}]}";
+static const char FIVE[] = "{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"psk_identity\":\"clawd-AABBCCDDEE01\",\"psk\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"key_id\":\"630DCD29\",\"relay_names\":[\"relay.local\"],\"relay_addrs\":[\"10.0.0.2\",\"192.168.1.20\"],\"relay_port\":47801,\"networks\":[{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"lan\":true},{\"ssid\":\"Caf\xC3\xA9 5G\",\"password\":\"pass\\\"word\\\\x\",\"lan\":false},{\"ssid\":\"Phone \xF0\x9F\x90\xB1\",\"password\":\"12345678\",\"lan\":false},{\"ssid\":\"Office\",\"password\":\"\",\"lan\":false},{\"ssid\":\"Extra\",\"password\":\"87654321\",\"lan\":false}]}";
 /* SET_REMOTE as link.py encodes it (json.dumps with default separators). */
 static const char REMOTE[] = "{\"url\": \"wss://example.trycloudflare.com/clawd/v1\"}";
 
@@ -38,13 +39,23 @@ static const char *parse_s(const char *json)
     return parse(json, strlen(json));
 }
 
-/* Hand-written PAIR with the seven required members; ssid and pass are JSON string literals. */
+/* Hand-written PAIR with the eight required members; ssid and pass are JSON string literals. */
 static const char *mk(const char *ssid, const char *pass, const char *ident, const char *psk, const char *tail)
 {
     snprintf(J, sizeof J,
-             "{\"ssid\":%s,\"password\":%s,\"psk_identity\":\"%s\",\"psk\":\"%s\",\"relay_names\":[\"relay.local\"],"
-             "\"relay_addrs\":[\"10.0.0.2\"],\"relay_port\":47801%s}",
+             "{\"ssid\":%s,\"password\":%s,\"psk_identity\":\"%s\",\"psk\":\"%s\",\"key_id\":\"" KID "\","
+             "\"relay_names\":[\"relay.local\"],\"relay_addrs\":[\"10.0.0.2\"],\"relay_port\":47801%s}",
              ssid, pass, ident, psk, tail);
+    return J;
+}
+
+/* PAIR whose key_id member is kid_member verbatim ("" leaves it out). */
+static const char *mk_kid(const char *kid_member)
+{
+    snprintf(J, sizeof J,
+             "{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"psk_identity\":\"" ID "\",\"psk\":\"" PSK64 "\"%s,"
+             "\"relay_names\":[],\"relay_addrs\":[],\"relay_port\":47801}",
+             kid_member);
     return J;
 }
 
@@ -52,7 +63,7 @@ static const char *mk_relay(const char *names, const char *addrs, const char *po
 {
     snprintf(J, sizeof J,
              "{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"psk_identity\":\"" ID "\",\"psk\":\"" PSK64
-             "\",\"relay_names\":%s,\"relay_addrs\":%s,\"relay_port\":%s}",
+             "\",\"key_id\":\"" KID "\",\"relay_names\":%s,\"relay_addrs\":%s,\"relay_port\":%s}",
              names, addrs, port);
     return J;
 }
@@ -76,8 +87,8 @@ static void expect(const char *name, const char *json, const char *want)
 
 static void test_minimal_and_full(void)
 {
-    CHECK("fixtures have the encoder's lengths 474, 525 and 51",
-          sizeof FULL4 - 1 == 474 && sizeof FIVE - 1 == 525 && sizeof REMOTE - 1 == 51);
+    CHECK("fixtures have the encoder's lengths 494, 545 and 51",
+          sizeof FULL4 - 1 == 494 && sizeof FIVE - 1 == 545 && sizeof REMOTE - 1 == 51);
     const char *min = mk("\"HomeNet\"", "\"correct horse\"", ID, PSK64, "");
     expect("minimal PAIR accepted", min, NULL);
     CHECK("minimal: one network from the top-level pair, lan true",
@@ -122,6 +133,19 @@ static void test_psk_and_identity(void)
     char id[NET_IDENTITY_LEN + 1];
     netcfg_identity((const uint8_t[6]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01}, id);
     CHECK("identity of AA:BB:CC:DD:EE:01 is clawd-AABBCCDDEE01", strcmp(id, "clawd-AABBCCDDEE01") == 0);
+
+    expect("key_id of 8 uppercase hex digits accepted", mk_kid(",\"key_id\":\"" KID "\""), NULL);
+    CHECK("key_id copied as sent", strcmp(cfg.key_id, KID) == 0 && strcmp(cfg.identity, ID) == 0);
+    char wire[NET_WIRE_IDENTITY_LEN + 1];
+    netcfg_wire_identity(&cfg, wire);
+    CHECK("wire identity is identity, '-' and key_id", strcmp(wire, ID "-" KID) == 0 && strlen(wire) == NET_WIRE_IDENTITY_LEN);
+    expect("key_id missing refused", mk_kid(""), "bad field key_id");
+    expect("key_id as a number refused", mk_kid(",\"key_id\":12345678"), "bad field key_id");
+    expect("key_id given twice refused", mk_kid(",\"key_id\":\"" KID "\",\"key_id\":\"" KID "\""), "bad field key_id");
+    expect("key_id of 7 digits refused", mk_kid(",\"key_id\":\"630DCD2\""), "bad key_id");
+    expect("key_id of 9 digits refused", mk_kid(",\"key_id\":\"630DCD290\""), "bad key_id");
+    expect("key_id in lowercase refused", mk_kid(",\"key_id\":\"630dcd29\""), "bad key_id");
+    expect("key_id with a non-hex letter refused", mk_kid(",\"key_id\":\"630DCD2G\""), "bad key_id");
 }
 
 static void test_ssid(void)
@@ -204,7 +228,7 @@ static void test_structure(void)
     expect("trailing whitespace accepted", trail, NULL);
     expect("whitespace between tokens accepted",
            "{ \"ssid\" : \"HomeNet\" ,\n\t\"password\":\"correct horse\",\r\n\"psk_identity\" :\"" ID "\", \"psk\":\"" PSK64
-           "\",\"relay_names\": [ \"relay.local\" ] ,\"relay_addrs\":[ ],\"relay_port\" : 47801 }",
+           "\", \"key_id\" : \"" KID "\" ,\"relay_names\": [ \"relay.local\" ] ,\"relay_addrs\":[ ],\"relay_port\" : 47801 }",
            NULL);
     expect("top-level array refused", "[1]", "bad json");
     expect("empty payload refused", "", "bad json");
@@ -212,7 +236,7 @@ static void test_structure(void)
     expect("number with leading zero refused", mk_relay("[]", "[]", "047801"), "bad json");
     expect("missing relay_port refused",
            "{\"ssid\":\"HomeNet\",\"password\":\"correct horse\",\"psk_identity\":\"" ID "\",\"psk\":\"" PSK64
-           "\",\"relay_names\":[],\"relay_addrs\":[]}",
+           "\",\"key_id\":\"" KID "\",\"relay_names\":[],\"relay_addrs\":[]}",
            "bad field relay_port");
     expect("ssid as a number refused", mk("7", "\"correct horse\"", ID, PSK64, ""), "bad field ssid");
     expect("relay_port as a string refused", mk_relay("[]", "[]", "\"47801\""), "bad field relay_port");

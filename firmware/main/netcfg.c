@@ -480,14 +480,14 @@ static bool ssid_ok(size_t n)
     return n >= 1 && n <= NET_SSID_MAX;
 }
 
-enum { PF_SSID, PF_PASSWORD, PF_IDENTITY, PF_PSK, PF_NAMES, PF_ADDRS, PF_PORT, PF_NETWORKS, PF_REMOTE, PF_COUNT };
+enum { PF_SSID, PF_PASSWORD, PF_IDENTITY, PF_PSK, PF_KEY_ID, PF_NAMES, PF_ADDRS, PF_PORT, PF_NETWORKS, PF_REMOTE, PF_COUNT };
 enum { F_ABSENT, F_OK, F_BAD };
 
 static const char *const PAIR_KEYS[PF_COUNT] = {
-    "ssid", "password", "psk_identity", "psk", "relay_names", "relay_addrs", "relay_port", "networks", "remote_url",
+    "ssid", "password", "psk_identity", "psk", "key_id", "relay_names", "relay_addrs", "relay_port", "networks", "remote_url",
 };
 static const char *const PAIR_BAD_FIELD[PF_COUNT] = {
-    "bad field ssid", "bad field password", "bad field psk_identity", "bad field psk", "bad field relay_names",
+    "bad field ssid", "bad field password", "bad field psk_identity", "bad field psk", "bad field key_id", "bad field relay_names",
     "bad field relay_addrs", "bad field relay_port", "bad field networks", "bad field remote_url",
 };
 
@@ -495,8 +495,9 @@ typedef struct {
     uint8_t f[PF_COUNT];
     netcfg_net_t top;
     netcfg_net_t spare;
-    size_t ssid_len, pass_len, ident_len, psk_len, url_len;
+    size_t ssid_len, pass_len, ident_len, psk_len, kid_len, url_len;
     char ident[NET_IDENTITY_LEN + 2];
+    char kid[NET_KEY_ID_LEN + 2];
     char psk_hex[2 * NET_PSK_BYTES + 2];
     char addr_text[IPV4_TEXT_MAX + 2];
     char name_spare[NET_RELAY_NAME_MAX + 2];
@@ -575,7 +576,7 @@ static bool pair_network(jcur_t *c, pair_scan_t *s, netcfg_net_t *net)
 
 static void pair_value(jcur_t *c, pair_scan_t *s, netcfg_t *out, int field)
 {
-    static const int kinds[PF_COUNT] = {JK_STR, JK_STR, JK_STR, JK_STR, JK_ARR, JK_ARR, JK_NUM, JK_ARR, JK_STR};
+    static const int kinds[PF_COUNT] = {JK_STR, JK_STR, JK_STR, JK_STR, JK_STR, JK_ARR, JK_ARR, JK_NUM, JK_ARR, JK_STR};
     int kind = jkind(c);
     if (s->f[field] != F_ABSENT || kind != kinds[field]) {
         s->f[field] = F_BAD;
@@ -588,6 +589,7 @@ static void pair_value(jcur_t *c, pair_scan_t *s, netcfg_t *out, int field)
     case PF_PASSWORD: s->pass_len = jstring(c, s->top.password, sizeof s->top.password); break;
     case PF_IDENTITY: s->ident_len = jstring(c, s->ident, sizeof s->ident); break;
     case PF_PSK: s->psk_len = jstring(c, s->psk_hex, sizeof s->psk_hex); break;
+    case PF_KEY_ID: s->kid_len = jstring(c, s->kid, sizeof s->kid); break;
     case PF_REMOTE: s->url_len = jstring(c, out->remote_url, sizeof out->remote_url); break;
     case PF_PORT: {
         bool uint_ok;
@@ -671,6 +673,15 @@ static const char *pair_verdict(pair_scan_t *s, const char *identity, netcfg_t *
         }
         out->psk[i] = (uint8_t)(hi << 4 | lo);
     }
+    if (s->kid_len != NET_KEY_ID_LEN) {
+        return "bad key_id";
+    }
+    for (size_t i = 0; i < NET_KEY_ID_LEN; i++) {
+        uint8_t b = (uint8_t)s->kid[i];
+        if (!((b >= '0' && b <= '9') || (b >= 'A' && b <= 'F'))) {
+            return "bad key_id";
+        }
+    }
     if (s->ident_len != NET_IDENTITY_LEN || strlen(identity) != NET_IDENTITY_LEN
         || memcmp(s->ident, identity, NET_IDENTITY_LEN) != 0) {
         return "identity mismatch";
@@ -700,6 +711,7 @@ static const char *pair_verdict(pair_scan_t *s, const char *identity, netcfg_t *
         return "bad remote_url";
     }
     memcpy(out->identity, s->ident, NET_IDENTITY_LEN + 1);
+    memcpy(out->key_id, s->kid, NET_KEY_ID_LEN + 1);
     out->n_names = (uint8_t)s->n_names;
     out->n_addrs = (uint8_t)s->n_addrs;
     out->port = (uint16_t)s->port;
@@ -803,6 +815,13 @@ bool netcfg_parse_remote(const uint8_t *text, size_t len, char url[NET_URL_MAX +
         url[0] = 0;
     }
     return ok;
+}
+
+void netcfg_wire_identity(const netcfg_t *cfg, char out[NET_WIRE_IDENTITY_LEN + 1])
+{
+    memcpy(out, cfg->identity, NET_IDENTITY_LEN);
+    out[NET_IDENTITY_LEN] = '-';
+    memcpy(out + NET_IDENTITY_LEN + 1, cfg->key_id, NET_KEY_ID_LEN + 1);
 }
 
 size_t netcfg_result_json(const char *err, char *buf, size_t cap)
