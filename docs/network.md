@@ -56,6 +56,7 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 - PAIR text is at most 1023 bytes, SET_REMOTE text at most 511; each has its own static buffer, so neither runs on a task stack.
 - Checks and their order produce the PAIR_RESULT codes listed in `protocol.md`. The first failing check names the code; a refused PAIR keeps the previous configuration.
 - The PSK identity must equal `clawd-` plus the factory MAC (`esp_read_mac(…, ESP_MAC_EFUSE_FACTORY)`) in uppercase hex. The USB-Serial-JTAG peripheral is fixed-function hardware whose serial number is expected to be this MAC; IDF has no software source for the descriptor, so the board test confirms that both match.
+- `key_id` must be 8 uppercase hex digits. The board copies it and does not hash the PSK; in the inner handshake it sends the wire identity `clawd-<MAC>-<key_id>` (27 bytes, its own buffer), while `psk_identity` keeps its 18-byte form and its check.
 - Access credentials (`access_id`, `access_secret`) are skipped by the reader and ignored in SET_REMOTE.
 
 ## Storage
@@ -63,18 +64,59 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 - The pairing has its own NVS partition `clawdnet` (12 KiB, the NVS minimum of three pages; the records take under two). The volume setting and the Wi-Fi driver use the default `nvs` partition, so its one-time full erase never touches the pairing.
 - Two records, each written with one `nvs_set_blob`: `pair` holds a pairing id and the PAIR text exactly as received (its own `remote_url` included); `remote` holds the id of the pairing it belongs to and the URL from SET_REMOTE. Each record starts with a version byte, the id and the data length, and is read back only when all three check out.
 - The remote URL in effect is `remote` when its id equals the id in `pair`, else the PAIR text's `remote_url`, else none. PAIR writes only `pair`, with an id one higher than any id in storage, so an older `remote` stops applying in the same write. SET_REMOTE rewrites only `remote`; the PSK and passwords are not rewritten.
-- NVS writes a replaced blob in full before it erases the old one, and a power loss keeps the old value. A write can still fail after the new value is in flash (`ESP_ERR_NVS_REMOVE_FAILED`: the old entry was not erased; the next init finishes the update). So after any error from a `pair` or `remote` write the store deinitialises and initialises the partition, as the next boot will, and reads the key back:
-  - the new record: the write counts as done (PAIR replies ok, RAM takes the new pairing);
-  - the previous record, or nothing when there was none: the write failed and nothing changed (PAIR replies `storage error`);
-  - anything else, or a failed read: the write failed and the store is unusable for this boot.
-- After a failed write RAM keeps the configuration it had until the board restarts, and the next boot loads whatever the flash then holds. NVS's own duplicate cleanup at init does not check its erases, so while flash erases keep failing the read-back can see the previous record and a later boot can still load the new one. When a later boot loads the new record after `storage error`, the host holds the older key and the board cannot connect until the next PAIR.
+- NVS writes a replaced blob in full before it erases the old one, and a power loss keeps the old value. A write can still fail after the new value is in flash (`ESP_ERR_NVS_REMOVE_FAILED`: the old entry was not erased; the next init finishes the update). So after any error from a `pair` or `remote` write the store deinitialises and initialises the partition, as the next boot will, reads the key back and judges the write from the error and what it reads:
+  - the new record, whatever the error: done (PAIR replies ok, RAM takes the new pairing);
+  - `ESP_ERR_NVS_REMOVE_FAILED` and anything but the new record, the previous record included: unknown. `nvs.h` says the new value is in flash, and NVS's duplicate cleanup at init does not check its erases, so a later boot may still load it;
+  - any other error and the previous record, or nothing when there was none: kept (nothing changed; PAIR replies `storage error`);
+  - anything else, or a failed read-back: unknown.
+- After a write that is not done RAM keeps the configuration it had until the board restarts. An unknown write makes the store's content unknown for this boot, and PAIR replies `storage unknown`: the next boot may load the previous record or the new one, so the host keeps both keys.
 - A store lock serialises loading, the PAIR write, the SET_REMOTE save and FORGET, and is never held while taking another lock. Under it a SET_REMOTE save checks that the pairing id and the generation are still the ones it was planned under, and otherwise writes nothing.
-- Load reads both records. Not found is absent and fine; any other open or read error, or a record present but failing its version, id or length check, makes the store unusable for this boot (no id from such a record is known, so none is allocated). The next PAIR id is one above both stored ids, the `remote` id counting even when `pair` is absent, as after an interrupted FORGET erase.
-- At boot the stored text goes through the same reader with the identity check. A refused text leaves the board unpaired and logs one line without the payload.
-- Boot classifies the partition's first init: success uses it; `ESP_ERR_NVS_NO_FREE_PAGES` or `ESP_ERR_NVS_NEW_VERSION_FOUND` (a layout NVS cannot use, as after power loss during an erase) erases it and initialises it again, which leaves the board unpaired; any other error (out of memory, a flash read error) erases and writes nothing, and the store is unusable for this boot.
-- A store found unusable at boot or load reads as unpaired (HELLO `paired` false); one that becomes unusable after a failed write keeps the RAM pairing until the board restarts. While the store is unusable PAIR replies `storage error` and SET_REMOTE is not saved. FORGET clears it.
-- FORGET erases every sector of the partition and initialises it again, whatever the store state; the erase works on a partition that never initialised. It always drops the configuration from RAM and stops Wi-Fi. It replies `{"ok":true}` only when both the erase and the init succeed, and the store is then usable and empty; otherwise it replies `storage error` and the store stays unusable until a FORGET succeeds. The erase takes three sector erases; IDF allows each up to 600 ms, so at most about 1.8 s, inside the host's 5 s wait.
+- The store has two separate facts. Store K: its content is known (every record was read and decoded, or confirmed absent) and writes are allowed; U: its content is unknown and writes are refused for this boot. RAM P: a pairing is loaded; N: none. HELLO `paired` is true iff P; HELLO `store` is `"ok"` for K and `"error"` for U. `paired` false with `store` `"ok"` is the only report that the board holds no usable pairing.
+
+  | Event | Result |
+  |---|---|
+  | Boot init succeeds | load as below |
+  | Boot init `ESP_ERR_NVS_NO_FREE_PAGES` or `ESP_ERR_NVS_NEW_VERSION_FOUND` | erase and init again (a layout NVS cannot use, as after power loss during an erase): N, K |
+  | Boot init, any other error (out of memory, a flash read error) | nothing erased or written: N, U |
+  | Load: `pair` decodes and the reader accepts its text | P, whatever `remote` did |
+  | Load: `pair` absent | N |
+  | Load: `pair` unreadable or undecodable | N |
+  | Load: `pair` decodes and the reader refuses it (identity, format) | N, K when `remote` was read or absent: the board cannot use the record, so FORGET loses nothing usable |
+  | Load: store state | K only when both records were read and decoded or are absent, else U |
+  | Load: `remote` unreadable | no stored override: the remote URL in effect is the PAIR text's `remote_url`; the relay resends SET_REMOTE every session |
+  | PAIR refused by validation | reply as before, nothing written |
+  | PAIR in U | `storage error`, nothing written, RAM unchanged |
+  | PAIR in K: done | ok, RAM takes the new pairing |
+  | PAIR in K: kept | `storage error`, RAM unchanged |
+  | PAIR in K: unknown | `storage unknown`, RAM keeps the previous pairing, store U |
+  | SET_REMOTE save in U | not saved (logged); the URL is used until restart |
+  | SET_REMOTE save unknown | store U; the URL is used until restart |
+  | FORGET erase and init succeed | ok: N, K |
+  | FORGET fails | `storage error`: N, U |
+
+- No HELLO precedes the load: `net_init()` loads the store before the boot HELLO, and the board ignores every frame, HOST_HELLO included, until then. Out of memory before the load reads as N, U.
+- Ids come only from a K store, whose ids are all known. The next PAIR id is one above both stored ids, the `remote` id counting even when `pair` is absent, as after an interrupted FORGET erase.
+- At boot a refused stored text logs one line without the payload.
+- FORGET erases every sector of the partition and initialises it again, whatever the store state; the erase works on a partition that never initialised. It always drops the configuration from RAM and stops Wi-Fi. The erase takes three sector erases; IDF allows each up to 600 ms, so at most about 1.8 s, inside the host's 5 s wait.
 - NVS marks replaced entries erased but does not erase their flash, so a pairing replaced by a later PAIR can stay readable in flash until FORGET. Flash encryption is off, so the stored text can be read with physical access.
+
+## Keys
+
+The host never deletes a key the board may still hold, except in `forget` and `revoke`, which delete every key item of that board.
+
+- A key's id is the first 8 hex digits of SHA-256 of the PSK, in uppercase; the host sends it as PAIR `key_id`, and a new key never shares an id with a kept one. The relay holds every kept key under its wire identity `clawd-<MAC>-<KID>`, re-deriving the id from the stored key rather than from an account name, so the PAIR field and the Keychain cannot disagree silently. The relay's lookup takes only identities of that form, so a bare `clawd-<MAC>` or another id fails the handshake; Keychain accounts and `security` arguments keep their own strict checks.
+- Keychain items, all under service `claude-voice`: the current key under account `clawd-<MAC>`, and each earlier key the board may still hold under `clawd-<MAC>-earlier-<KID>`. Lookups for a board identity (`find_any`, `identities`) skip earlier-key accounts.
+- `claude-voice pair` first copies the current key to an earlier-key item, then writes the new key as current and sends PAIR. Then:
+
+  | Outcome | Keychain |
+  |---|---|
+  | PAIR ok, or a session with the new key | the new key only: every earlier item is deleted |
+  | any refusal, `storage error` included | exactly the items from before the run |
+  | `storage unknown` | the new key current, every earlier key kept |
+  | no PAIR_RESULT and no session in time, USB lost, or interruption after PAIR | the new key current, every earlier key kept |
+
+  The pairing listener holds only the new key, so a session there proves the board took it.
+- The running relay re-reads every key of each board it serves; see `protocol.md`, Revocation.
 
 ## TX
 

@@ -16,7 +16,7 @@ The same frames run over USB and over two network links, Wi-Fi on the LAN and th
 
 ### Wi-Fi
 
-- TCP carrying TLS 1.2 with the single cipher suite `ECDHE-PSK-CHACHA20-POLY1305` (no fallback, no other version). Pre-shared key: 32 random bytes. PSK identity: `clawd-` followed by the USB serial number without colons, in uppercase.
+- TCP carrying TLS 1.2 with the single cipher suite `ECDHE-PSK-CHACHA20-POLY1305` (no fallback, no other version). Pre-shared key: 32 random bytes. PSK identity in the handshake (wire identity): `clawd-` followed by the USB serial number without colons in uppercase, `-` and the key's `key_id` from PAIR, for example `clawd-AABBCCDDEEFF-630DCD29`. The relay accepts every key it keeps for the board, each under its own wire identity (`network.md`, Keys).
 - The board is the TLS client; the relay is the server on TCP port 47801 on all LAN interfaces. Both sides set `TCP_NODELAY`. The board turns Wi-Fi power saving off while a relay session is open.
 - The board tries the relay addresses saved at pairing in order: the relay's `.local` host name (resolved by mDNS), then each saved IPv4 address. It retries with backoff (1 s doubling to 30 s).
 - The relay keeps one board session; a new authenticated session replaces the old one.
@@ -28,7 +28,7 @@ The same frames run over USB and over two network links, Wi-Fi on the LAN and th
 
 - The board opens `wss://<host>/clawd/v1`, the remote URL from PAIR or SET_REMOTE. The outer TLS ends at the tunnel provider's edge, which forwards the WebSocket connection to the relay on `127.0.0.1` (TCP port 47802). The relay does not listen for the tunnel on any other interface.
 - The relay answers only `GET /clawd/v1` with a WebSocket upgrade; any other request gets 404 with an empty body. No WebSocket extension is negotiated, so there is no compression.
-- Inside the WebSocket connection runs the same TLS session as on Wi-Fi: TLS 1.2, `ECDHE-PSK-CHACHA20-POLY1305`, the same PSK identity and key, no session tickets, no resumption. Binary messages carry the inner TLS byte stream; neither side relies on message boundaries. A text message closes the connection.
+- Inside the WebSocket connection runs the same TLS session as on Wi-Fi: TLS 1.2, `ECDHE-PSK-CHACHA20-POLY1305`, the same wire identity and key, no session tickets, no resumption. Binary messages carry the inner TLS byte stream; neither side relies on message boundaries. A text message closes the connection.
 - The tunnel provider sees the upgrade request, message sizes and timing, and the inner ClientHello with the PSK identity. It sees no frame content and cannot inject or change frames.
 - The relay closes a tunnel connection that has not finished the upgrade within 10 s, has not finished the inner handshake 10 s after the upgrade, sends a message larger than 32 768 bytes, or sends more than 32 768 bytes before the inner session is authenticated.
 - Liveness is the PING and PONG frames of the session. Neither side sends WebSocket pings; both answer them.
@@ -39,7 +39,7 @@ The same frames run over USB and over two network links, Wi-Fi on the LAN and th
 
 Pairing happens once over USB and carries everything the Wi-Fi link needs.
 
-- The user runs `claude-voice pair` in their own terminal and types the Wi-Fi name and password there. The relay generates the PSK, stores it in the macOS Keychain (generic password, service `claude-voice`, account = PSK identity) and sends PAIR.
+- The user runs `claude-voice pair` in their own terminal and types the Wi-Fi name and password there. The relay generates the PSK, stores it in the macOS Keychain (generic password, service `claude-voice`, account = PSK identity; earlier keys the board may still hold stay as items of their own, `network.md`, Keys) and sends PAIR.
 - The device accepts PAIR and FORGET only on the USB link.
 - The PAIR and SET_REMOTE payloads are never logged: the relay log, `devctl` and LOG frames show at most the SSID and the remote URL.
 - The device stores the Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials in NVS, in a flash partition of their own. Flash encryption is not enabled, so anyone with physical access to the board can read them.
@@ -47,7 +47,7 @@ Pairing happens once over USB and carries everything the Wi-Fi link needs.
 
 ### Revocation
 
-- `claude-voice revoke` deletes a board's PSK from the Keychain without USB. The running relay re-reads the PSK of every identity it serves every 10 s (`key_reload_interval_s`). Only an item the Keychain reports as not found, or a different key, ends a PSK; a read error keeps it.
+- `claude-voice revoke` deletes every key the Keychain keeps for a board, the current one and every earlier one, without USB, and checks by listing that none is left. The running relay re-reads every key of each board it serves every 10 s (`key_reload_interval_s`) and drops each wire identity whose key is gone. Only an item the Keychain reports as not found, a different key, or a value that is not a key ends a PSK; a read error keeps every key of that board.
 - When a PSK ends, the relay refuses new handshakes with it and closes every Wi-Fi and tunnel session, because its TLS library does not tell which identity a connection used. USB sessions stay open.
 - The relay counts PSK removals. A connection notes the count when it is admitted and opens no session if the count changed before its session starts: the PSK is looked up at ClientKeyExchange, and a client may hold its Finished for up to the 10 s handshake timeout.
 - The board keeps its saved Wi-Fi passwords, which can be read from its flash; change them after a board is lost.
@@ -84,7 +84,7 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 
 | Type   | Name            | Payload |
 |--------|-----------------|---------|
-| `0x01` | HELLO           | JSON `{"proto":3,"fw":"<version>","rate":16000,"reason":"boot"|"reply"|"resume","link":"usb"|"wifi","paired":true|false,"vol":0-100,"vol_set":true|false}`. `vol` is the user volume; `vol_set` says a user volume exists (from storage, the knob, or a persist or seed SET_VOLUME). |
+| `0x01` | HELLO           | JSON `{"proto":3,"fw":"<version>","rate":16000,"reason":"boot"|"reply"|"resume","link":"usb"|"wifi","paired":true|false,"store":"ok"|"error","vol":0-100,"vol_set":true|false}`. `paired`: a pairing is loaded; `store`: `"ok"` when the board read its pairing storage completely and may write it, `"error"` when it could not (`network.md`, Storage). Only `paired` false with `store` `"ok"` means the board holds no usable pairing. `vol` is the user volume; `vol_set` says a user volume exists (from storage, the knob, or a persist or seed SET_VOLUME). |
 | `0x02` | LOG             | UTF-8 log line. |
 | `0x10` | MIC_AUDIO       | 640 bytes of PCM (20 ms). Sent only while the state is LISTENING. |
 | `0x20` | INPUT           | `u8` code: `1` TAP, `2` LONG_PRESS, `3` BOOT_BUTTON (BOOT or PWR key). |
@@ -95,7 +95,7 @@ Signed 16-bit little-endian PCM, mono, 16 000 Hz, both directions.
 | `0x32` | SNAP_BEGIN      | JSON `{"w":466,"h":466,"fmt":"RGB565"}` (RGB565 little-endian, row-major). |
 | `0x33` | SNAP_DATA       | Next bytes of the snapshot, ≤ 4096 per frame, in order. |
 | `0x34` | SNAP_END        | `u32` total byte count. |
-| `0x35` | PAIR_RESULT     | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. Reasons: `too long`, `bad json`, `bad field <name>` (a required field is missing or has the wrong type, or `networks` is malformed), `bad psk`, `identity mismatch`, `bad ssid`, `bad password`, `too many networks`, `bad relay`, `bad remote_url`, `storage error`. A refused PAIR keeps the previous pairing; after `storage error` only until the board restarts, and the next boot uses what the flash then holds. |
+| `0x35` | PAIR_RESULT     | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. Reasons: `too long`, `bad json`, `bad field <name>` (a required field is missing or has the wrong type, or `networks` is malformed), `bad psk`, `bad key_id`, `identity mismatch`, `bad ssid`, `bad password`, `too many networks`, `bad relay`, `bad remote_url`, `storage error` (nothing was saved), `storage unknown` (the save failed in a way that leaves either the previous or the new pairing for the next boot). A refused PAIR keeps the previous pairing in RAM until the board restarts; after `storage unknown` the board refuses further PAIR with `storage error` until FORGET succeeds or the board restarts. |
 | `0x36` | WIFI_STATUS     | JSON `{"wifi":"off"|"connecting"|"connected"|"failed","ip":"…","rssi":-55,"relay":"none"|"connecting"|"connected"|"auth_failed"|"unreachable"|"captive"|"tls_failed"}`. `captive`: the network intercepts the tunnel (name lookup fails, or the upgrade gets a redirect or another answer than 101); `tls_failed`: the outer TLS certificate check failed. Sent on every change and in reply to HOST_HELLO. |
 | `0x37` | FORGET_RESULT   | JSON `{"ok":true}` or `{"ok":false,"error":"<reason>"}`. Reason: `storage error` (the pairing is dropped from RAM and Wi-Fi stops anyway). |
 
@@ -108,7 +108,7 @@ HELLO `link` is `"tunnel"` when the board sends it over the tunnel.
 | `0x81` | HOST_HELLO | JSON `{"proto":3}`. |
 | `0x82` | SET_STATE  | `u8` state (table below). |
 | `0x83` | SET_VOLUME | `u8` volume (values above 100 are clamped to 100), then an optional `u8` mode: `0` transient (also when absent), `1` persist, `2` seed. Other modes and other lengths are ignored, as is any set while the knob is armed. See Volume. |
-| `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. Optional: `networks`, up to 4 `{"ssid":"…","password":"…","lan":true|false}` that replace all saved networks (`lan` true where the relay addresses are reachable); `remote_url` (`"wss://…/clawd/v1"`); `access_id` and `access_secret` (tunnel provider credentials sent as headers on the upgrade). The relay sends `networks` with the main network first. At most 4 `relay_names` of at most 63 bytes each and at most 8 `relay_addrs` (dotted-quad IPv4). Payload at most 1023 bytes (the device keeps 1024 bytes for the text and its terminator); the relay refuses a longer PAIR before sending it. |
+| `0x84` | PAIR       | USB only. JSON `{"ssid":"…","password":"…","psk_identity":"…","psk":"<64 hex>","key_id":"<8 hex>","relay_names":["…local"],"relay_addrs":["10.0.0.2"],"relay_port":47801}`. Optional: `networks`, up to 4 `{"ssid":"…","password":"…","lan":true|false}` that replace all saved networks (`lan` true where the relay addresses are reachable); `remote_url` (`"wss://…/clawd/v1"`); `access_id` and `access_secret` (tunnel provider credentials sent as headers on the upgrade). `key_id` is the first 8 hex digits of SHA-256 of the PSK in uppercase; the device checks its form and copies it. The relay sends `networks` with the main network first. At most 4 `relay_names` of at most 63 bytes each and at most 8 `relay_addrs` (dotted-quad IPv4). Payload at most 1023 bytes (the device keeps 1024 bytes for the text and its terminator); the relay refuses a longer PAIR before sending it. |
 | `0x85` | FORGET     | USB only. Empty. Erase the saved networks and Wi-Fi credentials, PSK, relay addresses, remote URL and Access credentials, then send FORGET_RESULT. Wi-Fi and any network session stop when the network step in progress ends (bounds in `network.md`). |
 | `0x86` | SET_REMOTE | JSON `{"url":"wss://…/clawd/v1"}`, optionally with `access_id` and `access_secret`. Sent by the relay after HELLO on any authenticated link; the device stores the values only when they changed. Payload at most 511 bytes; the device ignores a longer one. |
 | `0x90` | SPK_AUDIO  | PCM, ≤ 4096 bytes, even length. Appended to the playback queue. |
