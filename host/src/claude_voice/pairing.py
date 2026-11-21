@@ -210,16 +210,34 @@ def check_pair_size(
     )
 
 
+RESTORE, NEW_ONLY, KEEP_ALL = "restore", "new only", "keep all"  # what pair() leaves in the Keychain
+UNKNOWN_SAVE_KEPT = (
+    "设备保存配对时出错，无法确认是否已经保存。本机钥匙串保留了这次的配对密钥，之前的配对密钥也没有删除，"
+    "设备用其中哪一个，本机都能接受。要重新配对，请先运行 claude-voice forget，再运行 claude-voice pair。"
+)
+UNKNOWN_SAVE_FIRST = (
+    "设备保存配对时出错，无法确认是否已经保存。本机钥匙串保留了这次的配对密钥。"
+    "要重新配对，请先运行 claude-voice forget，再运行 claude-voice pair。"
+)
+
+
+def _new_psk(kept: set[str]) -> bytes:
+    """A fresh PSK whose key id differs from every key id still kept for the board."""
+    while key_id(psk := secrets.token_bytes(PSK_BYTES)) in kept:
+        pass
+    return psk
+
+
 async def pair(
     cfg: Config, *, transport: Transport, store: PskStore, serial: str, ssid: str, password: str, out: Out,
     extra_networks: Sequence[tuple[str, str]] = (),
 ) -> bool:
-    """Send PAIR over USB and wait until the board reaches this Mac over Wi-Fi."""
+    """Send PAIR over USB and wait until the board reaches this Mac over Wi-Fi.
+    Never deletes a key the board may still hold (docs/network.md, Keys)."""
     if len(extra_networks) > PAIR_NETWORKS_MAX - 1:
         raise ValueError(f"at most {PAIR_NETWORKS_MAX - 1} extra networks")
     identity = psk_identity(serial)
-    psk = secrets.token_bytes(PSK_BYTES)
-    hidden = [password, *(p for _, p in extra_networks), psk.hex()]
+    hidden = [password, *(p for _, p in extra_networks)]
     names, addrs = relay_names(cfg), private_ipv4(cfg)
     if not addrs and not names:
         raise PairError("找不到本机的局域网地址。请先连上局域网。")
@@ -229,35 +247,44 @@ async def pair(
         joined.set()
         await _hold(t)
 
-    kid = key_id(psk)
-    server = WifiServer(cfg, {wire_identity(identity, kid): psk}, hold)
+    ring: dict[str, bytes] = {}  # only the new key, so a join proves the board took it
+    server = WifiServer(cfg, ring, hold)
     try:
         await server.start()
     except OSError:
         await transport.close()
         raise PairError(f"端口 {cfg.wifi_port} 已被占用。请先停止正在运行的 claude-voice，再配对。") from None
     console = UsbConsole(cfg, transport, hidden)
-    old = None
-    stored = False
-    unknown = False  # PAIR sent; neither PAIR_RESULT nor a session with the new key yet
+    old: bytes | None = None
+    earlier: list[str] = []
+    demoted = stored = False  # the old current key was added as an earlier item; the new key is current
+    outcome = RESTORE
     try:
         try:
+            old = store.get(identity)
+            earlier = store.earlier(identity)
+            psk = _new_psk(set(earlier) | ({key_id(old)} if old is not None else set()))
+            kid = key_id(psk)
+            hidden.append(psk.hex())
+            ring[wire_identity(identity, kid)] = psk
             payload = pair_payload(
                 identity=identity, psk_hex=psk.hex(), kid=kid, ssid=ssid, password=password,
                 extra_networks=extra_networks, names=names, addrs=addrs, port=server.port,
             )
             await console.open()
-            old = store.get(identity)
+            if old is not None and key_id(old) not in earlier:
+                store.set_earlier(identity, key_id(old), old)
+                demoted = True
             store.set(identity, psk)
             stored = True
             log.info("pairing with Wi-Fi %r, other networks %r", ssid, [s for s, _ in extra_networks])
             console.send(T.PAIR, payload)
-            unknown = True
+            outcome = KEEP_ALL
             result = await console.wait_for(T.PAIR_RESULT, cfg.pair_result_timeout_s)
             if result is None:
                 out("设备没有回复配对结果。正在等待设备通过 Wi-Fi 连上本机……")
         except TransportClosed:
-            if not unknown:
+            if outcome == RESTORE:
                 out("USB 连接断开了。请检查线缆后再试。")
                 return False
             result = None
@@ -265,48 +292,61 @@ async def pair(
         if result is None:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(joined.wait(), cfg.pair_relay_timeout_s)
-            unknown = False
             if joined.is_set():
-                stored = False
+                outcome = NEW_ONLY
                 out("配对完成：设备已通过 Wi-Fi 连上本机。")
                 return True
-            log.warning("PAIR outcome unknown: no PAIR_RESULT and no Wi-Fi session")
+            log.warning("PAIR outcome unknown: no PAIR_RESULT and no Wi-Fi session; keeping every key")
             out("无法确认配对结果：设备没有回复，也没有通过 Wi-Fi 连上本机。请重新运行 claude-voice pair。")
             return False
-        unknown = False
         verdict = parse_hello(result)
+        if verdict.get("ok") is not True and verdict.get("error") == "storage unknown":
+            log.warning("PAIR saved with an unknown outcome; keeping every key")
+            out(UNKNOWN_SAVE_KEPT if old is not None or earlier else UNKNOWN_SAVE_FIRST)
+            return False
         if verdict.get("ok") is not True:
+            outcome = RESTORE
             reason = redact(str(verdict.get("error", "")), hidden)
             log.warning("PAIR refused: %s", reason)
             out(f"配对失败：设备拒绝了配对（{reason}）。" if reason else "配对失败：设备拒绝了配对。")
             return False
-        stored = False
+        outcome = NEW_ONLY
         out(f"设备已保存 Wi-Fi「{ssid}」。正在等待设备连上本机……")
         return await _await_relay(cfg, console, out)
     except TransportClosed:
         out("USB 连接断开了。请检查线缆后再试。")
         return False
     except asyncio.CancelledError:
-        if unknown and joined.is_set():
-            stored = False
+        if outcome == KEEP_ALL and joined.is_set():
+            outcome = NEW_ONLY
             out("配对完成：设备已通过 Wi-Fi 连上本机。")
-        elif unknown:
+        elif outcome == KEEP_ALL:
             out("配对已中断，无法确认结果。请重新运行 claude-voice pair。")
         raise
     finally:
         try:
-            if stored:
-                try:
-                    if old is None:
-                        store.delete(identity)
-                    else:
-                        store.set(identity, old)
-                except KeychainError:
-                    out("钥匙串中的配对密钥可能与设备不一致。请重新运行 claude-voice pair。")
-                    raise
+            try:
+                _settle_keys(store, identity, outcome, old, stored, demoted)
+            except KeychainError:
+                out("钥匙串中的配对密钥可能与设备不一致。请重新运行 claude-voice pair。")
+                raise
         finally:
             await console.close()
             await server.close()
+
+
+def _settle_keys(store: PskStore, identity: str, outcome: str, old: bytes | None, stored: bool, demoted: bool) -> None:
+    """Apply a pair() outcome to the Keychain: put back what was there, keep only the new key, or change nothing."""
+    if outcome == NEW_ONLY:
+        for kid in store.earlier(identity):
+            store.delete_earlier(identity, kid)
+    elif outcome == RESTORE:
+        if stored and old is None:
+            store.delete(identity)
+        elif stored:
+            store.set(identity, old)
+        if demoted:
+            store.delete_earlier(identity, key_id(old))
 
 
 async def _await_relay(cfg: Config, console: UsbConsole, out: Out) -> bool:
