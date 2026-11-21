@@ -60,12 +60,13 @@ class KeyReloader:
             if isinstance(fresh, Exception):
                 self._warn.warn("cannot re-read the PSK of %s, keeping it: %s", board, type(fresh).__name__)
                 continue
-            if not fresh.listed:
-                self._warn.warn("cannot list the earlier keys of %s, keeping those in use", board)
+            if not fresh.listed or fresh.unread:
+                self._warn.warn("cannot list or read every earlier key of %s, keeping those in use", board)
             for wire in [w for w, b in owner.items() if b == board]:
                 new = fresh.keys.get(wire)
-                # no valid current key drops every wire; without a full listing an unread wire stays
-                if fresh.current is None or new != keys.get(wire) and (fresh.listed or new is not None):
+                # no valid current key drops every wire; a wire whose key was not read stays
+                unknown = not fresh.listed and new is None or wire in fresh.unread
+                if fresh.current is None or (new != keys.get(wire) and not unknown):
                     keys.pop(wire, None)
                     dropped.append(wire)
             for wire, key in fresh.keys.items():
