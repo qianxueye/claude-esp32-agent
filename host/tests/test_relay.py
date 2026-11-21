@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import logging
 
 import pytest
 from fake_device import FakeDevice, speech_pcm
@@ -361,3 +362,20 @@ async def test_knob_report_is_kept_across_hello():
         assert h.relay.device_volume == 20 and len(h.dev.set_volumes) == sets and h.dev.vol == 20
     finally:
         await h.down()
+
+
+@pytest.mark.parametrize("store", ["ok", "error"])
+async def test_unpaired_hello_log_follows_the_store_field(store, caplog):
+    caplog.set_level(logging.INFO, logger="claude_voice")
+    h = make()
+    await h.up()
+    try:
+        caplog.clear()
+        h.dev.store = store
+        h.dev.hello("resume")
+        await until(lambda: any("board HELLO" in r.getMessage() for r in caplog.records))
+    finally:
+        await h.down()
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert ("not paired" in logged) is (store == "ok")
+    assert ("could not read its pairing storage" in logged) is (store == "error")

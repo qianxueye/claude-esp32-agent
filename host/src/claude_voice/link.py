@@ -366,7 +366,9 @@ class Link:
         if s.refused:
             return
         log.info("board HELLO on %s: %s", s.label, payload.decode(errors="replace"))
-        if info.get("paired") is False and s.kind == "usb":
+        if info.get("store") != "ok":
+            log.warning("board could not read its pairing storage (store %r); its pairing state is unknown", info.get("store"))
+        elif info.get("paired") is False and s.kind == "usb":
             log.info("board is not paired for Wi-Fi; run `claude-voice pair`")
         s.ready = True
         reason = str(info.get("reason", ""))
