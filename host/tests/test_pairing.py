@@ -62,10 +62,10 @@ class Board:
             await t.close()
 
 
-async def run_pair(board, c=None, store=None, out=None, ssid="家里的网"):
+async def run_pair(board, c=None, store=None, out=None, ssid="家里的网", password=PASSWORD):
     return await pair(
         c or cfg(), transport=board.host, store=store if store is not None else MemoryStore(),
-        serial=FAKE_SERIAL, ssid=ssid, password=PASSWORD, out=(out if out is not None else []).append,
+        serial=FAKE_SERIAL, ssid=ssid, password=password, out=(out if out is not None else []).append,
     )
 
 
@@ -282,6 +282,15 @@ async def test_pair_refused_restores_exactly_the_items_before_the_run(reason):
         assert not await run_pair(b, store=store, out=out)
     expected = REFUSALS.get(reason, f"配对失败：设备拒绝了配对（{reason}）。")
     assert store.items == before and out[-1] == expected
+
+
+@pytest.mark.parametrize(("reason", "password"), [("storage error", "storage error"), ("identity mismatch", "identity")])
+async def test_refusal_line_is_found_when_the_password_overlaps_the_code(reason, password):
+    out = []
+    async with Board() as b:
+        b.dev.refuse_pair, b.dev.refuse_reason = True, reason
+        assert not await run_pair(b, out=out, password=password)
+    assert out[-1] == REFUSALS[reason]
 
 
 def test_refusal_lines_are_the_reviewed_copy():

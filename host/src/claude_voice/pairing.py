@@ -317,9 +317,10 @@ async def pair(
             return False
         if verdict.get("ok") is not True:
             outcome = RESTORE
-            reason = redact(str(verdict.get("error", "")), hidden)
+            code = str(verdict.get("error", ""))
+            reason = redact(code, hidden)  # the fixed lines hold no secret, so match them on the raw code
             log.warning("PAIR refused: %s", reason)
-            out(REFUSALS.get(reason) or (f"配对失败：设备拒绝了配对（{reason}）。" if reason else "配对失败：设备拒绝了配对。"))
+            out(REFUSALS.get(code) or (f"配对失败：设备拒绝了配对（{reason}）。" if reason else "配对失败：设备拒绝了配对。"))
             return False
         outcome = NEW_ONLY
         out(f"设备已保存 Wi-Fi「{ssid}」。正在等待设备连上本机……")
