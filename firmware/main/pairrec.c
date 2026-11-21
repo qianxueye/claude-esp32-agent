@@ -82,6 +82,19 @@ int pr_write_outcome(bool wrote, bool read_ok, pr_view_t got, pr_view_t want, pr
     return same(got, prev) ? PR_WRITE_KEPT : PR_WRITE_BROKEN;
 }
 
+int pr_read_class(int32_t err, bool decoded)
+{
+    if (err == PR_ERR_NVS_NOT_FOUND) {
+        return PR_READ_ABSENT;
+    }
+    return err == 0 && decoded ? PR_READ_FOUND : PR_READ_FAILED;
+}
+
+bool pr_load_usable(int pair_class, int remote_class)
+{
+    return pair_class != PR_READ_FAILED && remote_class != PR_READ_FAILED;
+}
+
 int pr_boot_action(int32_t init_err)
 {
     if (init_err == 0) {

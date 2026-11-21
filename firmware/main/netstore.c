@@ -65,6 +65,7 @@ static esp_err_t open_rw(nvs_open_mode_t mode, nvs_handle_t *h)
 
 _Static_assert(PR_ERR_NVS_NO_FREE_PAGES == ESP_ERR_NVS_NO_FREE_PAGES, "nvs.h code");
 _Static_assert(PR_ERR_NVS_NEW_VERSION_FOUND == ESP_ERR_NVS_NEW_VERSION_FOUND, "nvs.h code");
+_Static_assert(PR_ERR_NVS_NOT_FOUND == ESP_ERR_NVS_NOT_FOUND, "nvs.h code");
 
 /* Initialises the partition; only a layout NVS cannot use is erased, any other error leaves it untouched. */
 static esp_err_t start_partition(void)
@@ -90,19 +91,68 @@ bool netstore_init(void)
     return s_mtx && start_partition() == ESP_OK;
 }
 
-/* Reads one record into s_blob; returns its decoded data or NULL. */
-static const uint8_t *read_record(nvs_handle_t h, const char *key, size_t max, uint32_t *id, size_t *len)
+/* Reads one record into s_blob and classifies it; v points into s_blob. */
+static int read_view(nvs_handle_t h, const char *key, size_t max, pr_view_t *v)
 {
     size_t n = sizeof s_blob;
     esp_err_t e = nvs_get_blob(h, key, s_blob, &n);
-    const uint8_t *data = NULL;
-    if (e == ESP_OK && !pr_decode(s_blob, n, max, id, &data, len)) {
-        note("malformed record", key, ESP_ERR_INVALID_SIZE);
-        data = NULL;
-    } else if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
-        note("unreadable record", key, e);
+    bool decoded = e == ESP_OK && pr_decode(s_blob, n, max, &v->id, &v->data, &v->len);
+    int c = pr_read_class(e, decoded);
+    v->present = c == PR_READ_FOUND;
+    if (c == PR_READ_FAILED) {
+        note(e == ESP_OK ? "malformed record" : "unreadable record", key, e == ESP_OK ? ESP_ERR_INVALID_SIZE : e);
     }
-    return data;
+    return c;
+}
+
+size_t netstore_load(uint8_t *text, size_t cap, uint32_t *pair_id, char url[NET_URL_MAX + 1], uint32_t *remote_id)
+{
+    *pair_id = 0;
+    *remote_id = 0;
+    url[0] = 0;
+    if (!lock()) {
+        return 0;
+    }
+    size_t out = 0;
+    pr_view_t pv = {false, 0, NULL, 0}, rv = {false, 0, NULL, 0};
+    int pc = PR_READ_FAILED, rc = PR_READ_FAILED;
+    nvs_handle_t h;
+    esp_err_t e = s_usable ? open_rw(NVS_READONLY, &h) : ESP_ERR_NVS_NOT_INITIALIZED;
+    if (e == ESP_OK) {
+        rc = read_view(h, "remote", NET_URL_MAX, &rv);
+        if (rc == PR_READ_FOUND) {
+            memcpy(s_remote_raw, rv.data, rv.len);
+        }
+        pc = read_view(h, "pair", NET_PAIR_MAX_BYTES, &pv);
+        nvs_close(h);
+    } else if (s_usable) {
+        pc = rc = pr_read_class(e, false);
+    }
+    if (!pr_load_usable(pc, rc) || (pv.present && pv.len > cap)) {
+        if (s_usable) {
+            note("store unusable this boot:", "load", e);
+        }
+        s_usable = false;
+        unlock();
+        return 0;
+    }
+    s_remote_id = rv.present ? rv.id : 0;
+    s_remote_len = rv.present ? rv.len : 0;
+    s_cur_id = pv.present ? pv.id : 0;
+    s_pair_len = pv.present ? pv.len : 0;
+    s_max_id = s_cur_id > s_remote_id ? s_cur_id : s_remote_id;
+    if (rv.present && memchr(s_remote_raw, 0, rv.len) == NULL) {
+        memcpy(url, s_remote_raw, rv.len);
+        url[rv.len] = 0;
+        *remote_id = rv.id;
+    }
+    if (pv.present) {
+        memcpy(text, pv.data, pv.len);
+        out = pv.len;
+        *pair_id = pv.id;
+    }
+    unlock();
+    return out;
 }
 
 /* Reads key back after a fresh init of the partition, which is what the next boot loads. */
@@ -156,46 +206,6 @@ static int write_record(const char *key, size_t n, size_t max, pr_view_t want, p
     }
     note(out == PR_WRITE_DONE ? "saved despite an error:" : out == PR_WRITE_KEPT ? "not saved:" : "store unusable after a failed write:",
          key, e);
-    return out;
-}
-
-size_t netstore_load(uint8_t *text, size_t cap, uint32_t *pair_id, char url[NET_URL_MAX + 1], uint32_t *remote_id)
-{
-    size_t out = 0;
-    *pair_id = 0;
-    *remote_id = 0;
-    url[0] = 0;
-    if (!lock()) {
-        return 0;
-    }
-    nvs_handle_t h;
-    if (open_rw(NVS_READONLY, &h) == ESP_OK) {
-        uint32_t id = 0;
-        size_t len = 0;
-        const uint8_t *d = read_record(h, "remote", NET_URL_MAX, &id, &len);
-        if (d) {
-            s_max_id = id;
-            s_remote_id = id;
-            s_remote_len = len;
-            memcpy(s_remote_raw, d, len);
-        }
-        if (d && memchr(d, 0, len) == NULL) {
-            memcpy(url, d, len);
-            url[len] = 0;
-            *remote_id = id;
-        }
-        d = read_record(h, "pair", NET_PAIR_MAX_BYTES, &id, &len);
-        if (d && len <= cap) {
-            memcpy(text, d, len);
-            out = len;
-            *pair_id = id;
-            s_cur_id = id;
-            s_pair_len = len;
-            s_max_id = id > s_max_id ? id : s_max_id;
-        }
-        nvs_close(h);
-    }
-    unlock();
     return out;
 }
 
