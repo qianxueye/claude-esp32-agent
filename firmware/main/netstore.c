@@ -91,8 +91,8 @@ bool netstore_init(void)
     return s_mtx && start_partition() == ESP_OK;
 }
 
-/* Reads one record into s_blob and classifies it; v points into s_blob. */
-static int read_view(nvs_handle_t h, const char *key, size_t max, pr_view_t *v)
+/* Reads one record into s_blob and classifies it; v points into s_blob, and a failure sets *why. */
+static int read_view(nvs_handle_t h, const char *key, size_t max, pr_view_t *v, esp_err_t *why)
 {
     size_t n = sizeof s_blob;
     esp_err_t e = nvs_get_blob(h, key, s_blob, &n);
@@ -100,7 +100,8 @@ static int read_view(nvs_handle_t h, const char *key, size_t max, pr_view_t *v)
     int c = pr_read_class(e, decoded);
     v->present = c == PR_READ_FOUND;
     if (c == PR_READ_FAILED) {
-        note(e == ESP_OK ? "malformed record" : "unreadable record", key, e == ESP_OK ? ESP_ERR_INVALID_SIZE : e);
+        *why = e == ESP_OK ? ESP_ERR_INVALID_SIZE : e;
+        note(e == ESP_OK ? "malformed record" : "unreadable record", key, *why);
     }
     return c;
 }
@@ -118,19 +119,20 @@ size_t netstore_load(uint8_t *text, size_t cap, uint32_t *pair_id, char url[NET_
     int pc = PR_READ_FAILED, rc = PR_READ_FAILED;
     nvs_handle_t h;
     esp_err_t e = s_usable ? open_rw(NVS_READONLY, &h) : ESP_ERR_NVS_NOT_INITIALIZED;
+    esp_err_t why = e;
     if (e == ESP_OK) {
-        rc = read_view(h, "remote", NET_URL_MAX, &rv);
+        rc = read_view(h, "remote", NET_URL_MAX, &rv, &why);
         if (rc == PR_READ_FOUND) {
             memcpy(s_remote_raw, rv.data, rv.len);
         }
-        pc = read_view(h, "pair", NET_PAIR_MAX_BYTES, &pv);
+        pc = read_view(h, "pair", NET_PAIR_MAX_BYTES, &pv, &why);
         nvs_close(h);
     } else if (s_usable) {
         pc = rc = pr_read_class(e, false);
     }
     if (!pr_load_usable(pc, rc) || (pv.present && pv.len > cap)) {
         if (s_usable) {
-            note("store unusable this boot:", "load", e);
+            note("store unusable this boot:", "load", why == ESP_OK ? ESP_ERR_INVALID_SIZE : why);
         }
         s_usable = false;
         unlock();
