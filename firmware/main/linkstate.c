@@ -46,6 +46,15 @@ link_verdict_t link_on_frame(linkstate_t *s, int src, int net_kind, uint8_t type
     return v;
 }
 
+link_verdict_t link_on_net_frame(linkstate_t *s, int net_kind, uint32_t session_gen, uint32_t gen, uint8_t type, uint32_t now_ms)
+{
+    if (session_gen != gen) {
+        link_verdict_t none = {false, false, false};
+        return none;
+    }
+    return link_on_frame(s, LINK_SRC_NET, net_kind, type, now_ms);
+}
+
 void link_net_ended(linkstate_t *s)
 {
     if (s->active == LINK_WIFI || s->active == LINK_TUNNEL) {
