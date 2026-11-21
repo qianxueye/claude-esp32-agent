@@ -106,22 +106,29 @@ def revoke_identity(cfg: Config, store: PskStore) -> str:
 
 
 def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
-    """Delete every PSK of one board from the Keychain, check by listing that none is left, then name other boards."""
+    """Delete every PSK of one board from the Keychain, check by listing that none is left, then name other boards.
+    Fails when the earlier keys could not be listed, after saying which part was deleted."""
     identity = revoke_identity(cfg, store)
-    deleted = delete_board(store, identity) > 0
+    done = delete_board(store, identity)
     try:
         still = store.get(identity) is not None
     except KeychainValueError:
         still = True
-    still = still or bool(store.earlier(identity))
+    listed = done.listed
+    if listed:
+        try:
+            still = still or bool(store.earlier(identity))
+        except KeychainError:
+            listed = False
     if still:
         out(
             f"删除后本机钥匙串中仍能读到设备 {identity} 的配对密钥，撤销没有完成。"
             f"请在「钥匙串访问」中搜索 {identity}，删除找到的条目，再运行一次 claude-voice revoke。"
         )
         return False
+    deleted = done.current or done.earlier > 0
     if deleted:
-        out(f"已删除本机钥匙串中设备 {identity} 的配对密钥。")
+        out(f"已删除本机钥匙串中设备 {identity} 的配对密钥。" if listed else f"已删除本机钥匙串中设备 {identity} 当前的配对密钥。")
         out(
             f"正在运行的中继会在 {cfg.key_reload_interval_s:g} 秒内断开这台设备，之后不再接受它连接。"
             "中继如果是在这次更新之前启动的，要重启后才会断开。"
@@ -130,11 +137,16 @@ def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
     else:
         out(f"本机钥匙串中没有设备 {identity} 的配对密钥。")
     try:
-        left = _stored(store)
+        left = [b for b in _stored(store) if b != identity]
     except KeychainError:
         out("无法检查本机钥匙串中是否还有其他设备的配对密钥。")
-        return deleted
+        left = []
     if left:
         out(f"本机钥匙串中还有这些设备的配对密钥：{'、'.join(left)}。")
+    if not listed:
+        out(
+            f"无法列出设备 {identity} 的旧配对密钥，其中可能还有没删除的。请再运行一次 claude-voice revoke；"
+            f"仍然失败时，在「钥匙串访问」中搜索 {identity}，删除找到的条目。"
+        )
+        return False
     return deleted
-
