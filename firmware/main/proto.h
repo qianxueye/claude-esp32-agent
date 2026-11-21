@@ -44,3 +44,5 @@ size_t proto_parser_feed(proto_parser_t *p, const uint8_t *data, size_t len);
 /* Returns 1 and fills f when a frame is ready (valid until proto_parser_release), 0 when more bytes are needed. */
 int proto_parser_next(proto_parser_t *p, uint32_t now_ms, proto_frame_t *f);
 void proto_parser_release(proto_parser_t *p, const proto_frame_t *f);
+/* Releases a frame that carried secrets: zeroes it and every buffer byte past the bytes still pending. */
+void proto_parser_release_wipe(proto_parser_t *p, const proto_frame_t *f);
