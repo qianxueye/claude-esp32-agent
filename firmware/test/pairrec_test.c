@@ -101,8 +101,27 @@ static void test_boot_action(void)
     CHECK("partition not found (0x105): unusable", pr_boot_action(0x105) == PR_BOOT_UNUSABLE);
 }
 
+static void test_write_outcome(void)
+{
+    static const uint8_t NEW[] = "new text", OLD[] = "old text", OTHER[] = "odd text";
+    pr_view_t want = {true, 5, NEW, sizeof NEW}, prev = {true, 4, OLD, sizeof OLD}, none = {false, 0, NULL, 0};
+    pr_view_t got_new = want, got_old = prev, got_other = {true, 5, OTHER, sizeof OTHER};
+    CHECK("a write that succeeded is done", pr_write_outcome(true, false, none, want, prev) == PR_WRITE_DONE);
+    CHECK("failed write, new record read back (remove failed): done", pr_write_outcome(false, true, got_new, want, prev) == PR_WRITE_DONE);
+    CHECK("failed write, previous record read back: kept", pr_write_outcome(false, true, got_old, want, prev) == PR_WRITE_KEPT);
+    CHECK("failed write, nothing stored and nothing before: kept", pr_write_outcome(false, true, none, want, none) == PR_WRITE_KEPT);
+    CHECK("failed write, previous record gone: broken", pr_write_outcome(false, true, none, want, prev) == PR_WRITE_BROKEN);
+    CHECK("failed write, new id with other bytes: broken", pr_write_outcome(false, true, got_other, want, prev) == PR_WRITE_BROKEN);
+    CHECK("failed write, read-back failed: broken", pr_write_outcome(false, false, got_new, want, prev) == PR_WRITE_BROKEN);
+    pr_view_t prev_hdr = {true, 4, NULL, sizeof OLD};
+    CHECK("previous PAIR known by id and length only: kept", pr_write_outcome(false, true, got_old, want, prev_hdr) == PR_WRITE_KEPT);
+    pr_view_t old_id_other_len = {true, 4, OLD, sizeof OLD - 1};
+    CHECK("previous id with another length: broken", pr_write_outcome(false, true, old_id_other_len, want, prev_hdr) == PR_WRITE_BROKEN);
+}
+
 int main(void)
 {
+    test_write_outcome();
     test_boot_action();
     test_round_trip();
     test_ids_and_remote();
