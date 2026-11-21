@@ -36,6 +36,7 @@ typedef struct {
     const uint8_t *payload;
 } proto_frame_t;
 
+/* Starts or resets a parser and zeroes its storage; a discarded or released byte is always zeroed too. */
 void proto_parser_init(proto_parser_t *p, uint8_t *storage, size_t cap);
 /* For TCP and the tunnel: a frame is never cut there, so the partial-frame timeout is off. */
 void proto_parser_set_stream(proto_parser_t *p, bool stream);
@@ -44,5 +45,3 @@ size_t proto_parser_feed(proto_parser_t *p, const uint8_t *data, size_t len);
 /* Returns 1 and fills f when a frame is ready (valid until proto_parser_release), 0 when more bytes are needed. */
 int proto_parser_next(proto_parser_t *p, uint32_t now_ms, proto_frame_t *f);
 void proto_parser_release(proto_parser_t *p, const proto_frame_t *f);
-/* Releases a frame that carried secrets: zeroes it and every buffer byte past the bytes still pending. */
-void proto_parser_release_wipe(proto_parser_t *p, const proto_frame_t *f);

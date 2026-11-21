@@ -539,6 +539,7 @@ static int run_session(int kind, mbedtls_ssl_send_t *snd, mbedtls_ssl_recv_t *rc
                     proto_parser_release(&parser, &f);
                 }
             } while (off < (size_t)n);
+            memset(s_rbuf, 0, (size_t)n);
         } else if (n != MBEDTLS_ERR_SSL_WANT_READ && n != MBEDTLS_ERR_SSL_WANT_WRITE) {
             why = "closed by the relay or the link";
             break;
@@ -554,6 +555,7 @@ static int run_session(int kind, mbedtls_ssl_send_t *snd, mbedtls_ssl_recv_t *rc
             break;
         }
     }
+    proto_parser_init(&parser, s_rx_store, PROTO_MAX_PAYLOAD + FRAME_OVERHEAD + NET_READ_CHUNK_BYTES);
     ESP_LOGI(TAG, "relay session closed: %s", why);
     mbedtls_ssl_close_notify(&s_ssl);
     transport_net_ended();
