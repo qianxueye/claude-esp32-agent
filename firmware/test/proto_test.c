@@ -45,6 +45,31 @@ int main(void)
     assert(proto_parser_next(&p, 120000, &f) == 1 && f.type == T_PING && f.len == 4);
     proto_parser_release(&p, &f);
     assert(T_SET_REMOTE == 0x86);
+    /* a PAIR frame is wiped on release; the frames after it in the same read still parse */
+    static const char secret[] = "{\"psk\":\"SECRET-PSK-TEXT\"}";
+    proto_parser_init(&p, store, sizeof store);
+    memset(store, 0xEE, sizeof store);
+    n = 0;
+    memcpy(stream + n, "zz", 2); n += 2;
+    n += proto_encode(stream + n, T_PAIR, secret, sizeof secret - 1);
+    n += proto_encode(stream + n, T_PING, pl, 4);
+    fl = proto_encode(fr, T_SET_STATE, pl, 1);
+    memcpy(stream + n, fr, 3); n += 3;
+    assert(proto_parser_feed(&p, stream, n) == n);
+    assert(proto_parser_next(&p, 1000, &f) == 1 && f.type == T_PAIR);
+    proto_parser_release_wipe(&p, &f);
+    static const char value[] = "SECRET-PSK-TEXT";
+    for (size_t k = 0; k + 4 < sizeof value; k++) {
+        for (size_t i = 0; i + 4 <= sizeof store; i++) {
+            assert(memcmp(store + i, value + k, 4) != 0); /* no 4-byte piece of the secret is left */
+        }
+    }
+    assert(proto_parser_next(&p, 1000, &f) == 1 && f.type == T_PING && f.len == 4 && memcmp(f.payload, pl, 4) == 0);
+    proto_parser_release(&p, &f);
+    assert(p.fill == 3 && memcmp(store, fr, 3) == 0);
+    proto_parser_feed(&p, fr + 3, fl - 3);
+    assert(proto_parser_next(&p, 1000, &f) == 1 && f.type == T_SET_STATE && f.len == 1);
+    proto_parser_release(&p, &f);
     puts("ok");
     return 0;
 }

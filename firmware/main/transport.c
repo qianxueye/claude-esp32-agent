@@ -175,6 +175,7 @@ static void rx_task(void *arg)
     for (;;) {
         int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(USB_RX_POLL_MS));
         size_t off = 0;
+        bool secret = false;
         if (n > 0) {
             s_stats.rx_bytes += n;
         }
@@ -185,9 +186,18 @@ static void rx_task(void *arg)
             proto_frame_t f;
             while (proto_parser_next(&parser, now_ms(), &f)) {
                 dispatch(LINK_SRC_USB, LINK_USB, &f);
-                proto_parser_release(&parser, &f);
+                if (f.type == T_PAIR) {
+                    secret = true;
+                    proto_parser_release_wipe(&parser, &f);
+                } else {
+                    proto_parser_release(&parser, &f);
+                }
             }
         } while (n > 0 && off < (size_t)n);
+        if (secret) {
+            /* every byte of the chunk has been fed by now; earlier reads may have left PAIR text in it too */
+            memset(chunk, 0, sizeof(chunk));
+        }
         s_stats.rx_frames = parser.frames_ok;
         s_stats.rx_crc_errors = parser.crc_errors;
         s_stats.rx_bytes_skipped = parser.bytes_skipped;

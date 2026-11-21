@@ -123,3 +123,9 @@ void proto_parser_release(proto_parser_t *p, const proto_frame_t *f)
 {
     drop(p, (size_t)f->len + FRAME_OVERHEAD);
 }
+
+void proto_parser_release_wipe(proto_parser_t *p, const proto_frame_t *f)
+{
+    drop(p, (size_t)f->len + FRAME_OVERHEAD);
+    memset(p->buf + p->fill, 0, p->cap - p->fill);
+}

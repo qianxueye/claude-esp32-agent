@@ -121,4 +121,4 @@ The three tunnel steps add up to `REMOTE_CONNECT_TIMEOUT_MS` 15 s. A slow lookup
 
 ## Logging
 
-PAIR and SET_REMOTE payloads, the PSK and Wi-Fi passwords are never logged. Logs show at most the SSID, the counts of networks, names and addresses, the remote URL and its host, and error codes. Buffers that held PAIR text or the parsed configuration are wiped with `mbedtls_platform_zeroize`.
+PAIR and SET_REMOTE payloads, the PSK and Wi-Fi passwords are never logged. Logs show at most the SSID, the counts of networks, names and addresses, the remote URL and its host, and error codes. Buffers that held PAIR text or the parsed configuration are wiped with `mbedtls_platform_zeroize`. After a PAIR frame on USB, the rx task zeroes that frame and the unused part of its parser buffer, keeping only bytes still to be parsed, and zeroes its read chunk once every byte in it has been fed. The USB driver's receive ring is not wiped; it is overwritten as later bytes arrive.
