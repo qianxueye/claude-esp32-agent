@@ -40,7 +40,7 @@ Code: `net.c` (task, Wi-Fi, both transports, inner TLS, PAIR/FORGET/SET_REMOTE),
 ## Network pick and try order
 
 - After each scan the board joins the strongest visible network saved with `lan` true, else the strongest visible saved network. None visible, or an association failure, sets `wifi` `failed` and waits for the association backoff (1 s doubling to 30 s). Hidden networks are not found, because the scan does not name an SSID.
-- Station settings: authentication threshold OPEN for a network without a password, otherwise WPA2-PSK; PMF capable, not required; Wi-Fi settings stay in RAM (`WIFI_STORAGE_RAM`, `CONFIG_ESP_WIFI_NVS_ENABLED` off). Power saving is `WIFI_PS_NONE` while a session is open and `WIFI_PS_MIN_MODEM` otherwise.
+- Station settings: authentication threshold OPEN for a network without a password, otherwise WPA2-PSK; PMF capable, not required; Wi-Fi settings stay in RAM (`WIFI_STORAGE_RAM`, `CONFIG_ESP_WIFI_NVS_ENABLED` off). Power saving is `WIFI_PS_NONE` from the start of an inner handshake until its session ends, and `WIFI_PS_MIN_MODEM` otherwise.
 - Attempts on a `lan` network: each relay name in order (mDNS), then each relay address, then the remote URL if one is set. On any other network: the remote URL only. One pass is a round; a failed round waits for the relay backoff (1 s doubling to 30 s).
 - The relay backoff resets on an activating HOST_HELLO, on PAIR, FORGET or a changed SET_REMOTE, and when USB stops being connected while USB is the active link. A reset cuts the current wait to at most 1 s.
 - A session is kept until it drops; a LAN relay becoming reachable never preempts a tunnel session.
@@ -86,7 +86,7 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 
 ## Inner TLS
 
-TLS 1.2 only, the single suite `TLS-ECDHE-PSK-WITH-CHACHA20-POLY1305-SHA256`, no session tickets, no renegotiation. The CTR-DRBG is seeded from the hardware RNG at the first session attempt after association and reseeded at the start of every later attempt; no TLS operation runs before that. The ESP32-S3 RNG gives true random numbers only while the RF subsystem is on (IDF "Random Number Generation"), and an associated station has it on. Each session uses fresh contexts, freed at the end, which also wipes the PSK copy in the configuration. The build enables only the ECDHE-PSK key exchange among the PSK modes.
+TLS 1.2 only, the single suite `TLS-ECDHE-PSK-WITH-CHACHA20-POLY1305-SHA256`, no session tickets, no renegotiation. The CTR-DRBG is seeded from the hardware RNG at the first session attempt after association and reseeded at the start of every later attempt; no TLS operation runs before that. The ESP32-S3 RNG gives true random numbers only while the RF subsystem is on and not asleep (IDF "Random Number Generation"), so power saving is switched off before the seed or reseed. Each session uses fresh contexts, freed at the end, which also wipes the PSK copy in the configuration. The build enables only the ECDHE-PSK key exchange among the PSK modes.
 
 ## Bounds
 

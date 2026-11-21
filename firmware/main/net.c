@@ -458,7 +458,13 @@ static bool drbg_fresh(void)
 
 static int run_session(int kind, mbedtls_ssl_send_t *snd, mbedtls_ssl_recv_t *rcv, void *bio)
 {
-    if (!t_joined || !drbg_fresh()) {
+    if (!t_joined) {
+        return NP_FAIL_INNER;
+    }
+    /* Awake radio from the seed on: the RNG draws on it only while it is not asleep. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    if (!drbg_fresh()) {
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         return NP_FAIL_INNER;
     }
     static const int suites[] = {MBEDTLS_TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256, 0};
@@ -502,12 +508,12 @@ static int run_session(int kind, mbedtls_ssl_send_t *snd, mbedtls_ssl_recv_t *rc
     if (r != 0) {
         mbedtls_ssl_free(&s_ssl);
         mbedtls_ssl_config_free(&s_conf);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         return stage;
     }
 
     np_session_up(&s_np);
     publish();
-    esp_wifi_set_ps(WIFI_PS_NONE);
     nw_discard(&s_tx);
     atomic_store(&s_activated, false);
     proto_parser_t parser;
