@@ -68,18 +68,19 @@ static bool same(pr_view_t a, pr_view_t b)
     return a.id == b.id && a.len == b.len && (!a.data || !b.data || memcmp(a.data, b.data, a.len) == 0);
 }
 
-int pr_write_outcome(bool wrote, bool read_ok, pr_view_t got, pr_view_t want, pr_view_t prev)
+int pr_write_outcome(int32_t err, bool read_ok, pr_view_t got, pr_view_t want, pr_view_t prev)
 {
-    if (wrote) {
+    if (err == 0) {
         return PR_WRITE_DONE;
     }
     if (!read_ok) {
-        return PR_WRITE_BROKEN;
+        return PR_WRITE_UNKNOWN;
     }
     if (same(got, want)) {
         return PR_WRITE_DONE;
     }
-    return same(got, prev) ? PR_WRITE_KEPT : PR_WRITE_BROKEN;
+    /* After REMOVE_FAILED the new value is in flash, and the next init may still pick it. */
+    return err != PR_ERR_NVS_REMOVE_FAILED && same(got, prev) ? PR_WRITE_KEPT : PR_WRITE_UNKNOWN;
 }
 
 int pr_read_class(int32_t err, bool decoded)
@@ -90,9 +91,12 @@ int pr_read_class(int32_t err, bool decoded)
     return err == 0 && decoded ? PR_READ_FOUND : PR_READ_FAILED;
 }
 
-bool pr_load_usable(int pair_class, int remote_class)
+pr_load_t pr_load_result(int pair_class, int remote_class, bool text_ok)
 {
-    return pair_class != PR_READ_FAILED && remote_class != PR_READ_FAILED;
+    pr_load_t r;
+    r.known = pair_class != PR_READ_FAILED && remote_class != PR_READ_FAILED;
+    r.paired = pair_class == PR_READ_FOUND && text_ok;
+    return r;
 }
 
 int pr_boot_action(int32_t init_err)

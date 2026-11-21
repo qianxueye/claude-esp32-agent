@@ -104,19 +104,30 @@ static void test_boot_action(void)
 static void test_write_outcome(void)
 {
     static const uint8_t NEW[] = "new text", OLD[] = "old text", OTHER[] = "odd text";
+    const int32_t REMOVE = 0x1108, FLASH = 0x6001;
     pr_view_t want = {true, 5, NEW, sizeof NEW}, prev = {true, 4, OLD, sizeof OLD}, none = {false, 0, NULL, 0};
     pr_view_t got_new = want, got_old = prev, got_other = {true, 5, OTHER, sizeof OTHER};
-    CHECK("a write that succeeded is done", pr_write_outcome(true, false, none, want, prev) == PR_WRITE_DONE);
-    CHECK("failed write, new record read back (remove failed): done", pr_write_outcome(false, true, got_new, want, prev) == PR_WRITE_DONE);
-    CHECK("failed write, previous record read back: kept", pr_write_outcome(false, true, got_old, want, prev) == PR_WRITE_KEPT);
-    CHECK("failed write, nothing stored and nothing before: kept", pr_write_outcome(false, true, none, want, none) == PR_WRITE_KEPT);
-    CHECK("failed write, previous record gone: broken", pr_write_outcome(false, true, none, want, prev) == PR_WRITE_BROKEN);
-    CHECK("failed write, new id with other bytes: broken", pr_write_outcome(false, true, got_other, want, prev) == PR_WRITE_BROKEN);
-    CHECK("failed write, read-back failed: broken", pr_write_outcome(false, false, got_new, want, prev) == PR_WRITE_BROKEN);
+    CHECK("a write that succeeded is done", pr_write_outcome(0, false, none, want, prev) == PR_WRITE_DONE);
+    CHECK("remove failed (0x1108), new record read back: done", pr_write_outcome(REMOVE, true, got_new, want, prev) == PR_WRITE_DONE);
+    CHECK("remove failed, previous record read back: unknown", pr_write_outcome(REMOVE, true, got_old, want, prev) == PR_WRITE_UNKNOWN);
+    CHECK("remove failed, nothing read back and nothing before: unknown", pr_write_outcome(REMOVE, true, none, want, none) == PR_WRITE_UNKNOWN);
+    CHECK("remove failed, read-back failed: unknown", pr_write_outcome(REMOVE, false, none, want, prev) == PR_WRITE_UNKNOWN);
+    CHECK("flash error (0x6001), new record read back: done", pr_write_outcome(FLASH, true, got_new, want, prev) == PR_WRITE_DONE);
+    CHECK("flash error, previous record read back: kept", pr_write_outcome(FLASH, true, got_old, want, prev) == PR_WRITE_KEPT);
+    CHECK("flash error, nothing stored and nothing before: kept", pr_write_outcome(FLASH, true, none, want, none) == PR_WRITE_KEPT);
+    CHECK("flash error, previous record gone: unknown", pr_write_outcome(FLASH, true, none, want, prev) == PR_WRITE_UNKNOWN);
+    CHECK("flash error, new id with other bytes: unknown", pr_write_outcome(FLASH, true, got_other, want, prev) == PR_WRITE_UNKNOWN);
+    CHECK("flash error, read-back failed: unknown", pr_write_outcome(FLASH, false, got_new, want, prev) == PR_WRITE_UNKNOWN);
     pr_view_t prev_hdr = {true, 4, NULL, sizeof OLD};
-    CHECK("previous PAIR known by id and length only: kept", pr_write_outcome(false, true, got_old, want, prev_hdr) == PR_WRITE_KEPT);
+    CHECK("previous PAIR known by id and length only: kept", pr_write_outcome(FLASH, true, got_old, want, prev_hdr) == PR_WRITE_KEPT);
     pr_view_t old_id_other_len = {true, 4, OLD, sizeof OLD - 1};
-    CHECK("previous id with another length: broken", pr_write_outcome(false, true, old_id_other_len, want, prev_hdr) == PR_WRITE_BROKEN);
+    CHECK("previous id with another length: unknown", pr_write_outcome(FLASH, true, old_id_other_len, want, prev_hdr) == PR_WRITE_UNKNOWN);
+}
+
+static int load_is(int pair_class, int remote_class, bool text_ok, bool paired, bool known)
+{
+    pr_load_t r = pr_load_result(pair_class, remote_class, text_ok);
+    return r.paired == paired && r.known == known;
 }
 
 static void test_load_rule(void)
@@ -126,11 +137,14 @@ static void test_load_rule(void)
     CHECK("present but not decodable failed", pr_read_class(0, false) == PR_READ_FAILED);
     CHECK("a flash read error (0x6001) failed, not absent", pr_read_class(0x6001, false) == PR_READ_FAILED);
     CHECK("an invalid length (0x110c) failed", pr_read_class(0x110c, false) == PR_READ_FAILED);
-    CHECK("both found: usable", pr_load_usable(PR_READ_FOUND, PR_READ_FOUND));
-    CHECK("empty store: usable", pr_load_usable(PR_READ_ABSENT, PR_READ_ABSENT));
-    CHECK("pair absent, remote left by an interrupted FORGET: usable", pr_load_usable(PR_READ_ABSENT, PR_READ_FOUND));
-    CHECK("an unreadable remote makes the store unusable", !pr_load_usable(PR_READ_FOUND, PR_READ_FAILED));
-    CHECK("an unreadable pair makes the store unusable", !pr_load_usable(PR_READ_FAILED, PR_READ_ABSENT));
+    CHECK("both found and the text accepted: paired, known", load_is(PR_READ_FOUND, PR_READ_FOUND, true, true, true));
+    CHECK("both absent: unpaired, known", load_is(PR_READ_ABSENT, PR_READ_ABSENT, false, false, true));
+    CHECK("pair absent, remote left by an interrupted FORGET: unpaired, known", load_is(PR_READ_ABSENT, PR_READ_FOUND, false, false, true));
+    CHECK("pair readable, remote unreadable: paired, unknown", load_is(PR_READ_FOUND, PR_READ_FAILED, true, true, false));
+    CHECK("pair unreadable: unpaired, unknown", load_is(PR_READ_FAILED, PR_READ_ABSENT, false, false, false));
+    CHECK("pair unreadable, remote found: unpaired, unknown", load_is(PR_READ_FAILED, PR_READ_FOUND, false, false, false));
+    CHECK("pair refused by the reader: unpaired, known", load_is(PR_READ_FOUND, PR_READ_ABSENT, false, false, true));
+    CHECK("partition not initialised (both failed): unpaired, unknown", load_is(PR_READ_FAILED, PR_READ_FAILED, false, false, false));
     CHECK("with pair absent the next id still passes the remote id 1", pr_next_id(0, 1) == 2);
 }
 

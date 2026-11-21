@@ -32,13 +32,19 @@ pr_remote_plan_t pr_remote_plan(const char *stored, const char *in_use, const ch
 #define PR_ERR_NVS_NO_FREE_PAGES 0x110d
 #define PR_ERR_NVS_NEW_VERSION_FOUND 0x1110
 #define PR_ERR_NVS_NOT_FOUND 0x1102
+#define PR_ERR_NVS_REMOVE_FAILED 0x1108
 
 enum { PR_READ_FOUND, PR_READ_ABSENT, PR_READ_FAILED };
 
 /* Classifies one read at load: not found is absent; any other error, or a record that does not decode, failed. */
 int pr_read_class(int32_t err, bool decoded);
-/* The store is usable only when no record failed; ids are allocated only from such a store. */
-bool pr_load_usable(int pair_class, int remote_class);
+typedef struct {
+    bool paired; /* a pairing is loaded into RAM */
+    bool known; /* every record was read or confirmed absent; writes are allowed */
+} pr_load_t;
+
+/* The load rule of docs/network.md "Storage"; text_ok is whether the reader accepted a found pair text. */
+pr_load_t pr_load_result(int pair_class, int remote_class, bool text_ok);
 
 enum { PR_BOOT_OK, PR_BOOT_REFORMAT, PR_BOOT_UNUSABLE };
 
@@ -52,10 +58,10 @@ typedef struct {
     size_t len;
 } pr_view_t;
 
-enum { PR_WRITE_DONE, PR_WRITE_KEPT, PR_WRITE_BROKEN };
+enum { PR_WRITE_DONE, PR_WRITE_KEPT, PR_WRITE_UNKNOWN };
 
-/* Judges a record write from what the store holds afterwards; read_ok false means the read-back failed.
- * DONE: the new record is stored; KEPT: the previous one (or none) still is; BROKEN: anything else. */
-int pr_write_outcome(bool wrote, bool read_ok, pr_view_t got, pr_view_t want, pr_view_t prev);
+/* Judges a record write from its error (0 for none) and what a fresh init reads back; read_ok false means that read failed.
+ * Rules in docs/network.md "Storage"; UNKNOWN means the next boot may load either record. */
+int pr_write_outcome(int32_t err, bool read_ok, pr_view_t got, pr_view_t want, pr_view_t prev);
 /* A SET_REMOTE save may proceed only for the pairing and generation it was planned under. */
 bool pr_save_current(uint32_t stored_id, uint32_t want_id, uint32_t gen, uint32_t want_gen);
