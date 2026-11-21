@@ -16,6 +16,21 @@ static uint32_t s_cur_id; /* id of the stored PAIR record, 0 for none */
 static uint32_t s_max_id; /* largest id still in storage */
 static uint8_t s_blob[PR_PAIR_BLOB_MAX];
 
+/* Warnings found under the lock, logged after it is released because logging can take other locks. */
+typedef struct {
+    const char *what, *key;
+    esp_err_t err;
+} note_t;
+static note_t s_notes[2];
+static int s_n_notes;
+
+static void note(const char *what, const char *key, esp_err_t err)
+{
+    if (s_n_notes < 2) {
+        s_notes[s_n_notes++] = (note_t){what, key, err};
+    }
+}
+
 static bool lock(void)
 {
     return s_mtx && xSemaphoreTake(s_mtx, portMAX_DELAY) == pdTRUE;
@@ -23,8 +38,15 @@ static bool lock(void)
 
 static void unlock(void)
 {
+    note_t notes[2];
+    int n = s_n_notes;
+    memcpy(notes, s_notes, sizeof notes);
+    s_n_notes = 0;
     mbedtls_platform_zeroize(s_blob, sizeof s_blob);
     xSemaphoreGive(s_mtx);
+    for (int i = 0; i < n; i++) {
+        ESP_LOGW(TAG, "%s %s (%s)", notes[i].what, notes[i].key, esp_err_to_name(notes[i].err));
+    }
 }
 
 static esp_err_t open_rw(nvs_open_mode_t mode, nvs_handle_t *h)
@@ -66,10 +88,10 @@ static const uint8_t *read_record(nvs_handle_t h, const char *key, size_t max, u
     esp_err_t e = nvs_get_blob(h, key, s_blob, &n);
     const uint8_t *data = NULL;
     if (e == ESP_OK && !pr_decode(s_blob, n, max, id, &data, len)) {
-        ESP_LOGW(TAG, "saved %s record malformed", key);
+        note("malformed record", key, ESP_ERR_INVALID_SIZE);
         data = NULL;
     } else if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "saved %s record unreadable (%s)", key, esp_err_to_name(e));
+        note("unreadable record", key, e);
     }
     return data;
 }
@@ -131,7 +153,7 @@ bool netstore_save_pair(const uint8_t *text, size_t len, uint32_t *pair_id)
         s_max_id = id;
         *pair_id = id;
     } else {
-        ESP_LOGW(TAG, "pairing not saved (%s)", esp_err_to_name(e));
+        note("not saved:", "pair", e);
     }
     unlock();
     return e == ESP_OK;
@@ -169,13 +191,13 @@ bool netstore_forget(void)
     esp_err_t e = nvs_flash_erase_partition(NET_NVS_PARTITION);
     s_usable = nvs_flash_init_partition(NET_NVS_PARTITION) == ESP_OK;
     if (!s_usable) {
-        ESP_LOGE(TAG, "pairing partition unusable after FORGET");
+        note("partition unusable after", "FORGET", ESP_ERR_NVS_NOT_INITIALIZED);
     }
     s_cur_id = 0;
     if (e == ESP_OK) {
         s_max_id = 0;
     } else {
-        ESP_LOGW(TAG, "pairing not erased (%s)", esp_err_to_name(e));
+        note("not erased:", "pairing", e);
     }
     unlock();
     return e == ESP_OK;
