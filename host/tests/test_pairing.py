@@ -14,7 +14,7 @@ from fake_device import FAKE_SERIAL, FakeDevice, board_identity, tls_connect
 from claude_voice import keychain as keychain_mod
 from claude_voice.config import Config
 from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, key_id, psk_identity, wire_identity
-from claude_voice.link import memory_pair
+from claude_voice.link import TransportClosed, memory_pair
 from claude_voice.pairing import PairError, forget, pair, private_ipv4
 from claude_voice.protocol import T
 
@@ -212,15 +212,14 @@ class CurrentSetFails(MemoryStore):
         super().set(identity, key)
 
 
-async def test_pair_failing_before_sending_restores_every_item():
-    store = CurrentSetFails()
+async def test_pair_whose_current_key_cannot_be_written_or_restored_keeps_the_old_key():
+    store, out = CurrentSetFails(), []
     store.items[IDENTITY] = OLD_KEY
     store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
-    before = dict(store.items)
     async with Board() as b:
         with pytest.raises(KeychainError):
-            await run_pair(b, store=store)
-    assert T.PAIR not in b.dev.received and store.items == before
+            await run_pair(b, store=store, out=out)
+    assert T.PAIR not in b.dev.received and kept(store, OLD_KEY, EARLIER_KEY, OLD_KEY) and out[-1] == STALE_KEY
 
 
 UNKNOWN_KEPT = (
@@ -620,3 +619,98 @@ async def test_pair_command_refuses_an_oversize_pair_before_opening_the_port(mon
     with pytest.raises(PairError, match="1023 字节"):
         await cli.pair_command(cfg())
     assert opened == []
+
+
+class FailOn(MemoryStore):
+    """Holds OLD_KEY and EARLIER_KEY; the named call raises, after taking effect when `effect` is set."""
+
+    def __init__(self, name, effect=False):
+        super().__init__()
+        self.items[IDENTITY] = OLD_KEY
+        self.items[f"{IDENTITY}-earlier-{key_id(EARLIER_KEY)}"] = EARLIER_KEY
+        self.name, self.effect, self.armed = name, effect, True
+
+    def _maybe(self, name, call):
+        if name == self.name and self.armed:
+            self.armed = False
+            if self.effect:
+                call()
+            raise KeychainError(f"{name} failed")
+        return call()
+
+    def earlier(self, identity):
+        return self._maybe("earlier", lambda: super(FailOn, self).earlier(identity))
+
+    def set_earlier(self, identity, kid, key):
+        return self._maybe("set_earlier", lambda: super(FailOn, self).set_earlier(identity, kid, key))
+
+    def set(self, identity, key):
+        return self._maybe("set", lambda: super(FailOn, self).set(identity, key))
+
+    def delete_earlier(self, identity, kid):
+        return self._maybe("delete_earlier", lambda: super(FailOn, self).delete_earlier(identity, kid))
+
+
+@pytest.mark.parametrize("name,effect", [("earlier", False), ("set_earlier", False), ("set", False), ("set", True)],
+                         ids=["listing", "copy-old-key", "set", "set-took-effect"])
+async def test_pair_start_keychain_failure_aborts_before_pair_and_restores_every_item(name, effect):
+    store = FailOn(name, effect)
+    store.items.pop(f"{IDENTITY}-earlier-{key_id(EARLIER_KEY)}")
+    before, out = dict(store.items), []
+    async with Board() as b:
+        with pytest.raises(KeychainError):
+            await run_pair(b, store=store, out=out)
+    assert T.PAIR not in b.dev.received and store.items == before and STALE_KEY not in out
+
+
+async def test_pair_send_that_reached_the_board_before_failing_never_restores_the_old_key(monkeypatch):
+    from claude_voice import pairing as pairing_mod
+
+    send = pairing_mod.UsbConsole.send
+
+    def send_then_fail(self, ftype, payload=b""):
+        send(self, ftype, payload)
+        if ftype == T.PAIR:
+            raise TransportClosed
+
+    monkeypatch.setattr(pairing_mod.UsbConsole, "send", send_then_fail)
+    store, out = MemoryStore(), []
+    store.set(IDENTITY, OLD_KEY)
+    async with Board() as b:
+        assert await run_pair(b, store=store, out=out), out
+    assert kept(store, bytes.fromhex(b.dev.paired["psk"])) and out[-1].startswith("配对完成")
+
+
+class CleanupListingFails(FailOn):
+    """Lists earlier keys at the start of pair, fails to list them once the new key is current."""
+
+    def earlier(self, identity):
+        if self.items.get(IDENTITY) != OLD_KEY:
+            raise KeychainError("dump failed")
+        return super().earlier(identity)
+
+
+@pytest.mark.parametrize("store_of", [lambda: CleanupListingFails(""), lambda: FailOn("delete_earlier")],
+                         ids=["listing", "earlier-delete"])
+async def test_pair_ok_with_a_failing_cleanup_is_still_a_success(store_of, caplog):
+    caplog.set_level(logging.WARNING, logger="claude_voice")
+    store, out = store_of(), []
+    async with Board() as b:
+        assert await run_pair(b, store=store, out=out), out
+    assert store.get(IDENTITY) == bytes.fromhex(b.dev.paired["psk"]) and STALE_KEY not in out
+    assert out[-1].startswith("配对完成")
+    assert any("not all deleted" in r.getMessage() for r in caplog.records)
+
+
+def test_a_failed_keychain_set_updates_in_place_and_never_deletes(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append((args[1:], kw.get("input")))
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(keychain_mod.subprocess, "run", fake_run)
+    with pytest.raises(KeychainError):
+        KeychainStore("claude-voice-test", 5.0).set(IDENTITY, KEY32)
+    ((args, stdin),) = calls
+    assert args == ["-i"] and stdin.startswith("add-generic-password -U ") and "delete" not in stdin
