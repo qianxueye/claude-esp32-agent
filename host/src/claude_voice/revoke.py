@@ -10,7 +10,7 @@ from typing import Protocol
 from .config import Config
 from .keychain import KeychainError, KeychainValueError, PskStore, delete_board, psk_identity
 from .pairing import Out, PairError
-from .wifi import PSK_BYTES, Keyring, WarnLimiter, board_keys, parse_wire_identity
+from .wifi import PSK_BYTES, BoardKeys, Keyring, WarnLimiter, board_keys, parse_wire_identity
 
 log = logging.getLogger("claude_voice.revoke")
 
@@ -39,8 +39,8 @@ class KeyReloader:
             except Exception as e:
                 self._warn.warn("PSK reload failed: %r", e)
 
-    def _read(self, boards: list[str], bad: list[str]) -> dict[str, dict[str, bytes] | Exception]:
-        found: dict[str, dict[str, bytes] | Exception] = {}
+    def _read(self, boards: list[str], bad: list[str]) -> dict[str, BoardKeys | Exception]:
+        found: dict[str, BoardKeys | Exception] = {}
         for board in boards:
             try:
                 found[board] = board_keys(self._store, board, bad.append)
@@ -60,11 +60,15 @@ class KeyReloader:
             if isinstance(fresh, Exception):
                 self._warn.warn("cannot re-read the PSK of %s, keeping it: %s", board, type(fresh).__name__)
                 continue
+            if not fresh.listed:
+                self._warn.warn("cannot list the earlier keys of %s, keeping those in use", board)
             for wire in [w for w, b in owner.items() if b == board]:
-                if fresh.get(wire) != keys.get(wire):
+                new = fresh.keys.get(wire)
+                # no valid current key drops every wire; without a full listing an unread wire stays
+                if fresh.current is None or new != keys.get(wire) and (fresh.listed or new is not None):
                     keys.pop(wire, None)
                     dropped.append(wire)
-            for wire, key in fresh.items():
+            for wire, key in fresh.keys.items():
                 keys.setdefault(wire, key)
         if not dropped:
             return

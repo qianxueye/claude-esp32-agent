@@ -105,7 +105,7 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 The host never deletes a key the board may still hold, except in `forget` and `revoke`, which delete every key item of that board.
 
 - A key's id is the first 8 hex digits of SHA-256 of the PSK, in uppercase; the host sends it as PAIR `key_id`, and a new key never shares an id with a kept one. The relay holds every kept key under its wire identity `clawd-<MAC>-<KID>`, re-deriving the id from the stored key rather than from an account name, so the PAIR field and the Keychain cannot disagree silently. The relay's lookup takes only identities of that form, so a bare `clawd-<MAC>` or another id fails the handshake; Keychain accounts and `security` arguments keep their own strict checks.
-- Keychain items, all under service `claude-voice`: the current key under account `clawd-<MAC>`, and each earlier key the board may still hold under `clawd-<MAC>-earlier-<KID>`. A board is listed (`find_any`, `identities`) when it has a current or an earlier item, so `revoke` and the relay also see a board left with earlier items only.
+- Keychain items, all under service `claude-voice`: the current key under account `clawd-<MAC>`, and each earlier key the board may still hold under `clawd-<MAC>-earlier-<KID>`. A board is listed (`find_any`, `identities`) when it has a current or an earlier item.
 - `claude-voice pair` first copies the current key to an earlier-key item, then writes the new key as current and sends PAIR. Then:
 
   | Outcome | Keychain |
@@ -116,8 +116,9 @@ The host never deletes a key the board may still hold, except in `forget` and `r
   | no PAIR_RESULT and no session in time, USB lost, or interruption after PAIR | the new key current, every earlier key kept |
 
   The pairing listener holds only the new key, so a session there proves the board took it.
-- The running relay re-reads every key of each board it serves; see `protocol.md`, Revocation. Each re-read lists the earlier items with `security dump-keychain`, every `key_reload_interval_s` (10 s).
-- At relay start a failed earlier-key listing still loads the current key, with one warning. During a re-read a failed listing keeps every key of that board in the ring, and the next listing that succeeds adds the earlier keys.
+- A board is served only while it has a valid current key, decided from `get` alone; a current item that is not a 32-byte key counts as none. The relay serves `device_serial`'s board, else the only listed board with a valid current key. A board left with earlier items only is listed (revoke and forget see it) but never served.
+- The running relay re-reads every key of each board it serves every `key_reload_interval_s` (10 s); each re-read lists the earlier items with `security dump-keychain`. A current key that is not found or not a key drops every wire of the board, whatever the listing does. With a valid current key a successful listing adds and drops earlier wires; a failed one keeps the earlier wires already in the ring and still updates the current one. A read error of the current key keeps every wire of the board. See `protocol.md`, Revocation.
+- At relay start a failed earlier-key listing still loads the current key, with one warning; the next listing that succeeds adds the earlier keys.
 
 ## TX
 
