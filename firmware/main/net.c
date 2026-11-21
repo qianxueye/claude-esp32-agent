@@ -88,8 +88,8 @@ static uint32_t t_gen, t_remote_gen;
 static int t_net;
 static netplan_t s_np;
 static bool s_wifi_ready, s_wifi_started;
-static wifi_ap_record_t s_aps[NET_SCAN_MAX_AP];
-static np_ap_t s_picks[NET_SCAN_MAX_AP];
+static wifi_ap_record_t s_ap;
+static np_ap_t s_picks[WIFI_NETWORKS_MAX];
 static mbedtls_ctr_drbg_context s_drbg;
 static bool s_drbg_seeded;
 static mbedtls_ssl_context s_ssl;
@@ -360,25 +360,29 @@ static void join(void)
     memset(&sc, 0, sizeof sc);
     net_ev_t e;
     if (esp_wifi_scan_start(&sc, false) != ESP_OK || !wait_for(EV_SCAN_DONE, EV_SCAN_DONE, NET_SCAN_TIMEOUT_MS, &e)) {
+        esp_wifi_scan_stop();
+        esp_wifi_clear_ap_list();
         if (!stop_now()) {
-            esp_wifi_scan_stop();
             uint32_t d = np_assoc_failed(&s_np);
             publish();
             wait_backoff(d, false);
         }
         return;
     }
-    uint16_t n = NET_SCAN_MAX_AP;
-    if (esp_wifi_scan_get_ap_records(&n, s_aps) != ESP_OK) {
+    uint16_t n = 0;
+    if (esp_wifi_scan_get_ap_num(&n) != ESP_OK) {
         n = 0;
     }
-    for (uint16_t i = 0; i < n; i++) {
-        size_t len = strnlen((const char *)s_aps[i].ssid, NET_SSID_MAX);
-        memcpy(s_picks[i].ssid, s_aps[i].ssid, len);
-        s_picks[i].ssid_len = (uint8_t)len;
-        s_picks[i].rssi = s_aps[i].rssi;
+    size_t kept = 0;
+    for (uint16_t i = 0; i < n && esp_wifi_scan_get_ap_record(&s_ap) == ESP_OK; i++) {
+        np_ap_t a;
+        a.ssid_len = (uint8_t)strnlen((const char *)s_ap.ssid, NET_SSID_MAX);
+        memcpy(a.ssid, s_ap.ssid, a.ssid_len);
+        a.rssi = s_ap.rssi;
+        kept = np_scan_keep(&t_cfg, s_picks, kept, &a);
     }
-    int idx = np_pick(&t_cfg, s_picks, n);
+    esp_wifi_clear_ap_list();
+    int idx = np_pick(&t_cfg, s_picks, kept);
     if (idx < 0) {
         ESP_LOGI(TAG, "scan: no saved network among %u", (unsigned)n);
         uint32_t d = np_scan_none(&s_np);
