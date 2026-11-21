@@ -275,11 +275,11 @@ async def pair(
             if old is not None and key_id(old) not in earlier:
                 store.set_earlier(identity, key_id(old), old)
                 demoted = True
+            stored = True  # before the write: a set that fails may still have replaced the item
             store.set(identity, psk)
-            stored = True
             log.info("pairing with Wi-Fi %r, other networks %r", ssid, [s for s, _ in extra_networks])
+            outcome = KEEP_ALL  # before the send: a send that fails may still have reached the board
             console.send(T.PAIR, payload)
-            outcome = KEEP_ALL
             result = await console.wait_for(T.PAIR_RESULT, cfg.pair_result_timeout_s)
             if result is None:
                 out("设备没有回复配对结果。正在等待设备通过 Wi-Fi 连上本机……")
@@ -338,8 +338,11 @@ async def pair(
 def _settle_keys(store: PskStore, identity: str, outcome: str, old: bytes | None, stored: bool, demoted: bool) -> None:
     """Apply a pair() outcome to the Keychain: put back what was there, keep only the new key, or change nothing."""
     if outcome == NEW_ONLY:
-        for kid in store.earlier(identity):
-            store.delete_earlier(identity, kid)
+        try:
+            for kid in store.earlier(identity):
+                store.delete_earlier(identity, kid)
+        except KeychainError as e:
+            log.warning("paired, but earlier keys of %s were not all deleted: %s", identity, e)
     elif outcome == RESTORE:
         if stored and old is None:
             store.delete(identity)
