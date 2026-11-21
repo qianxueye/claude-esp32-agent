@@ -15,7 +15,7 @@ from claude_voice import keychain as keychain_mod
 from claude_voice.config import Config
 from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, key_id, psk_identity, wire_identity
 from claude_voice.link import TransportClosed, memory_pair
-from claude_voice.pairing import PairError, forget, pair, private_ipv4
+from claude_voice.pairing import REFUSALS, PairError, forget, pair, private_ipv4
 from claude_voice.protocol import T
 
 PASSWORD = "fake-Pa55word-Zq9!"
@@ -271,7 +271,7 @@ async def test_pair_ok_after_unknown_saves_keeps_only_the_new_key():
     assert kept(store, bytes.fromhex(b.dev.paired["psk"]))
 
 
-@pytest.mark.parametrize("reason", ["storage error", "nvs full"])
+@pytest.mark.parametrize("reason", ["storage error", "identity mismatch", "bad json", "nvs full"])
 async def test_pair_refused_restores_exactly_the_items_before_the_run(reason):
     store, out = MemoryStore(), []
     store.set(IDENTITY, OLD_KEY)
@@ -280,7 +280,73 @@ async def test_pair_refused_restores_exactly_the_items_before_the_run(reason):
     async with Board() as b:
         b.dev.refuse_pair, b.dev.refuse_reason = True, reason
         assert not await run_pair(b, store=store, out=out)
-    assert store.items == before and out[-1] == f"配对失败：设备拒绝了配对（{reason}）。"
+    expected = REFUSALS.get(reason, f"配对失败：设备拒绝了配对（{reason}）。")
+    assert store.items == before and out[-1] == expected
+
+
+def test_refusal_lines_are_the_reviewed_copy():
+    assert REFUSALS["storage error"] == (
+        "配对失败：设备没能保存配对，设备上原来的配对没有改变。请再运行一次 claude-voice pair；"
+        "仍然失败时，先运行 claude-voice forget，再运行 claude-voice pair。"
+    )
+    assert REFUSALS["identity mismatch"] == (
+        "配对失败：设备自身的硬件地址与本机从 USB 读到的序列号不一致（identity mismatch），这台设备现在无法配对。"
+    )
+
+
+async def test_pair_stops_before_pair_when_the_board_store_is_unreadable():
+    store, out = MemoryStore(), []
+    store.set(IDENTITY, OLD_KEY)
+    store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
+    before = dict(store.items)
+    async with Board() as b:
+        b.dev.store = "error"
+        assert await run_pair(b, store=store, out=out) is False
+        assert b.dev.paired is None
+    assert store.items == before
+    assert out == ["设备这次开机时读不出它保存的配对，暂时不能保存新的配对。请先运行 claude-voice forget，再运行 claude-voice pair。"]
+
+
+async def test_pair_proceeds_when_an_older_board_sends_no_store_field():
+    async with Board() as b:
+        b.dev.store = None
+        assert await run_pair(b)
+        assert b.dev.paired is not None
+
+
+@pytest.mark.parametrize(
+    ("password", "ok"),
+    [
+        ("1234567", False),
+        ("密码密", True),
+        ("密" * 21, True),
+        ("密" * 22, False),
+        ("a1" * 32, True),
+        ("A" * 63, True),
+        ("z" * 64, False),
+        ("g" * 63 + "1", False),
+        ("", True),
+    ],
+    ids=["7-ascii", "3-cjk", "21-cjk", "22-cjk", "64-hex", "63-ascii", "64-nonhex", "64-nonhex-tail", "empty"],
+)
+def test_password_check_follows_the_board_in_bytes(password, ok):
+    from claude_voice import cli
+
+    if ok:
+        assert cli._check_password(password) == password
+    else:
+        with pytest.raises(PairError) as e:
+            cli._check_password(password)
+        assert str(e.value) == "Wi-Fi 密码应为 8 到 63 个字符（一个汉字算 3 个），或 64 位十六进制数；没有密码的网络直接按回车。"
+
+
+def test_ssid_check_counts_bytes():
+    from claude_voice import cli
+
+    assert cli._check_ssid("网" * 10 + "ab") == "网" * 10 + "ab"
+    with pytest.raises(PairError) as e:
+        cli._check_ssid("网" * 11)
+    assert str(e.value) == "Wi-Fi 名称不能为空，且不能超过 32 个字符（一个汉字算 3 个）。"
 
 
 async def test_new_key_id_never_equals_a_kept_key_id(monkeypatch):
@@ -568,7 +634,7 @@ def test_more_wifi_asks_for_at_most_three(monkeypatch):
     [
         (["home"], [], "已经输入过了"),
         (["a", "a"], [PASSWORD], "已经输入过了"),
-        (["x" * 33], [], "不能超过 32 字节"),
+        (["x" * 33], [], "不能超过 32 个字符"),
         (["a"], ["short"], "8 到 63 个字符"),
         (["a"], ["p" * 64], "8 到 63 个字符"),
     ],
