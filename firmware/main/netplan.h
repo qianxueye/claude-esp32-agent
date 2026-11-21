@@ -35,6 +35,8 @@ typedef struct {
     uint32_t assoc_backoff_ms;
 } netplan_t;
 
+/* Adds one scan record to kept if its SSID is saved, keeping the strongest record per SSID; returns the new count. */
+size_t np_scan_keep(const netcfg_t *cfg, np_ap_t kept[WIFI_NETWORKS_MAX], size_t n_kept, const np_ap_t *ap);
 /* Picks the saved network to join from a scan; returns its index or -1. */
 int np_pick(const netcfg_t *cfg, const np_ap_t *aps, size_t n);
 /* Fills the relay attempts for saved network net; returns how many. */

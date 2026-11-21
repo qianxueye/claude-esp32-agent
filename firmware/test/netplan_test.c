@@ -54,6 +54,38 @@ static void test_pick(void)
     CHECK("empty scan gives -1", np_pick(&c, NULL, 0) == -1);
 }
 
+static void test_scan_keep(void)
+{
+    netcfg_t c;
+    cfg_two(&c);
+    np_ap_t kept[WIFI_NETWORKS_MAX];
+    size_t n = 0;
+    char name[16];
+    /* 30 records: unsaved networks around HomeNet at -85 (record 2), Phone at -70 (21), HomeNet at -60 (27). */
+    for (int i = 0; i < 30; i++) {
+        snprintf(name, sizeof name, "Other%d", i);
+        np_ap_t a = ap(name, -20 - i);
+        if (i == 2) {
+            a = ap("HomeNet", -85);
+        } else if (i == 21) {
+            a = ap("Phone", -70);
+        } else if (i == 27) {
+            a = ap("HomeNet", -60);
+        }
+        n = np_scan_keep(&c, kept, n, &a);
+    }
+    CHECK("30 records keep the 2 saved SSIDs only", n == 2);
+    CHECK("HomeNet keeps its strongest record, -60 from record 27",
+          kept[0].ssid_len == 7 && memcmp(kept[0].ssid, "HomeNet", 7) == 0 && kept[0].rssi == -60);
+    CHECK("Phone from record 21 is kept", kept[1].ssid_len == 5 && memcmp(kept[1].ssid, "Phone", 5) == 0 && kept[1].rssi == -70);
+    CHECK("the pick over kept records finds HomeNet beyond the first 20", np_pick(&c, kept, n) == 0);
+    np_ap_t weak = ap("HomeNet", -90);
+    n = np_scan_keep(&c, kept, n, &weak);
+    CHECK("a weaker record does not lower the kept RSSI", n == 2 && kept[0].rssi == -60);
+    np_ap_t near = ap("HomeNe", -10);
+    CHECK("a prefix of a saved SSID is not kept", np_scan_keep(&c, kept, n, &near) == 2);
+}
+
 static void test_tries(void)
 {
     netcfg_t c;
@@ -297,6 +329,7 @@ static void test_status_differs(void)
 int main(void)
 {
     test_pick();
+    test_scan_keep();
     test_tries();
     test_fail_status();
     test_backoff();

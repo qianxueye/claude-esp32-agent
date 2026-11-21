@@ -1,6 +1,35 @@
 #include "netplan.h"
 #include <string.h>
 
+static bool ssid_is(const np_ap_t *a, const char *ssid)
+{
+    size_t len = strlen(ssid);
+    return len == a->ssid_len && memcmp(ssid, a->ssid, len) == 0;
+}
+
+size_t np_scan_keep(const netcfg_t *cfg, np_ap_t kept[WIFI_NETWORKS_MAX], size_t n_kept, const np_ap_t *ap)
+{
+    bool saved = false;
+    for (int k = 0; k < cfg->n_nets && !saved; k++) {
+        saved = ssid_is(ap, cfg->nets[k].ssid);
+    }
+    if (!saved) {
+        return n_kept;
+    }
+    for (size_t i = 0; i < n_kept; i++) {
+        if (kept[i].ssid_len == ap->ssid_len && memcmp(kept[i].ssid, ap->ssid, ap->ssid_len) == 0) {
+            if (ap->rssi > kept[i].rssi) {
+                kept[i].rssi = ap->rssi;
+            }
+            return n_kept;
+        }
+    }
+    if (n_kept < WIFI_NETWORKS_MAX) {
+        kept[n_kept++] = *ap;
+    }
+    return n_kept;
+}
+
 int np_pick(const netcfg_t *cfg, const np_ap_t *aps, size_t n)
 {
     int best_lan = -1, best_any = -1, rssi_lan = 0, rssi_any = 0;

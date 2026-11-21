@@ -41,7 +41,6 @@
 #define NET_TX_RING_BYTES 32768 /* network frame queue; at least twice the largest frame */
 #define NET_TX_LOCK_WAIT_MS 5
 #define NET_READ_CHUNK_BYTES 1024
-#define NET_SCAN_MAX_AP 20
 #define NET_EVENT_QUEUE_DEPTH 16
 #define NET_STATUS_JSON_BYTES 128
 
