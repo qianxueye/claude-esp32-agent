@@ -219,6 +219,14 @@ UNKNOWN_SAVE_FIRST = (
     "设备保存配对时出错，无法确认是否已经保存。本机钥匙串保留了这次的配对密钥。"
     "要重新配对，请先运行 claude-voice forget，再运行 claude-voice pair。"
 )
+STORE_UNREADABLE = "设备这次开机时读不出它保存的配对，暂时不能保存新的配对。请先运行 claude-voice forget，再运行 claude-voice pair。"
+REFUSALS = {
+    "storage error": (
+        "配对失败：设备没能保存配对，设备上原来的配对没有改变。请再运行一次 claude-voice pair；"
+        "仍然失败时，先运行 claude-voice forget，再运行 claude-voice pair。"
+    ),
+    "identity mismatch": "配对失败：设备自身的硬件地址与本机从 USB 读到的序列号不一致（identity mismatch），这台设备现在无法配对。",
+}
 
 
 def _new_psk(kept: set[str]) -> bytes:
@@ -271,7 +279,10 @@ async def pair(
                 identity=identity, psk_hex=psk.hex(), kid=kid, ssid=ssid, password=password,
                 extra_networks=extra_networks, names=names, addrs=addrs, port=server.port,
             )
-            await console.open()
+            hello = await console.open()
+            if hello.get("store") == "error":
+                out(STORE_UNREADABLE)
+                return False
             if old is not None and key_id(old) not in earlier:
                 store.set_earlier(identity, key_id(old), old)
                 demoted = True
@@ -308,7 +319,7 @@ async def pair(
             outcome = RESTORE
             reason = redact(str(verdict.get("error", "")), hidden)
             log.warning("PAIR refused: %s", reason)
-            out(f"配对失败：设备拒绝了配对（{reason}）。" if reason else "配对失败：设备拒绝了配对。")
+            out(REFUSALS.get(reason) or (f"配对失败：设备拒绝了配对（{reason}）。" if reason else "配对失败：设备拒绝了配对。"))
             return False
         outcome = NEW_ONLY
         out(f"设备已保存 Wi-Fi「{ssid}」。正在等待设备连上本机……")

@@ -218,15 +218,21 @@ def _board(cfg: config_mod.Config) -> tuple[str, str]:
 
 def _check_ssid(ssid: str) -> str:
     if not ssid or len(ssid.encode()) > 32:
-        raise PairError("Wi-Fi 名称不能为空，且不能超过 32 字节。")
+        raise PairError("Wi-Fi 名称不能为空，且不能超过 32 个字符（一个汉字算 3 个）。")
     return ssid
 
 
-def _ask_password(prompt: str) -> str:
-    password = getpass.getpass(prompt)
-    if len(password.encode()) > 63 or 0 < len(password) < 8:
-        raise PairError("Wi-Fi 密码应为 8 到 63 个字符；没有密码的网络直接按回车。")
+def _check_password(password: str) -> str:
+    """The board's rule: empty, 8 to 63 bytes, or exactly 64 hex digits."""
+    n = len(password.encode())
+    is_hex_key = len(password) == 64 and all(c in "0123456789abcdefABCDEF" for c in password)
+    if n != 0 and not (8 <= n <= 63) and not is_hex_key:
+        raise PairError("Wi-Fi 密码应为 8 到 63 个字符（一个汉字算 3 个），或 64 位十六进制数；没有密码的网络直接按回车。")
     return password
+
+
+def _ask_password(prompt: str) -> str:
+    return _check_password(getpass.getpass(prompt))
 
 
 def _ask_wifi(cfg: config_mod.Config) -> tuple[str, str]:
