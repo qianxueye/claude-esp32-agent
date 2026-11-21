@@ -119,6 +119,7 @@ The host never deletes a key the board may still hold, except in `forget` and `r
 - A board is served only while it has a valid current key, decided from `get` alone; a current item that is not a 32-byte key counts as none. The relay serves `device_serial`'s board, else the only listed board with a valid current key. A board left with earlier items only is listed (revoke and forget see it) but never served.
 - The running relay re-reads every key of each board it serves every `key_reload_interval_s` (10 s); each re-read lists the earlier items with `security dump-keychain`. A current key that is not found or not a key drops every wire of the board, whatever the listing does. With a valid current key a successful listing adds and drops earlier wires; a failed one keeps the earlier wires already in the ring and still updates the current one. A read error of the current key keeps every wire of the board. See `protocol.md`, Revocation.
 - At relay start a failed earlier-key listing still loads the current key, with one warning; the next listing that succeeds adds the earlier keys.
+- `forget` and `revoke` delete the current key first, which ends the board's service, then list and delete its earlier keys. When that listing or an earlier delete fails they say that earlier keys may remain and ask for another run; `revoke` then exits with failure.
 
 ## TX
 

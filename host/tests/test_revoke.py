@@ -1022,3 +1022,93 @@ async def test_a_failing_listing_at_start_loads_the_current_key_and_never_drops_
         store.fail = True
         await reloader.reload()
         assert dict(ring.keys) == {WIRE: KEY, WIRE2: KEY2} and ring.removed == 0
+
+
+class Recording(MemoryStore):
+    """Records store calls; `fail` names the calls that raise a KeychainError."""
+
+    def __init__(self, fail=()):
+        super().__init__()
+        self.calls, self.fail = [], set(fail)
+
+    def _call(self, name):
+        self.calls.append(name)
+        if name in self.fail:
+            raise KeychainError(f"{name} failed")
+
+    def delete(self, identity):
+        self._call("delete")
+        return super().delete(identity)
+
+    def earlier(self, identity):
+        self._call("earlier")
+        return super().earlier(identity)
+
+    def delete_earlier(self, identity, kid):
+        self._call("delete_earlier")
+        return super().delete_earlier(identity, kid)
+
+
+def recording(fail=()):
+    store = Recording(fail)
+    store.items[IDENTITY] = KEY
+    store.items[earlier_account(IDENTITY, key_id(KEY2))] = KEY2
+    return store
+
+
+@pytest.mark.parametrize("fail", [(), ("earlier",), ("delete_earlier",)], ids=["ok", "listing", "earlier-delete"])
+def test_delete_board_deletes_the_current_key_before_any_listing(fail):
+    from claude_voice.keychain import delete_board
+
+    store = recording(fail)
+    done = delete_board(store, IDENTITY)
+    assert store.calls[:2] == ["delete", "earlier"] and IDENTITY not in store.items
+    assert done.current and done.listed is (fail == ())
+
+
+REVOKE_UNLISTED = (
+    f"无法列出设备 {IDENTITY} 的旧配对密钥，其中可能还有没删除的。请再运行一次 claude-voice revoke；"
+    f"仍然失败时，在「钥匙串访问」中搜索 {IDENTITY}，删除找到的条目。"
+)
+
+
+@pytest.mark.parametrize("fail", [("earlier",), ("delete_earlier",)], ids=["listing", "earlier-delete"])
+async def test_revoke_with_a_failing_listing_says_what_was_deleted_fails_and_the_relay_drops_the_board(fail):
+    from claude_voice.wifi import load_keys
+
+    store = recording()
+    c = dataclasses.replace(rcfg(), device_serial=FAKE_SERIAL)
+    async with servers(store, load_keys(c, store), Recorder()) as (_lan, _tun, reloader, ring):
+        assert len(ring.keys) == 2
+        store.fail = set(fail)
+        ok, out = revoke_out(c, store)
+        assert not ok and IDENTITY not in store.items
+        assert out[0] == f"已删除本机钥匙串中设备 {IDENTITY} 当前的配对密钥。"
+        assert out[1].startswith("正在运行的中继会在") and out[2].startswith("拿到设备的人") and out[-1] == REVOKE_UNLISTED
+        for _ in range(3):
+            await reloader.reload()
+        assert dict(ring.keys) == {} and ring.removed == 1
+
+
+def test_revoke_of_a_board_without_a_current_key_and_a_failing_listing_fails():
+    store = recording(("earlier",))
+    del store.items[IDENTITY]
+    ok, out = revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+    assert not ok and out == [f"本机钥匙串中没有设备 {IDENTITY} 的配对密钥。", REVOKE_UNLISTED]
+
+
+@pytest.mark.parametrize("fail", [("earlier",), ("delete_earlier",)], ids=["listing", "earlier-delete"])
+async def test_forget_with_a_failing_listing_deletes_the_current_key_and_says_the_rest_may_remain(fail):
+    from test_pairing import Board
+    from test_pairing import cfg as pair_cfg
+
+    from claude_voice.pairing import forget
+
+    store, out = recording(fail), []
+    async with Board() as b:
+        assert await forget(pair_cfg(), transport=b.host, store=store, serial=FAKE_SERIAL, out=out.append)
+    assert IDENTITY not in store.items
+    assert out[-2:] == [
+        "已删除本机钥匙串中的配对密钥。",
+        "无法列出这台设备的旧配对密钥，其中可能还有没删除的；中继不会再接受它们。请再运行一次 claude-voice forget（设备要用 USB 连着）。",
+    ]

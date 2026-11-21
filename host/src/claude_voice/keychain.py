@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import re
 import subprocess
@@ -91,12 +92,27 @@ class PskStore(Protocol):
     def delete_earlier(self, identity: str, kid: str) -> bool: ...
 
 
-def delete_board(store: PskStore, identity: str) -> int:
-    """Delete the current key and every earlier key of one board; returns how many items were found."""
-    n = int(store.delete(identity))
-    for kid in store.earlier(identity):
-        n += int(store.delete_earlier(identity, kid))
-    return n
+@dataclasses.dataclass
+class Deleted:
+    current: bool  # a current key was found and deleted
+    earlier: int  # earlier keys found and deleted
+    listed: bool  # every earlier key was listed and deleted
+
+
+def delete_board(store: PskStore, identity: str) -> Deleted:
+    """Delete the current key, which ends the board's service, then every earlier key of the board.
+    A failed current delete propagates; a failed listing or earlier delete only clears `listed`."""
+    done = Deleted(store.delete(identity), 0, True)
+    try:
+        kids = store.earlier(identity)
+    except KeychainError:
+        return dataclasses.replace(done, listed=False)
+    for kid in kids:
+        try:
+            done.earlier += int(store.delete_earlier(identity, kid))
+        except KeychainError:
+            done.listed = False
+    return done
 
 
 class MemoryStore:
