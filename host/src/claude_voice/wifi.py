@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import re
 import socket
@@ -144,47 +145,81 @@ class Admission:
         self._warn_key.flush()
 
 
-def board_keys(
-    store: PskStore, identity: str, bad: Callable[[str], None], unlisted: Callable[[Exception], None] | None = None
-) -> dict[str, bytes]:
+@dataclasses.dataclass
+class BoardKeys:
+    """What the store holds for one board; `keys` is empty unless the current key is valid."""
+
+    current: str | None  # wire identity of the valid current key
+    keys: dict[str, bytes]  # the current key and every earlier key read, by wire identity
+    listed: bool  # every earlier key was listed and read
+
+
+def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> BoardKeys:
     """Every PSK the store keeps for one board, by wire identity with the key id derived from the key.
-    A value that is not a key goes to `bad`; a failed earlier-key listing goes to `unlisted`, else propagates."""
-    reads: list[tuple[str, Callable[[], bytes | None]]] = [(identity, lambda: store.get(identity))]
+    A board is served only while its current key is valid (docs/network.md, Keys); a `get` error propagates."""
+    try:
+        current = store.get(identity)
+    except KeychainValueError:
+        current = b""
+    if current is not None and len(current) != PSK_BYTES:
+        bad(identity)
+        current = None
+    if current is None:
+        return BoardKeys(None, {}, True)
+    wire = wire_identity(identity, key_id(current))
+    found, listed = {wire: current}, True
     try:
         kids = store.earlier(identity)
-    except KeychainError as e:
-        if unlisted is None:
-            raise
-        unlisted(e)
-        kids = []
-    reads += [(earlier_account(identity, kid), lambda kid=kid: store.get_earlier(identity, kid)) for kid in kids]
-    found: dict[str, bytes] = {}
-    for name, read in reads:
+    except KeychainError:
+        kids, listed = [], False
+    for kid in kids:
         try:
-            key = read()
+            key = store.get_earlier(identity, kid)
         except KeychainValueError:
-            bad(name)
+            key = b""
+        except KeychainError:
+            listed = False
             continue
-        if key is None:
+        if key is not None and len(key) != PSK_BYTES:
+            bad(earlier_account(identity, kid))
+        elif key is not None:
+            found.setdefault(wire_identity(identity, key_id(key)), key)
+    return BoardKeys(wire, found, listed)
+
+
+def served_board(cfg: Config, store: PskStore) -> str | None:
+    """`device_serial`'s board, else the only listed board with a valid current key."""
+    if cfg.device_serial:
+        return psk_identity(cfg.device_serial)
+    try:
+        boards = store.identities()
+    except KeychainError as e:
+        first = store.find_any()
+        log.warning("could not list the boards in the Keychain (%s); trying %s", e, first)
+        boards = [first] if first else []
+    valid = []
+    for board in boards:
+        try:
+            key = store.get(board)
+        except KeychainValueError:
             continue
-        if len(key) != PSK_BYTES:
-            bad(name)
-            continue
-        found[wire_identity(identity, key_id(key))] = key
-    return found
+        if key is not None and len(key) == PSK_BYTES:
+            valid.append(board)
+    if len(valid) > 1:
+        log.error("Keychain holds keys of %d boards (%s); set device_serial in config.toml", len(valid), ", ".join(valid))
+    return valid[0] if len(valid) == 1 else None
 
 
 def load_keys(cfg: Config, store: PskStore) -> dict[str, bytes]:
-    """The paired board's PSKs by wire identity, or nothing when it is not paired.
+    """The served board's PSKs by wire identity, or nothing when no board has a valid current key.
     When earlier keys cannot be listed the current key still loads; the reloader adds them later."""
-    identity = psk_identity(cfg.device_serial) if cfg.device_serial else store.find_any()
+    identity = served_board(cfg, store)
     if not identity:
         return {}
-    return board_keys(
-        store, identity,
-        lambda name: log.warning("Keychain item %s is not a %d-byte hex key", name, PSK_BYTES),
-        lambda e: log.warning("could not list the earlier keys of %s (%s); loading the current key only", identity, e),
-    )
+    found = board_keys(store, identity, lambda name: log.warning("Keychain item %s is not a %d-byte hex key", name, PSK_BYTES))
+    if not found.listed:
+        log.warning("could not list the earlier keys of %s; loading the current key only", identity)
+    return found.keys
 
 
 class TcpTransport:

@@ -47,7 +47,7 @@ Pairing happens once over USB and carries everything the Wi-Fi link needs.
 
 ### Revocation
 
-- `claude-voice revoke` deletes every key the Keychain keeps for a board, the current one and every earlier one, without USB, and checks by listing that none is left. The running relay re-reads every key of each board it serves every 10 s (`key_reload_interval_s`) and drops each wire identity whose key is gone. Only an item the Keychain reports as not found, a different key, or a value that is not a key ends a PSK; a read error keeps every key of that board.
+- `claude-voice revoke` deletes every key the Keychain keeps for a board, the current one and every earlier one, without USB, and checks by listing that none is left. A board is served only while it has a valid current key. The running relay re-reads every key of each board it serves every 10 s (`key_reload_interval_s`). A current key the Keychain reports as not found, or one that is not a key, ends every PSK of that board at once, whatever the listing of earlier keys does; otherwise an earlier key ends when the listing no longer shows it or its value changed. A read error of the current key keeps every key of that board.
 - When a PSK ends, the relay refuses new handshakes with it and closes every Wi-Fi and tunnel session, because its TLS library does not tell which identity a connection used. USB sessions stay open.
 - The relay counts PSK removals. A connection notes the count when it is admitted and opens no session if the count changed before its session starts: the PSK is looked up at ClientKeyExchange, and a client may hold its Finished for up to the 10 s handshake timeout.
 - The board keeps its saved Wi-Fi passwords, which can be read from its flash; change them after a board is lost.

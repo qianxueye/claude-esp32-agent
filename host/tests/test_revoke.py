@@ -905,26 +905,72 @@ def earlier_only(*extra):
     return store
 
 
-def test_a_board_with_only_earlier_keys_is_listed_and_loaded():
+def test_a_board_with_only_earlier_keys_is_listed_but_never_served():
     from claude_voice.wifi import load_keys
 
     store = earlier_only((OTHER, KEY))
     assert store.identities() == [OTHER, IDENTITY] and earlier_only().find_any() == IDENTITY
-    keys = load_keys(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), earlier_only())
-    assert keys == {WIRE2: KEY2, wire_identity(IDENTITY, key_id(KEY3)): KEY3}
-    assert load_keys(Config(), earlier_only()) == keys
+    assert load_keys(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), earlier_only()) == {}
+    assert load_keys(Config(), earlier_only()) == {}
+
+
+def test_without_device_serial_the_relay_serves_the_only_board_with_a_valid_current_key():
+    from claude_voice.wifi import load_keys
+
+    store = earlier_only()
+    store.set(OTHER, KEY)
+    assert store.find_any() == IDENTITY and load_keys(Config(), store) == {wire_identity(OTHER, key_id(KEY)): KEY}
+    store.set(IDENTITY, KEY3)
+    assert load_keys(Config(), store) == {}, "two boards with a current key: device_serial decides"
+
+
+@pytest.mark.parametrize("current", ["deleted", "short", "not-hex"])
+async def test_a_board_without_a_valid_current_key_loses_every_wire_even_when_the_listing_fails(current):
+    from claude_voice.wifi import load_keys
+
+    class Store(MemoryStore):
+        fail = False
+
+        def get(self, identity):
+            if current == "not-hex" and identity not in self.items:
+                raise KeychainValueError("not hex")
+            return super().get(identity)
+
+        def earlier(self, identity):
+            if self.fail:
+                raise KeychainError("dump failed")
+            return super().earlier(identity)
+
+    store = Store()
+    store.set(IDENTITY, KEY)
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    c = dataclasses.replace(rcfg(), device_serial=FAKE_SERIAL)
+    async with servers(store, load_keys(c, store), Recorder()) as (lan, _tun, reloader, ring):
+        assert len(ring.keys) == 2
+        store.delete(IDENTITY)
+        if current == "short":
+            store.set(IDENTITY, bytes(16))
+        assert load_keys(c, store) == {}
+        store.fail = True
+        await reloader.reload()
+        assert dict(ring.keys) == {} and ring.removed == 1
+        for key in (KEY, KEY2):
+            with pytest.raises(HANDSHAKE_ERRORS):
+                t = await tls_connect(lan.port, wire_identity(IDENTITY, key_id(key)), key)
+                await t.read(1.0)
 
 
 async def test_revoke_without_device_serial_deletes_a_board_with_only_earlier_keys():
     from claude_voice.wifi import load_keys
 
-    store, rec = earlier_only(), Recorder()
+    store, rec = three_keys(), Recorder()
     async with servers(store, load_keys(Config(), store), rec) as (_lan, _tun, reloader, ring):
-        assert len(ring.keys) == 2
-        ok, out = revoke_out(Config(), store)
-        assert ok and store.items == {} and out[0] == f"已删除本机钥匙串中设备 {IDENTITY} 的配对密钥。"
+        assert len(ring.keys) == 3
+        store.delete(IDENTITY)  # a delete_board that stopped after the current key
         await reloader.reload()
         assert dict(ring.keys) == {} and ring.removed == 1
+        ok, out = revoke_out(Config(), store)
+        assert ok and store.items == {} and out[0] == f"已删除本机钥匙串中设备 {IDENTITY} 的配对密钥。"
 
 
 def test_revoke_names_another_board_that_has_only_earlier_keys():
