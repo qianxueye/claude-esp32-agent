@@ -119,8 +119,24 @@ static void test_write_outcome(void)
     CHECK("previous id with another length: broken", pr_write_outcome(false, true, old_id_other_len, want, prev_hdr) == PR_WRITE_BROKEN);
 }
 
+static void test_load_rule(void)
+{
+    CHECK("not found (0x1102) is absent", pr_read_class(0x1102, false) == PR_READ_ABSENT);
+    CHECK("read and decoded is found", pr_read_class(0, true) == PR_READ_FOUND);
+    CHECK("present but not decodable failed", pr_read_class(0, false) == PR_READ_FAILED);
+    CHECK("a flash read error (0x6001) failed, not absent", pr_read_class(0x6001, false) == PR_READ_FAILED);
+    CHECK("an invalid length (0x110c) failed", pr_read_class(0x110c, false) == PR_READ_FAILED);
+    CHECK("both found: usable", pr_load_usable(PR_READ_FOUND, PR_READ_FOUND));
+    CHECK("empty store: usable", pr_load_usable(PR_READ_ABSENT, PR_READ_ABSENT));
+    CHECK("pair absent, remote left by an interrupted FORGET: usable", pr_load_usable(PR_READ_ABSENT, PR_READ_FOUND));
+    CHECK("an unreadable remote makes the store unusable", !pr_load_usable(PR_READ_FOUND, PR_READ_FAILED));
+    CHECK("an unreadable pair makes the store unusable", !pr_load_usable(PR_READ_FAILED, PR_READ_ABSENT));
+    CHECK("with pair absent the next id still passes the remote id 1", pr_next_id(0, 1) == 2);
+}
+
 int main(void)
 {
+    test_load_rule();
     test_write_outcome();
     test_boot_action();
     test_round_trip();

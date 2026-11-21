@@ -31,6 +31,14 @@ pr_remote_plan_t pr_remote_plan(const char *stored, const char *in_use, const ch
 /* NVS init results that call for erasing the partition; netstore.c checks them against nvs.h. */
 #define PR_ERR_NVS_NO_FREE_PAGES 0x110d
 #define PR_ERR_NVS_NEW_VERSION_FOUND 0x1110
+#define PR_ERR_NVS_NOT_FOUND 0x1102
+
+enum { PR_READ_FOUND, PR_READ_ABSENT, PR_READ_FAILED };
+
+/* Classifies one read at load: not found is absent; any other error, or a record that does not decode, failed. */
+int pr_read_class(int32_t err, bool decoded);
+/* The store is usable only when no record failed; ids are allocated only from such a store. */
+bool pr_load_usable(int pair_class, int remote_class);
 
 enum { PR_BOOT_OK, PR_BOOT_REFORMAT, PR_BOOT_UNUSABLE };
 
