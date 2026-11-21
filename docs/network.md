@@ -116,7 +116,8 @@ The host never deletes a key the board may still hold, except in `forget` and `r
   | no PAIR_RESULT and no session in time, USB lost, or interruption after PAIR | the new key current, every earlier key kept |
 
   The pairing listener holds only the new key, so a session there proves the board took it.
-- The running relay re-reads every key of each board it serves; see `protocol.md`, Revocation.
+- The running relay re-reads every key of each board it serves; see `protocol.md`, Revocation. Each re-read lists the earlier items with `security dump-keychain`, every `key_reload_interval_s` (10 s).
+- At relay start a failed earlier-key listing still loads the current key, with one warning. During a re-read a failed listing keeps every key of that board in the ring, and the next listing that succeeds adds the earlier keys.
 
 ## TX
 
