@@ -19,6 +19,7 @@ from claude_voice.keychain import (
     KeychainStore,
     KeychainValueError,
     MemoryStore,
+    earlier_account,
     key_id,
     psk_identity,
     wire_identity,
@@ -879,7 +880,7 @@ attributes:
 """
 
 
-def test_keychain_lists_earlier_keys_per_board_and_the_lookup_skips_them(monkeypatch):
+def test_keychain_lists_earlier_keys_per_board_and_their_boards(monkeypatch):
     calls = []
 
     def fake_run(args, **kw):
@@ -890,8 +891,57 @@ def test_keychain_lists_earlier_keys_per_board_and_the_lookup_skips_them(monkeyp
 
     monkeypatch.setattr(keychain_mod.subprocess, "run", fake_run)
     store = KeychainStore("claude-voice", 5.0)
-    assert store.identities() == ["clawd-AABBCCDDEEFF"]
+    assert store.identities() == ["clawd-AABBCCDDEEFF", "clawd-AABBCCDDEE01"]
     assert store.earlier("clawd-AABBCCDDEEFF") == ["630DCD29"] and store.earlier("clawd-AABBCCDDEE01") == ["72CD6E84"]
     calls.clear()
+    assert store.find_any() == "clawd-AABBCCDDEEFF" and calls == ["find-generic-password"]
+
+
+def earlier_only(*extra):
+    """A store where this board has only earlier-key items, as after a partial delete."""
+    store = stored(*extra)
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    store.set_earlier(IDENTITY, key_id(KEY3), KEY3)
+    return store
+
+
+def test_a_board_with_only_earlier_keys_is_listed_and_loaded():
+    from claude_voice.wifi import load_keys
+
+    store = earlier_only((OTHER, KEY))
+    assert store.identities() == [OTHER, IDENTITY] and earlier_only().find_any() == IDENTITY
+    keys = load_keys(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), earlier_only())
+    assert keys == {WIRE2: KEY2, wire_identity(IDENTITY, key_id(KEY3)): KEY3}
+    assert load_keys(Config(), earlier_only()) == keys
+
+
+async def test_revoke_without_device_serial_deletes_a_board_with_only_earlier_keys():
+    from claude_voice.wifi import load_keys
+
+    store, rec = earlier_only(), Recorder()
+    async with servers(store, load_keys(Config(), store), rec) as (_lan, _tun, reloader, ring):
+        assert len(ring.keys) == 2
+        ok, out = revoke_out(Config(), store)
+        assert ok and store.items == {} and out[0] == f"已删除本机钥匙串中设备 {IDENTITY} 的配对密钥。"
+        await reloader.reload()
+        assert dict(ring.keys) == {} and ring.removed == 1
+
+
+def test_revoke_names_another_board_that_has_only_earlier_keys():
+    store = earlier_only((OTHER, KEY))
+    ok, out = revoke_out(dataclasses.replace(Config(), device_serial="AA:BB:CC:DD:EE:01"), store)
+    assert ok and store.items == {earlier_account(IDENTITY, key_id(KEY2)): KEY2, earlier_account(IDENTITY, key_id(KEY3)): KEY3}
+    assert out[-1] == f"本机钥匙串中还有这些设备的配对密钥：{IDENTITY}。"
+
+
+def test_keychain_lists_a_board_from_its_earlier_items_alone(monkeypatch):
+    dump = EARLIER_DUMP.replace('"acct"<blob>="clawd-AABBCCDDEEFF"\n', '"acct"<blob>="clawd-AABBCCDDEEFF-earlierX"\n')
+    first = dump.split("keychain: ")[1]
+    monkeypatch.setattr(
+        keychain_mod.subprocess, "run",
+        lambda args, **kw: subprocess.CompletedProcess(args, 0, first if args[1] == "find-generic-password" else dump, ""),
+    )
+    store = KeychainStore("claude-voice", 5.0)
+    assert store.identities() == ["clawd-AABBCCDDEEFF", "clawd-AABBCCDDEE01"]
     assert store.find_any() == "clawd-AABBCCDDEEFF"
-    assert calls == ["find-generic-password", "dump-keychain"]
+

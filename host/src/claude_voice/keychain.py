@@ -58,6 +58,18 @@ def _earlier_kid(identity: str, account: str) -> str | None:
     return kid if _KID.fullmatch(kid) else None
 
 
+def account_board(account: str) -> str | None:
+    """The board identity an account belongs to: the account itself, or the identity of an earlier-key account."""
+    if valid_identity(account):
+        return account
+    base = account.split(EARLIER, 1)[0]
+    return base if valid_identity(base) and _earlier_kid(base, account) else None
+
+
+def _boards(accounts: list[str]) -> list[str]:
+    return list(dict.fromkeys(b for a in accounts if (b := account_board(a))))
+
+
 def psk_identity(serial: str) -> str:
     """`clawd-` followed by the USB serial number without colons, in uppercase."""
     if not _SERIAL.fullmatch(serial):
@@ -109,10 +121,10 @@ class MemoryStore:
         return self.items.pop(self._check(identity), None) is not None
 
     def find_any(self) -> str | None:
-        return next((a for a in self.items if valid_identity(a)), None)
+        return next((b for a in self.items if (b := account_board(a))), None)
 
     def identities(self) -> list[str]:
-        return [a for a in self.items if valid_identity(a)]
+        return _boards(list(self.items))
 
     def earlier(self, identity: str) -> list[str]:
         self._check(identity)
@@ -203,19 +215,12 @@ class KeychainStore:
         return self._delete(earlier_account(identity, kid))
 
     def find_any(self) -> str | None:
-        """The account of the first item in the service, or the first listed identity when that item is an earlier key."""
+        """The board of the first item in the service, current or earlier key."""
         r = self._run(["find-generic-password", "-s", self.service])
         if r.returncode != 0:
             return None
         m = _ACCOUNT_LINE.search(r.stdout)
-        if m and valid_identity(m.group(1)):
-            return m.group(1)
-        if not (m and EARLIER in m.group(1)):
-            return None
-        try:
-            return next(iter(self.identities()), None)
-        except KeychainError:
-            return None
+        return account_board(m.group(1)) if m else None
 
     def _accounts(self) -> list[str]:
         """Every account under this service, from item attributes only (no passwords are read)."""
@@ -232,8 +237,8 @@ class KeychainStore:
         return found
 
     def identities(self) -> list[str]:
-        """Every valid PSK identity under this service; earlier-key accounts are left out."""
-        return [a for a in self._accounts() if valid_identity(a)]
+        """Every board identity under this service with a current or an earlier key."""
+        return _boards(self._accounts())
 
     def earlier(self, identity: str) -> list[str]:
         """Key ids of the earlier-key items of one board."""
