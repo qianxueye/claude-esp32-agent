@@ -151,7 +151,8 @@ class BoardKeys:
 
     current: str | None  # wire identity of the valid current key
     keys: dict[str, bytes]  # the current key and every earlier key read, by wire identity
-    listed: bool  # every earlier key was listed and read
+    listed: bool  # the earlier keys were listed
+    unread: set[str] = dataclasses.field(default_factory=set)  # wires of listed earlier keys whose read failed
 
 
 def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> BoardKeys:
@@ -166,25 +167,24 @@ def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> Bo
         current = None
     if current is None:
         return BoardKeys(None, {}, True)
-    wire = wire_identity(identity, key_id(current))
-    found, listed = {wire: current}, True
+    found = BoardKeys(wire_identity(identity, key_id(current)), {wire_identity(identity, key_id(current)): current}, True)
     try:
         kids = store.earlier(identity)
     except KeychainError:
-        kids, listed = [], False
+        kids, found.listed = [], False
     for kid in kids:
         try:
             key = store.get_earlier(identity, kid)
         except KeychainValueError:
             key = b""
         except KeychainError:
-            listed = False
+            found.unread.add(wire_identity(identity, kid))
             continue
-        if key is not None and len(key) != PSK_BYTES:
+        if key is not None and (len(key) != PSK_BYTES or key_id(key) != kid):
             bad(earlier_account(identity, kid))
         elif key is not None:
-            found.setdefault(wire_identity(identity, key_id(key)), key)
-    return BoardKeys(wire, found, listed)
+            found.keys.setdefault(wire_identity(identity, kid), key)
+    return found
 
 
 def served_board(cfg: Config, store: PskStore) -> str | None:
@@ -219,6 +219,8 @@ def load_keys(cfg: Config, store: PskStore) -> dict[str, bytes]:
     found = board_keys(store, identity, lambda name: log.warning("Keychain item %s is not a %d-byte hex key", name, PSK_BYTES))
     if not found.listed:
         log.warning("could not list the earlier keys of %s; loading the current key only", identity)
+    elif found.unread:
+        log.warning("could not read %d earlier keys of %s; loading the others", len(found.unread), identity)
     return found.keys
 
 

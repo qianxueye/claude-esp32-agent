@@ -1120,3 +1120,69 @@ async def test_forget_with_a_failing_listing_names_only_the_current_key(fail, cu
     assert IDENTITY not in store.items
     first = "已删除本机钥匙串中这台设备当前的配对密钥。" if current else "本机钥匙串中没有这台设备当前的配对密钥。"
     assert out == ["设备已清除 Wi-Fi 设置。", first, FORGET_UNLISTED]
+
+
+class UnreadableEarlier(MemoryStore):
+    """Reading the earlier keys named in `unreadable` raises a KeychainError."""
+
+    def __init__(self):
+        super().__init__()
+        self.unreadable = set()
+
+    def get_earlier(self, identity, kid):
+        if kid in self.unreadable:
+            raise KeychainError("read failed")
+        return super().get_earlier(identity, kid)
+
+
+WIRE3 = wire_identity(IDENTITY, key_id(KEY3))
+
+
+async def test_an_unlisted_earlier_key_is_dropped_while_another_earlier_key_cannot_be_read():
+    from claude_voice.wifi import load_keys
+
+    store = UnreadableEarlier()
+    store.set(IDENTITY, KEY)
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    store.set_earlier(IDENTITY, key_id(KEY3), KEY3)
+    c = dataclasses.replace(rcfg(), device_serial=FAKE_SERIAL)
+    async with servers(store, load_keys(c, store), Recorder()) as (lan, _tun, reloader, ring):
+        assert set(ring.keys) == {WIRE, WIRE2, WIRE3}
+        store.delete_earlier(IDENTITY, key_id(KEY2))
+        store.unreadable.add(key_id(KEY3))
+        await reloader.reload()
+        assert dict(ring.keys) == {WIRE: KEY, WIRE3: KEY3} and ring.removed == 1
+        with pytest.raises(HANDSHAKE_ERRORS):
+            t = await tls_connect(lan.port, WIRE2, KEY2)
+            await t.read(1.0)
+
+
+async def test_an_unreadable_earlier_key_never_in_the_ring_is_not_added_and_load_skips_it(caplog):
+    from claude_voice.wifi import load_keys
+
+    caplog.set_level(logging.WARNING, logger="claude_voice")
+    store = UnreadableEarlier()
+    store.set(IDENTITY, KEY)
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    store.unreadable.add(key_id(KEY2))
+    c = dataclasses.replace(rcfg(), device_serial=FAKE_SERIAL)
+    keys = load_keys(c, store)
+    assert keys == {WIRE: KEY}
+    assert sum("could not read 1 earlier keys" in r.getMessage() for r in caplog.records) == 1
+    async with servers(store, keys, Recorder()) as (_lan, _tun, reloader, ring):
+        await reloader.reload()
+        assert dict(ring.keys) == {WIRE: KEY} and ring.removed == 0
+        store.unreadable.clear()
+        await reloader.reload()
+        assert dict(ring.keys) == {WIRE: KEY, WIRE2: KEY2} and ring.removed == 0
+
+
+async def test_an_earlier_key_whose_account_names_another_key_id_is_dropped(caplog):
+    caplog.set_level(logging.WARNING, logger="claude_voice")
+    store = stored((IDENTITY, KEY))
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    async with servers(store, {WIRE: KEY, WIRE2: KEY2}, Recorder()) as (_lan, _tun, reloader, ring):
+        store.items[earlier_account(IDENTITY, key_id(KEY2))] = KEY3
+        await reloader.reload()
+        assert dict(ring.keys) == {WIRE: KEY} and ring.removed == 1
+    assert any("is not a 32-byte hex key; dropping it" in r.getMessage() for r in caplog.records)
