@@ -399,7 +399,9 @@ async def forget(cfg: Config, *, transport: Transport, store: PskStore, serial: 
         out(f"设备没能清除 Wi-Fi 设置（{verdict['error']}），设备上的 Wi-Fi 设置可能还在。")
     else:
         out("没有收到设备的确认，设备上的 Wi-Fi 设置可能还在。")
-    out("已删除本机钥匙串中的配对密钥。" if removed else "本机钥匙串中没有这台设备的配对密钥。")
-    if not done.listed:
+    if done.listed:
+        out("已删除本机钥匙串中的配对密钥。" if removed else "本机钥匙串中没有这台设备的配对密钥。")
+    else:
+        out("已删除本机钥匙串中这台设备当前的配对密钥。" if done.current else "本机钥匙串中没有这台设备当前的配对密钥。")
         out("无法列出这台设备的旧配对密钥，其中可能还有没删除的；中继不会再接受它们。请再运行一次 claude-voice forget（设备要用 USB 连着）。")
     return confirmed

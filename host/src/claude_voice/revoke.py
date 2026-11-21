@@ -126,7 +126,7 @@ def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
             f"请在「钥匙串访问」中搜索 {identity}，删除找到的条目，再运行一次 claude-voice revoke。"
         )
         return False
-    deleted = done.current or done.earlier > 0
+    deleted = done.current or (listed and done.earlier > 0)  # an unlisted run names only the current key
     if deleted:
         out(f"已删除本机钥匙串中设备 {identity} 的配对密钥。" if listed else f"已删除本机钥匙串中设备 {identity} 当前的配对密钥。")
         out(
@@ -135,7 +135,7 @@ def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
         )
         out("拿到设备的人仍能读出其中保存的 Wi-Fi 密码，请修改这些 Wi-Fi 的密码。")
     else:
-        out(f"本机钥匙串中没有设备 {identity} 的配对密钥。")
+        out(f"本机钥匙串中没有设备 {identity} 的配对密钥。" if listed else f"本机钥匙串中没有设备 {identity} 当前的配对密钥。")
     try:
         left = [b for b in _stored(store) if b != identity]
     except KeychainError:
