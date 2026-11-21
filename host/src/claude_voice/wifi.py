@@ -12,7 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from .config import Config
-from .keychain import KeychainValueError, PskStore, key_id, psk_identity, wire_identity
+from .keychain import KeychainValueError, PskStore, earlier_account, key_id, psk_identity, wire_identity
 from .link import Transport, TransportClosed
 from .protocol import PSK_IDENTITY_PREFIX
 
@@ -148,6 +148,7 @@ def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> di
     """Every PSK the store keeps for one board, by wire identity with the key id derived from the key.
     A value that is not a key goes to `bad` and is skipped; any other read error propagates."""
     reads: list[tuple[str, Callable[[], bytes | None]]] = [(identity, lambda: store.get(identity))]
+    reads += [(earlier_account(identity, kid), lambda kid=kid: store.get_earlier(identity, kid)) for kid in store.earlier(identity)]
     found: dict[str, bytes] = {}
     for name, read in reads:
         try:

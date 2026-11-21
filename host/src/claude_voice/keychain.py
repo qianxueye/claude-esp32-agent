@@ -1,4 +1,4 @@
-"""PSK storage: macOS Keychain generic passwords (service = config, account = PSK identity)."""
+"""PSK storage: macOS Keychain generic passwords (service = config, account = PSK identity or an earlier-key account)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ SECURITY = "/usr/bin/security"
 _IDENTITY = re.compile(re.escape(PSK_IDENTITY_PREFIX) + r"[0-9A-Fa-f]{12}")
 _SERIAL = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
 _SERVICE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_KID = re.compile(r"[0-9A-F]{8}")
+EARLIER = "-earlier-"  # account of a key the board may still hold: identity, EARLIER, key id
 # whole attribute lines only, so a label or comment quoting `"acct"<blob>=` is not read as one
 _ACCOUNT_LINE = re.compile(r'^\s*"acct"<blob>="([^"]*)"$', re.MULTILINE)
 _SERVICE_LINE = re.compile(r'^\s*"svce"<blob>="([^"]*)"$', re.MULTILINE)
@@ -43,6 +45,19 @@ def wire_identity(identity: str, kid: str) -> str:
     return f"{identity}-{kid}"
 
 
+def earlier_account(identity: str, kid: str) -> str:
+    """The Keychain account of an earlier key of one board; ValueError unless both parts are well formed."""
+    if not valid_identity(identity) or not _KID.fullmatch(kid):
+        raise ValueError(f"invalid earlier-key account: {identity!r} {kid!r}")
+    return identity + EARLIER + kid
+
+
+def _earlier_kid(identity: str, account: str) -> str | None:
+    prefix = identity + EARLIER
+    kid = account[len(prefix):] if account.startswith(prefix) else ""
+    return kid if _KID.fullmatch(kid) else None
+
+
 def psk_identity(serial: str) -> str:
     """`clawd-` followed by the USB serial number without colons, in uppercase."""
     if not _SERIAL.fullmatch(serial):
@@ -51,33 +66,66 @@ def psk_identity(serial: str) -> str:
 
 
 class PskStore(Protocol):
+    """The current key of a board under its identity, plus earlier keys it may still hold (docs/network.md, Keys)."""
+
     def get(self, identity: str) -> bytes | None: ...
     def set(self, identity: str, key: bytes) -> None: ...
     def delete(self, identity: str) -> bool: ...
     def find_any(self) -> str | None: ...
     def identities(self) -> list[str]: ...
+    def earlier(self, identity: str) -> list[str]: ...
+    def get_earlier(self, identity: str, kid: str) -> bytes | None: ...
+    def set_earlier(self, identity: str, kid: str, key: bytes) -> None: ...
+    def delete_earlier(self, identity: str, kid: str) -> bool: ...
+
+
+def delete_board(store: PskStore, identity: str) -> int:
+    """Delete the current key and every earlier key of one board; returns how many items were found."""
+    n = int(store.delete(identity))
+    for kid in store.earlier(identity):
+        n += int(store.delete_earlier(identity, kid))
+    return n
 
 
 class MemoryStore:
-    """In-process store for tests."""
+    """In-process store for tests; it refuses the accounts KeychainStore refuses."""
 
     def __init__(self) -> None:
         self.items: dict[str, bytes] = {}
 
+    @staticmethod
+    def _check(identity: str) -> str:
+        if not valid_identity(identity):
+            raise ValueError(f"invalid PSK identity: {identity!r}")
+        return identity
+
     def get(self, identity: str) -> bytes | None:
-        return self.items.get(identity)
+        return self.items.get(self._check(identity))
 
     def set(self, identity: str, key: bytes) -> None:
-        self.items[identity] = bytes(key)
+        self.items[self._check(identity)] = bytes(key)
 
     def delete(self, identity: str) -> bool:
-        return self.items.pop(identity, None) is not None
+        return self.items.pop(self._check(identity), None) is not None
 
     def find_any(self) -> str | None:
-        return next(iter(self.items), None)
+        return next((a for a in self.items if valid_identity(a)), None)
 
     def identities(self) -> list[str]:
-        return list(self.items)
+        return [a for a in self.items if valid_identity(a)]
+
+    def earlier(self, identity: str) -> list[str]:
+        self._check(identity)
+        return [kid for a in self.items if (kid := _earlier_kid(identity, a))]
+
+    def get_earlier(self, identity: str, kid: str) -> bytes | None:
+        return self.items.get(earlier_account(identity, kid))
+
+    def set_earlier(self, identity: str, kid: str, key: bytes) -> None:
+        self.items[earlier_account(identity, kid)] = bytes(key)
+
+    def delete_earlier(self, identity: str, kid: str) -> bool:
+        return self.items.pop(earlier_account(identity, kid), None) is not None
 
 
 class KeychainStore:
@@ -103,9 +151,8 @@ class KeychainStore:
         if not valid_identity(identity):
             raise ValueError(f"invalid PSK identity: {identity!r}")
 
-    def get(self, identity: str) -> bytes | None:
-        self._check(identity)
-        r = self._run(["find-generic-password", "-s", self.service, "-a", identity, "-w"])
+    def _get(self, account: str) -> bytes | None:
+        r = self._run(["find-generic-password", "-s", self.service, "-a", account, "-w"])
         if r.returncode == _NOT_FOUND:
             return None
         if r.returncode != 0:
@@ -113,38 +160,65 @@ class KeychainStore:
         try:
             key = bytes.fromhex(r.stdout.strip())
         except ValueError:
-            raise KeychainValueError(f"Keychain item {self.service}/{identity} is not a hex key") from None
+            raise KeychainValueError(f"Keychain item {self.service}/{account} is not a hex key") from None
         return key or None
 
-    def set(self, identity: str, key: bytes) -> None:
-        self._check(identity)
-        line = f"add-generic-password -U -s {self.service} -a {identity} -w {key.hex()}\n"
+    def _set(self, account: str, key: bytes) -> None:
+        line = f"add-generic-password -U -s {self.service} -a {account} -w {key.hex()}\n"
         r = self._run(["-i"], stdin=line)
         if r.returncode != 0:
             raise KeychainError(f"security add-generic-password exited with {r.returncode}")
 
-    def delete(self, identity: str) -> bool:
-        """Delete every item of `identity`; `security` removes only the first match in the search list per call."""
-        self._check(identity)
+    def _delete(self, account: str) -> bool:
+        """Delete every item of `account`; `security` removes only the first match in the search list per call."""
         deleted = False
         for _ in range(DELETE_MAX):
-            r = self._run(["delete-generic-password", "-s", self.service, "-a", identity])
+            r = self._run(["delete-generic-password", "-s", self.service, "-a", account])
             if r.returncode == _NOT_FOUND:
                 return deleted
             if r.returncode != 0:
                 raise KeychainError(f"security delete-generic-password exited with {r.returncode}")
             deleted = True
-        raise KeychainError(f"Keychain item {self.service}/{identity} still found after {DELETE_MAX} deletes")
+        raise KeychainError(f"Keychain item {self.service}/{account} still found after {DELETE_MAX} deletes")
+
+    def get(self, identity: str) -> bytes | None:
+        self._check(identity)
+        return self._get(identity)
+
+    def set(self, identity: str, key: bytes) -> None:
+        self._check(identity)
+        self._set(identity, key)
+
+    def delete(self, identity: str) -> bool:
+        self._check(identity)
+        return self._delete(identity)
+
+    def get_earlier(self, identity: str, kid: str) -> bytes | None:
+        return self._get(earlier_account(identity, kid))
+
+    def set_earlier(self, identity: str, kid: str, key: bytes) -> None:
+        self._set(earlier_account(identity, kid), key)
+
+    def delete_earlier(self, identity: str, kid: str) -> bool:
+        return self._delete(earlier_account(identity, kid))
 
     def find_any(self) -> str | None:
+        """The account of the first item in the service, or the first listed identity when that item is an earlier key."""
         r = self._run(["find-generic-password", "-s", self.service])
         if r.returncode != 0:
             return None
         m = _ACCOUNT_LINE.search(r.stdout)
-        return m.group(1) if m and valid_identity(m.group(1)) else None
+        if m and valid_identity(m.group(1)):
+            return m.group(1)
+        if not (m and EARLIER in m.group(1)):
+            return None
+        try:
+            return next(iter(self.identities()), None)
+        except KeychainError:
+            return None
 
-    def identities(self) -> list[str]:
-        """Every valid PSK identity under this service, from item attributes only (no passwords are read)."""
+    def _accounts(self) -> list[str]:
+        """Every account under this service, from item attributes only (no passwords are read)."""
         r = self._run(["dump-keychain"])
         if r.returncode != 0:
             raise KeychainError(f"security dump-keychain exited with {r.returncode}")
@@ -153,7 +227,15 @@ class KeychainStore:
             if 'class: "genp"' not in item:
                 continue
             service, account = _SERVICE_LINE.search(item), _ACCOUNT_LINE.search(item)
-            if service and account and service.group(1) == self.service and valid_identity(account.group(1)):
-                if account.group(1) not in found:
-                    found.append(account.group(1))
+            if service and account and service.group(1) == self.service and account.group(1) not in found:
+                found.append(account.group(1))
         return found
+
+    def identities(self) -> list[str]:
+        """Every valid PSK identity under this service; earlier-key accounts are left out."""
+        return [a for a in self._accounts() if valid_identity(a)]
+
+    def earlier(self, identity: str) -> list[str]:
+        """Key ids of the earlier-key items of one board."""
+        self._check(identity)
+        return [kid for a in self._accounts() if (kid := _earlier_kid(identity, a))]

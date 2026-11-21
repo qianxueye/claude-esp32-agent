@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Sequence
 
 from .config import Config
-from .keychain import KeychainError, PskStore, key_id, psk_identity, wire_identity
+from .keychain import KeychainError, PskStore, delete_board, key_id, psk_identity, wire_identity
 from .link import Transport, TransportClosed, parse_hello
 from .protocol import PAIR_NETWORKS_MAX, PAIR_PAYLOAD_MAX, PROTO_VERSION, Decoder, T, encode
 from .wifi import PSK_BYTES, WifiServer
@@ -335,7 +335,7 @@ async def _await_relay(cfg: Config, console: UsbConsole, out: Out) -> bool:
 
 
 async def forget(cfg: Config, *, transport: Transport, store: PskStore, serial: str, out: Out) -> bool:
-    """Erase the board's Wi-Fi settings and delete this Mac's copy of its PSK."""
+    """Erase the board's Wi-Fi settings and delete every key this Mac keeps for it, whatever the board replies."""
     identity = psk_identity(serial)
     console = UsbConsole(cfg, transport, [])
     try:
@@ -348,7 +348,7 @@ async def forget(cfg: Config, *, transport: Transport, store: PskStore, serial: 
     finally:
         await console.close()
     confirmed = verdict.get("ok") is True
-    removed = store.delete(identity)
+    removed = delete_board(store, identity) > 0
     if confirmed:
         out("设备已清除 Wi-Fi 设置。")
     elif "error" in verdict:
