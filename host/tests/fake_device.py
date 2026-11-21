@@ -76,6 +76,7 @@ class FakeDevice:
         self.relay_connector = relay_connector
         self.leaky_log = False
         self.refuse_pair = False
+        self.refuse_reason = "nvs full"  # "storage error" or "storage unknown" as the board sends them
         self.pair_reply = True  # False: save and join without sending PAIR_RESULT
         self.ignore_pair = False
         self.forget_reply: bytes | None = b'{"ok":true}'  # None: erase without FORGET_RESULT
@@ -262,7 +263,7 @@ class FakeDevice:
             extra = " ".join(n["password"] for n in info.get("networks", []))
             self.send(T.LOG, f"careless: {info['password']} {info['psk']} {extra}".encode())
         if self.refuse_pair:
-            self.send(T.PAIR_RESULT, b'{"ok":false,"error":"nvs full"}')
+            self.send(T.PAIR_RESULT, json.dumps({"ok": False, "error": self.refuse_reason}).encode())
             return
         self.paired = info
         if self.pair_reply:
