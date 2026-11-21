@@ -81,7 +81,7 @@ class FakeDevice:
         self.ignore_pair = False
         self.forget_reply: bytes | None = b'{"ok":true}'  # None: erase without FORGET_RESULT
         self.forget_erases = True
-        self.store = "ok"  # HELLO `store`: "error" when the board cannot read its pairing storage
+        self.store: str | None = "ok"  # HELLO `store`: "error" when the board cannot read its storage; None omits it
         self.wifi = "off"
         self.relay = "none"
         self.dec = Decoder(0.2 if link == "usb" else None)
@@ -141,7 +141,9 @@ class FakeDevice:
     def hello(self, reason: str) -> None:
         self.hellos.append(reason)
         info = {"proto": self.proto, "fw": "fake", "rate": 16000, "reason": reason, "link": self.link,
-                "paired": self.paired is not None, "store": self.store, "vol": self.vol, "vol_set": self.vol_set}
+                "paired": self.paired is not None, "vol": self.vol, "vol_set": self.vol_set}
+        if self.store is not None:
+            info["store"] = self.store
         self.send(T.HELLO, json.dumps(info).encode())
 
     def reset(self) -> None:

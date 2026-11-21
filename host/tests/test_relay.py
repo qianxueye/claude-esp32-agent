@@ -364,7 +364,7 @@ async def test_knob_report_is_kept_across_hello():
         await h.down()
 
 
-@pytest.mark.parametrize("store", ["ok", "error"])
+@pytest.mark.parametrize("store", ["ok", "error", None])
 async def test_unpaired_hello_log_follows_the_store_field(store, caplog):
     caplog.set_level(logging.INFO, logger="claude_voice")
     h = make()
@@ -377,5 +377,5 @@ async def test_unpaired_hello_log_follows_the_store_field(store, caplog):
     finally:
         await h.down()
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert ("not paired" in logged) is (store == "ok")
+    assert ("not paired" in logged) is (store != "error")
     assert ("could not read its pairing storage" in logged) is (store == "error")
