@@ -1083,8 +1083,12 @@ async def test_revoke_with_a_failing_listing_says_what_was_deleted_fails_and_the
         store.fail = set(fail)
         ok, out = revoke_out(c, store)
         assert not ok and IDENTITY not in store.items
-        assert out[0] == f"已删除本机钥匙串中设备 {IDENTITY} 当前的配对密钥。"
-        assert out[1].startswith("正在运行的中继会在") and out[2].startswith("拿到设备的人") and out[-1] == REVOKE_UNLISTED
+        assert out == [
+            f"已删除本机钥匙串中设备 {IDENTITY} 当前的配对密钥。",
+            "正在运行的中继会在 0.05 秒内断开这台设备，之后不再接受它连接。中继如果是在这次更新之前启动的，要重启后才会断开。",
+            "拿到设备的人仍能读出其中保存的 Wi-Fi 密码，请修改这些 Wi-Fi 的密码。",
+            REVOKE_UNLISTED,
+        ]
         for _ in range(3):
             await reloader.reload()
         assert dict(ring.keys) == {} and ring.removed == 1
@@ -1094,21 +1098,25 @@ def test_revoke_of_a_board_without_a_current_key_and_a_failing_listing_fails():
     store = recording(("earlier",))
     del store.items[IDENTITY]
     ok, out = revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
-    assert not ok and out == [f"本机钥匙串中没有设备 {IDENTITY} 的配对密钥。", REVOKE_UNLISTED]
+    assert not ok and out == [f"本机钥匙串中没有设备 {IDENTITY} 当前的配对密钥。", REVOKE_UNLISTED]
 
 
+FORGET_UNLISTED = "无法列出这台设备的旧配对密钥，其中可能还有没删除的；中继不会再接受它们。请再运行一次 claude-voice forget（设备要用 USB 连着）。"
+
+
+@pytest.mark.parametrize("current", [True, False], ids=["current-key", "no-current-key"])
 @pytest.mark.parametrize("fail", [("earlier",), ("delete_earlier",)], ids=["listing", "earlier-delete"])
-async def test_forget_with_a_failing_listing_deletes_the_current_key_and_says_the_rest_may_remain(fail):
+async def test_forget_with_a_failing_listing_names_only_the_current_key(fail, current):
     from test_pairing import Board
     from test_pairing import cfg as pair_cfg
 
     from claude_voice.pairing import forget
 
     store, out = recording(fail), []
+    if not current:
+        del store.items[IDENTITY]
     async with Board() as b:
         assert await forget(pair_cfg(), transport=b.host, store=store, serial=FAKE_SERIAL, out=out.append)
     assert IDENTITY not in store.items
-    assert out[-2:] == [
-        "已删除本机钥匙串中的配对密钥。",
-        "无法列出这台设备的旧配对密钥，其中可能还有没删除的；中继不会再接受它们。请再运行一次 claude-voice forget（设备要用 USB 连着）。",
-    ]
+    first = "已删除本机钥匙串中这台设备当前的配对密钥。" if current else "本机钥匙串中没有这台设备当前的配对密钥。"
+    assert out == ["设备已清除 Wi-Fi 设置。", first, FORGET_UNLISTED]
