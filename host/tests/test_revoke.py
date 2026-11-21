@@ -14,7 +14,15 @@ from test_tunnel import TURN_INPUT, WsBoard
 from claude_voice import cli
 from claude_voice import keychain as keychain_mod
 from claude_voice.config import Config
-from claude_voice.keychain import KeychainError, KeychainStore, KeychainValueError, MemoryStore, psk_identity
+from claude_voice.keychain import (
+    KeychainError,
+    KeychainStore,
+    KeychainValueError,
+    MemoryStore,
+    key_id,
+    psk_identity,
+    wire_identity,
+)
 from claude_voice.link import TransportClosed
 from claude_voice.pairing import PairError
 from claude_voice.protocol import State, T
@@ -26,6 +34,9 @@ IDENTITY = psk_identity(FAKE_SERIAL)
 OTHER = psk_identity("AA:BB:CC:DD:EE:01")
 KEY = bytes(range(32))
 KEY2 = bytes(range(1, 33))
+WIRE = wire_identity(IDENTITY, key_id(KEY))
+WIRE2 = wire_identity(IDENTITY, key_id(KEY2))
+OTHER_WIRE = wire_identity(OTHER, key_id(KEY2))
 HANDSHAKE_ERRORS = (ssl.SSLError, ConnectionError, TransportClosed, TimeoutError)
 
 
@@ -55,7 +66,7 @@ class HeldLanClient:
         self.held = b""
 
     @classmethod
-    async def until_held(cls, port, identity=IDENTITY, key=KEY):
+    async def until_held(cls, port, identity=WIRE, key=KEY):
         c = cls(*await asyncio.open_connection("127.0.0.1", port), identity, key)
         c._step()
         async with asyncio.timeout(3):
@@ -179,13 +190,13 @@ def stored(*pairs):
 @pytest.mark.parametrize("removed", [True, False], ids=["key-removed", "control"])
 async def test_lan_handshake_in_flight_never_opens_after_a_removal(removed):
     store, rec = stored((IDENTITY, KEY)), Recorder()
-    async with servers(store, {IDENTITY: KEY}, rec) as (lan, _tun, reloader, ring):
+    async with servers(store, {WIRE: KEY}, rec) as (lan, _tun, reloader, ring):
         c = await HeldLanClient.until_held(lan.port)
-        await until(lambda: ring.keys.asked == [IDENTITY])  # the relay has processed ClientKeyExchange
+        await until(lambda: ring.keys.asked == [WIRE])  # the relay has processed ClientKeyExchange
         if removed:
             store.delete(IDENTITY)
         await reloader.reload()
-        assert (IDENTITY in ring.keys) is not removed
+        assert (WIRE in ring.keys) is not removed
         opened = await c.release()
         await asyncio.sleep(0.1)
         assert opened is not removed and bool(rec.sessions) is not removed
@@ -195,11 +206,11 @@ async def test_lan_handshake_in_flight_never_opens_after_a_removal(removed):
 @pytest.mark.parametrize("removed", [True, False], ids=["key-removed", "control"])
 async def test_tunnel_handshake_in_flight_never_opens_after_a_removal(removed):
     store, rec = stored((IDENTITY, KEY)), Recorder()
-    async with servers(store, {IDENTITY: KEY}, rec) as (_lan, tun, reloader, ring):
+    async with servers(store, {WIRE: KEY}, rec) as (_lan, tun, reloader, ring):
         b = await HeldWsBoard.open(tun.port)
         await asyncio.wait_for(b.upgraded.wait(), 3)
         b._handshake()
-        await until(lambda: b.held and ring.keys.asked == [IDENTITY])
+        await until(lambda: b.held and ring.keys.asked == [WIRE])
         if removed:
             store.delete(IDENTITY)
         await reloader.reload()
@@ -216,7 +227,7 @@ async def test_tunnel_handshake_in_flight_never_opens_after_a_removal(removed):
 
 async def test_removal_after_the_handshake_but_before_the_session_starts_is_refused():
     store, rec = stored((IDENTITY, KEY)), Recorder()
-    async with servers(store, {IDENTITY: KEY}, rec) as (lan, tun, reloader, ring):
+    async with servers(store, {WIRE: KEY}, rec) as (lan, tun, reloader, ring):
         spawn = tun.spawn
         tun.spawn = lambda conn: (setattr(ring, "removed", ring.removed + 1), spawn(conn))
         b = await WsBoard.open(tun.port)
@@ -247,7 +258,7 @@ class Live:
         self.reload_task = asyncio.create_task(self.reloader.run())
         return self
 
-    async def board(self, kind, identity=IDENTITY, key=KEY):
+    async def board(self, kind, identity=WIRE, key=KEY):
         if kind == "lan":
             t = await tls_connect(self.lan.port, identity, key)
         else:
@@ -272,7 +283,7 @@ def closed(d):
     return d.t.closed if isinstance(d.t, WsBoard) else (d.t._closed or d.t._writer.is_closing())
 
 
-async def _refused(w, kind, identity=IDENTITY, key=KEY):
+async def _refused(w, kind, identity=WIRE, key=KEY):
     with pytest.raises(HANDSHAKE_ERRORS):
         d = await w.board(kind, identity, key)
         for _ in range(20):
@@ -283,7 +294,7 @@ async def _refused(w, kind, identity=IDENTITY, key=KEY):
 async def test_deleted_key_closes_the_live_session_and_refuses_new_handshakes(kind, caplog):
     caplog.set_level(logging.WARNING, logger="claude_voice")
     store = stored((IDENTITY, KEY))
-    async with Live(store, {IDENTITY: KEY}) as w:
+    async with Live(store, {WIRE: KEY}) as w:
         d = await w.board(kind)
         assert w.h.link.active_kind == "wifi"
         store.delete(IDENTITY)
@@ -304,11 +315,11 @@ async def test_unreadable_keychain_keeps_the_key_and_the_session(error, caplog):
             raise error
 
     store = Unreadable()
-    async with Live(store, {IDENTITY: KEY}) as w:
+    async with Live(store, {WIRE: KEY}) as w:
         d = await w.board("lan")
         pings = d.pings
         await asyncio.sleep(0.4)
-        assert not closed(d) and d.pings > pings and w.ring.keys == {IDENTITY: KEY} and w.ring.removed == 0
+        assert not closed(d) and d.pings > pings and w.ring.keys == {WIRE: KEY} and w.ring.removed == 0
         second = await w.board("tunnel")
         second.inject(TURN_INPUT)
         await settle(second, State.LISTENING)
@@ -326,7 +337,7 @@ class NotHex(MemoryStore):
 async def test_a_keychain_value_that_is_not_a_key_drops_the_identity(kind, value, caplog):
     caplog.set_level(logging.WARNING, logger="claude_voice.revoke")
     store = stored((IDENTITY, bytes(16))) if value == "short" else NotHex()
-    async with Live(store, {IDENTITY: KEY}) as w:
+    async with Live(store, {WIRE: KEY}) as w:
         d = await w.board(kind)
         await until(lambda: closed(d) and w.h.link.active_kind is None, timeout=2)
         await _refused(w, "lan" if kind == "tunnel" else "tunnel")
@@ -347,31 +358,31 @@ def test_keychain_value_that_is_not_hex_is_a_distinct_error(monkeypatch):
 
 async def test_removal_closes_every_network_session_and_a_still_valid_identity_reconnects():
     store = stored((IDENTITY, KEY), (OTHER, KEY2))
-    async with Live(store, {IDENTITY: KEY, OTHER: KEY2}) as w:
-        d = await w.board("tunnel", OTHER, KEY2)
+    async with Live(store, {WIRE: KEY, OTHER_WIRE: KEY2}) as w:
+        d = await w.board("tunnel", OTHER_WIRE, KEY2)
         store.delete(IDENTITY)
         await until(lambda: closed(d), timeout=2)
         await _refused(w, "lan")
-        again = await w.board("lan", OTHER, KEY2)
+        again = await w.board("lan", OTHER_WIRE, KEY2)
         again.inject(TURN_INPUT)
         await settle(again, State.LISTENING)
-        assert w.ring.keys == {OTHER: KEY2}
+        assert w.ring.keys == {OTHER_WIRE: KEY2}
 
 
 async def test_replaced_key_closes_the_session_and_only_the_new_key_works():
     store = stored((IDENTITY, KEY))
-    async with Live(store, {IDENTITY: KEY}) as w:
+    async with Live(store, {WIRE: KEY}) as w:
         d = await w.board("lan")
         store.set(IDENTITY, KEY2)
         await until(lambda: closed(d), timeout=2)
-        await _refused(w, "tunnel", IDENTITY, KEY)
-        again = await w.board("tunnel", IDENTITY, KEY2)
-        assert T.SET_STATE in again.received and w.ring.keys == {IDENTITY: KEY2}
+        await _refused(w, "tunnel", WIRE, KEY)
+        again = await w.board("tunnel", WIRE2, KEY2)
+        assert T.SET_STATE in again.received and w.ring.keys == {WIRE2: KEY2}
 
 
 async def test_usb_session_survives_a_removal():
     store = stored((IDENTITY, KEY))
-    async with Live(store, {IDENTITY: KEY}) as w:
+    async with Live(store, {WIRE: KEY}) as w:
         w.h.allow_open = True
         await until(lambda: w.h.devices and T.SET_STATE in w.h.dev.received)
         store.delete(IDENTITY)
@@ -531,12 +542,12 @@ async def test_cli_listeners_share_one_keyring_with_the_reloader():
     lan, tun = await cli.start_wifi(c, link, store, ring), await cli.start_tunnel(c, link, ring)
     try:
         reloader = cli.key_reloader(c, store, ring, [lan, tun])
-        t = await tls_connect(lan.port, IDENTITY, KEY)
+        t = await tls_connect(lan.port, WIRE, KEY)
         await t.close()
         store.delete(IDENTITY)
         await reloader.reload()
         with pytest.raises(HANDSHAKE_ERRORS):
-            await tls_connect(lan.port, IDENTITY, KEY)
+            await tls_connect(lan.port, WIRE, KEY)
         with pytest.raises(ConnectionError):
             await WsBoard.connect(tun.port)
     finally:
@@ -572,7 +583,7 @@ def test_config_rejects_a_non_positive_reload_interval(tmp_path):
 
 
 def test_reloader_runs_only_with_a_listener():
-    ring = Keyring({IDENTITY: KEY})
+    ring = Keyring({WIRE: KEY})
     assert cli.key_reloader(Config(), MemoryStore(), ring, [None, None]) is None
     assert cli.key_reloader(Config(), MemoryStore(), ring, [None, object()]) is not None
 
@@ -682,7 +693,7 @@ def test_relay_lookup_finds_a_key_whatever_the_device_serial_case():
     from claude_voice.wifi import load_keys
 
     store = stored((psk_identity("AA:BB:CC:DD:EE:FF"), KEY))
-    assert load_keys(dataclasses.replace(Config(), device_serial="aa:bb:cc:dd:ee:ff"), store) == {IDENTITY: KEY}
+    assert load_keys(dataclasses.replace(Config(), device_serial="aa:bb:cc:dd:ee:ff"), store) == {WIRE: KEY}
 
 
 PHANTOMS = """keychain: "/tmp/login.keychain-db"

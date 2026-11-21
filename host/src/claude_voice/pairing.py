@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Sequence
 
 from .config import Config
-from .keychain import KeychainError, PskStore, psk_identity
+from .keychain import KeychainError, PskStore, key_id, psk_identity, wire_identity
 from .link import Transport, TransportClosed, parse_hello
 from .protocol import PAIR_NETWORKS_MAX, PAIR_PAYLOAD_MAX, PROTO_VERSION, Decoder, T, encode
 from .wifi import PSK_BYTES, WifiServer
@@ -181,14 +181,14 @@ def _status_line(st: dict) -> str:
 
 
 def pair_payload(
-    *, identity: str, psk_hex: str, ssid: str, password: str, extra_networks: Sequence[tuple[str, str]],
+    *, identity: str, psk_hex: str, kid: str, ssid: str, password: str, extra_networks: Sequence[tuple[str, str]],
     names: list[str], addrs: list[str], port: int,
 ) -> bytes:
     """PAIR as compact JSON, main network first in `networks`; PairError when the device cannot hold it."""
     networks = [{"ssid": ssid, "password": password, "lan": True}]
     networks += [{"ssid": s, "password": p, "lan": False} for s, p in extra_networks]
     body = {
-        "ssid": ssid, "password": password, "psk_identity": identity, "psk": psk_hex,
+        "ssid": ssid, "password": password, "psk_identity": identity, "psk": psk_hex, "key_id": kid,
         "relay_names": names, "relay_addrs": addrs, "relay_port": port, "networks": networks,
     }
     payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
@@ -205,7 +205,7 @@ def check_pair_size(
 ) -> None:
     """Refuse an oversize PAIR before the USB port opens (opening it resets the board)."""
     pair_payload(
-        identity=psk_identity(serial), psk_hex="0" * 2 * PSK_BYTES, ssid=ssid, password=password,
+        identity=psk_identity(serial), psk_hex="0" * 2 * PSK_BYTES, kid="0" * 8, ssid=ssid, password=password,
         extra_networks=extra_networks, names=relay_names(cfg), addrs=private_ipv4(cfg), port=65535,
     )
 
@@ -229,7 +229,8 @@ async def pair(
         joined.set()
         await _hold(t)
 
-    server = WifiServer(cfg, {identity: psk}, hold)
+    kid = key_id(psk)
+    server = WifiServer(cfg, {wire_identity(identity, kid): psk}, hold)
     try:
         await server.start()
     except OSError:
@@ -242,7 +243,7 @@ async def pair(
     try:
         try:
             payload = pair_payload(
-                identity=identity, psk_hex=psk.hex(), ssid=ssid, password=password,
+                identity=identity, psk_hex=psk.hex(), kid=kid, ssid=ssid, password=password,
                 extra_networks=extra_networks, names=names, addrs=addrs, port=server.port,
             )
             await console.open()

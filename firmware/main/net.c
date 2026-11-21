@@ -84,6 +84,7 @@ static _Atomic bool s_activated;
 static netcfg_t t_cfg;
 static bool t_paired, t_has_remote, t_joined, t_wifi_broken, t_backoff_cut, t_usb_was;
 static char t_remote[NET_URL_MAX + 1];
+static char t_wire[NET_WIRE_IDENTITY_LEN + 1]; /* PSK identity sent in the inner handshake */
 static uint32_t t_gen, t_remote_gen;
 static int t_net;
 static netplan_t s_np;
@@ -308,6 +309,7 @@ static void reconfigure(void)
     xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
     t_cfg = s_cfg;
     t_paired = s_paired;
+    netcfg_wire_identity(&t_cfg, t_wire);
     memcpy(t_remote, s_remote, sizeof t_remote);
     t_has_remote = s_has_remote;
     t_remote_gen = atomic_load(&s_remote_gen);
@@ -483,7 +485,7 @@ static int run_session(int kind, mbedtls_ssl_send_t *snd, mbedtls_ssl_recv_t *rc
         mbedtls_ssl_conf_renegotiation(&s_conf, MBEDTLS_SSL_RENEGOTIATION_DISABLED);
 #endif
         mbedtls_ssl_conf_rng(&s_conf, mbedtls_ctr_drbg_random, &s_drbg);
-        r = mbedtls_ssl_conf_psk(&s_conf, t_cfg.psk, NET_PSK_BYTES, (const unsigned char *)t_cfg.identity, NET_IDENTITY_LEN);
+        r = mbedtls_ssl_conf_psk(&s_conf, t_cfg.psk, NET_PSK_BYTES, (const unsigned char *)t_wire, NET_WIRE_IDENTITY_LEN);
     }
     if (r == 0) {
         r = mbedtls_ssl_setup(&s_ssl, &s_conf);

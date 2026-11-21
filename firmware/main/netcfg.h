@@ -10,6 +10,8 @@
 #define NET_PASS_MAX 64
 #define NET_PSK_BYTES 32
 #define NET_IDENTITY_LEN 18 /* "clawd-" and 12 hex digits */
+#define NET_KEY_ID_LEN 8 /* PAIR key_id: 8 uppercase hex digits naming the PSK */
+#define NET_WIRE_IDENTITY_LEN (NET_IDENTITY_LEN + 1 + NET_KEY_ID_LEN) /* identity, "-", key_id */
 
 typedef struct {
     char ssid[NET_SSID_MAX + 1];
@@ -21,6 +23,7 @@ typedef struct {
     netcfg_net_t nets[WIFI_NETWORKS_MAX];
     uint8_t n_nets;
     char identity[NET_IDENTITY_LEN + 1];
+    char key_id[NET_KEY_ID_LEN + 1];
     uint8_t psk[NET_PSK_BYTES];
     char names[NET_RELAY_NAMES_MAX][NET_RELAY_NAME_MAX + 1];
     uint8_t n_names;
@@ -52,6 +55,8 @@ typedef struct {
 
 /* Writes the PSK identity for a factory MAC. */
 void netcfg_identity(const uint8_t mac[6], char out[NET_IDENTITY_LEN + 1]);
+/* Writes the PSK identity the board sends in the TLS handshake: identity, "-" and key_id. */
+void netcfg_wire_identity(const netcfg_t *cfg, char out[NET_WIRE_IDENTITY_LEN + 1]);
 /* Parses a PAIR payload into out; returns NULL or the PAIR_RESULT error code.
  * out is wiped on failure; identity is the board's own PSK identity. */
 const char *netcfg_parse_pair(const uint8_t *text, size_t len, const char *identity, netcfg_t *out);

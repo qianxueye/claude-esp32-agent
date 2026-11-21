@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from typing import Protocol
@@ -30,6 +31,16 @@ class KeychainValueError(KeychainError):
 
 def valid_identity(identity: str | None) -> bool:
     return bool(identity) and _IDENTITY.fullmatch(identity) is not None
+
+
+def key_id(psk: bytes) -> str:
+    """The PAIR `key_id`: the first 8 hex digits of SHA-256 of the PSK, in uppercase."""
+    return hashlib.sha256(psk).hexdigest()[:8].upper()
+
+
+def wire_identity(identity: str, kid: str) -> str:
+    """The PSK identity the board sends in the TLS handshake (docs/protocol.md, Wi-Fi)."""
+    return f"{identity}-{kid}"
 
 
 def psk_identity(serial: str) -> str:

@@ -10,10 +10,9 @@ from typing import Protocol
 from .config import Config
 from .keychain import KeychainError, KeychainValueError, PskStore, psk_identity
 from .pairing import Out, PairError
-from .wifi import PSK_BYTES, Keyring, WarnLimiter
+from .wifi import PSK_BYTES, Keyring, WarnLimiter, board_keys, parse_wire_identity
 
 log = logging.getLogger("claude_voice.revoke")
-_MISSING = object()
 
 
 class Sweepable(Protocol):
@@ -21,14 +20,14 @@ class Sweepable(Protocol):
 
 
 class KeyReloader:
-    """Re-reads the PSK of every identity in `ring`; a definite "not found" or any other value drops one."""
+    """Re-reads every key of each board in `ring`; a definite "not found" or a value that is not a key drops one."""
 
     def __init__(self, cfg: Config, store: PskStore, ring: Keyring, servers: Sequence[Sweepable]) -> None:
         self._cfg = cfg
         self._store = store
         self._ring = ring
         self._servers = list(servers)
-        self._warn = WarnLimiter(log, cfg.wifi_warn_interval_s)
+        self._warn, self._warn_bad = (WarnLimiter(log, cfg.wifi_warn_interval_s) for _ in range(2))
 
     async def run(self) -> None:
         while True:
@@ -40,34 +39,33 @@ class KeyReloader:
             except Exception as e:
                 self._warn.warn("PSK reload failed: %r", e)
 
-    def _read(self, identities: list[str]) -> dict[str, object]:
-        found: dict[str, object] = {}
-        for identity in identities:
+    def _read(self, boards: list[str], bad: list[str]) -> dict[str, dict[str, bytes] | Exception]:
+        found: dict[str, dict[str, bytes] | Exception] = {}
+        for board in boards:
             try:
-                key = self._store.get(identity)
+                found[board] = board_keys(self._store, board, bad.append)
             except Exception as e:  # unknown, never treated as deleted
-                found[identity] = e
-                continue
-            found[identity] = _MISSING if key is None else key
+                found[board] = e
         return found
 
     async def reload(self) -> None:
         keys = self._ring.keys
-        found = await asyncio.to_thread(self._read, list(keys))
+        owner = {wire: parsed[0] for wire in keys if (parsed := parse_wire_identity(wire))}
+        bad: list[str] = []
+        found = await asyncio.to_thread(self._read, list(dict.fromkeys(owner.values())), bad)
+        for name in bad:
+            self._warn_bad.warn("Keychain PSK of %s is not a %d-byte hex key; dropping it", name, PSK_BYTES)
         dropped = []
-        for identity, value in found.items():
-            if isinstance(value, KeychainValueError) or (isinstance(value, bytes) and len(value) != PSK_BYTES):
-                log.warning("Keychain PSK of %s is not a %d-byte hex key; dropping it", identity, PSK_BYTES)
-                keys.pop(identity, None)
-                dropped.append(identity)
-            elif isinstance(value, Exception):
-                self._warn.warn("cannot re-read the PSK of %s, keeping it: %s", identity, type(value).__name__)
-            elif value is _MISSING:
-                keys.pop(identity, None)
-                dropped.append(identity)
-            elif value != keys.get(identity):
-                keys[identity] = value
-                dropped.append(identity)
+        for board, fresh in found.items():
+            if isinstance(fresh, Exception):
+                self._warn.warn("cannot re-read the PSK of %s, keeping it: %s", board, type(fresh).__name__)
+                continue
+            for wire in [w for w, b in owner.items() if b == board]:
+                if fresh.get(wire) != keys.get(wire):
+                    keys.pop(wire, None)
+                    dropped.append(wire)
+            for wire, key in fresh.items():
+                keys.setdefault(wire, key)
         if not dropped:
             return
         self._ring.removed += 1

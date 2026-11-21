@@ -17,14 +17,14 @@ from websockets.protocol import OPEN
 from websockets.uri import parse_uri
 
 from claude_voice.config import Config, load
-from claude_voice.keychain import psk_identity
+from claude_voice.keychain import key_id, psk_identity, wire_identity
 from claude_voice.link import TransportClosed
 from claude_voice.protocol import Decoder, Input, State, T, encode
 from claude_voice.tunnel import PATH, TunnelServer, peer_key
 from claude_voice.wifi import CIPHER, WifiServer
 
-IDENTITY = psk_identity(FAKE_SERIAL)
 KEY = bytes(range(32))
+IDENTITY = wire_identity(psk_identity(FAKE_SERIAL), key_id(KEY))
 TURN_INPUT = Input.TAP  # the input that starts a turn
 _client_log = logging.getLogger("tunnel-test-client")
 _client_log.disabled = True
