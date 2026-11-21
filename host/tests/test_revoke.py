@@ -343,7 +343,7 @@ async def test_a_keychain_value_that_is_not_a_key_drops_the_identity(kind, value
         await until(lambda: closed(d) and w.h.link.active_kind is None, timeout=2)
         await _refused(w, "lan" if kind == "tunnel" else "tunnel")
         assert w.ring.keys == {} and w.ring.removed == 1
-    assert any("is not a 32-byte hex key; dropping it" in r.getMessage() for r in caplog.records)
+    assert any("is not a 32-byte hex key matching its key id; dropping it" in r.getMessage() for r in caplog.records)
 
 
 def test_keychain_value_that_is_not_hex_is_a_distinct_error(monkeypatch):
@@ -1185,4 +1185,4 @@ async def test_an_earlier_key_whose_account_names_another_key_id_is_dropped(capl
         store.items[earlier_account(IDENTITY, key_id(KEY2))] = KEY3
         await reloader.reload()
         assert dict(ring.keys) == {WIRE: KEY} and ring.removed == 1
-    assert any("is not a 32-byte hex key; dropping it" in r.getMessage() for r in caplog.records)
+    assert any("is not a 32-byte hex key matching its key id; dropping it" in r.getMessage() for r in caplog.records)

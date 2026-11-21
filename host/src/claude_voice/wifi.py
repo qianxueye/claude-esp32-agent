@@ -216,7 +216,7 @@ def load_keys(cfg: Config, store: PskStore) -> dict[str, bytes]:
     identity = served_board(cfg, store)
     if not identity:
         return {}
-    found = board_keys(store, identity, lambda name: log.warning("Keychain item %s is not a %d-byte hex key", name, PSK_BYTES))
+    found = board_keys(store, identity, lambda name: log.warning("Keychain item %s is not a %d-byte hex key matching its key id", name, PSK_BYTES))
     if not found.listed:
         log.warning("could not list the earlier keys of %s; loading the current key only", identity)
     elif found.unread:
