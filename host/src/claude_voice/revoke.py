@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Sequence
 from typing import Protocol
 
 from .config import Config
-from .keychain import KeychainError, KeychainValueError, PskStore, psk_identity
+from .keychain import KeychainError, KeychainValueError, PskStore, delete_board, psk_identity
 from .pairing import Out, PairError
 from .wifi import PSK_BYTES, Keyring, WarnLimiter, board_keys, parse_wire_identity
 
@@ -102,13 +102,14 @@ def revoke_identity(cfg: Config, store: PskStore) -> str:
 
 
 def revoke(cfg: Config, *, store: PskStore, out: Out) -> bool:
-    """Delete one board's PSK from the Keychain, then name any PSK that remains."""
+    """Delete every PSK of one board from the Keychain, check by listing that none is left, then name other boards."""
     identity = revoke_identity(cfg, store)
-    deleted = store.delete(identity)
+    deleted = delete_board(store, identity) > 0
     try:
         still = store.get(identity) is not None
     except KeychainValueError:
         still = True
+    still = still or bool(store.earlier(identity))
     if still:
         out(
             f"删除后本机钥匙串中仍能读到设备 {identity} 的配对密钥，撤销没有完成。"

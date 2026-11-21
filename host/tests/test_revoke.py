@@ -742,3 +742,156 @@ def test_redact_hides_overlapping_secrets_whole():
     secrets_ = ["password1", "password1234", ""]
     text = redact("a=password1234 b=password1 c", secrets_)
     assert text == "a=*** b=*** c" and secrets_ == ["password1", "password1234", ""]
+
+
+KEY3 = bytes(range(2, 34))
+
+
+def three_keys(*extra):
+    """A store holding this board's current key and two earlier keys, plus `extra` (identity, key) pairs."""
+    store = stored((IDENTITY, KEY), *extra)
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    store.set_earlier(IDENTITY, key_id(KEY3), KEY3)
+    return store
+
+
+def board_items(store, identity=IDENTITY):
+    return [a for a in store.items if a == identity or a.startswith(identity + "-")]
+
+
+def test_relay_loads_every_kept_key_by_wire_identity():
+    from claude_voice.wifi import load_keys
+
+    store = three_keys((OTHER, KEY2))
+    keys = load_keys(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+    assert keys == {WIRE: KEY, WIRE2: KEY2, wire_identity(IDENTITY, key_id(KEY3)): KEY3}
+    assert store.find_any() == IDENTITY and store.identities() == [IDENTITY, OTHER]
+
+
+async def test_relay_accepts_every_kept_key_and_refuses_another_key_id_or_the_bare_identity():
+    from claude_voice.wifi import load_keys
+
+    store, rec = three_keys(), Recorder()
+    ring = Keyring(load_keys(Config(), store))
+    lan = WifiServer(rcfg(), ring, rec)
+    await lan.start()
+    try:
+        for key in (KEY, KEY2, KEY3):
+            t = await tls_connect(lan.port, wire_identity(IDENTITY, key_id(key)), key)
+            await t.close()
+        for identity, key in ((wire_identity(IDENTITY, "00000000"), KEY), (IDENTITY, KEY), (WIRE2, KEY)):
+            with pytest.raises(HANDSHAKE_ERRORS):
+                t = await tls_connect(lan.port, identity, key)
+                await t.read(1.0)
+        await until(lambda: len(rec.sessions) == 3)
+    finally:
+        await lan.close()
+
+
+@pytest.mark.parametrize("reply", [b'{"ok":true}', b'{"ok":false,"error":"storage error"}', None],
+                         ids=["ok", "refused", "no-result"])
+async def test_forget_deletes_every_key_item_of_the_board(reply):
+    from test_pairing import Board
+    from test_pairing import cfg as pair_cfg
+
+    from claude_voice.pairing import forget
+
+    store, out = three_keys((OTHER, KEY2)), []
+    async with Board() as b:
+        b.dev.forget_reply = reply
+        await forget(pair_cfg(), transport=b.host, store=store, serial=FAKE_SERIAL, out=out.append)
+    assert board_items(store) == [] and store.items == {OTHER: KEY2}
+    assert out[-1] == "已删除本机钥匙串中的配对密钥。"
+
+
+async def test_revoke_deletes_every_key_item_and_the_live_relay_drops_every_wire_identity():
+    from claude_voice.wifi import load_keys
+
+    store, rec = three_keys((OTHER, KEY2)), Recorder()
+    c = dataclasses.replace(rcfg(), device_serial=FAKE_SERIAL)
+    async with servers(store, load_keys(c, store), rec) as (lan, _tun, reloader, ring):
+        assert len(ring.keys) == 3
+        ok, out = revoke_out(c, store)
+        assert ok and board_items(store) == [] and store.items == {OTHER: KEY2}
+        assert out[0] == f"已删除本机钥匙串中设备 {IDENTITY} 的配对密钥。"
+        await reloader.reload()
+        assert dict(ring.keys) == {} and ring.removed == 1
+        for key in (KEY, KEY2, KEY3):
+            with pytest.raises(HANDSHAKE_ERRORS):
+                t = await tls_connect(lan.port, wire_identity(IDENTITY, key_id(key)), key)
+                await t.read(1.0)
+
+
+class EarlierStays(MemoryStore):
+    """A store whose earlier-key delete reports success and leaves the item."""
+
+    def delete_earlier(self, identity, kid):
+        return True
+
+
+def test_revoke_fails_when_an_earlier_key_is_still_listed_after_the_delete():
+    store = EarlierStays()
+    store.set(IDENTITY, KEY)
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    ok, out = revoke_out(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+    assert not ok and out[0].startswith(f"删除后本机钥匙串中仍能读到设备 {IDENTITY} 的配对密钥，撤销没有完成。")
+
+
+def test_earlier_key_accounts_are_strict_and_never_reach_security(monkeypatch):
+    monkeypatch.setattr(keychain_mod.subprocess, "run", lambda *a, **k: pytest.fail("security ran"))
+    store = KeychainStore("claude-voice", 5.0)
+    for identity, kid in ((IDENTITY, "630dcd29"), (IDENTITY, "630DCD2"), (IDENTITY, "630DCD29 -a x"),
+                          ("clawd-AABB", "630DCD29"), (IDENTITY + "\n", "630DCD29")):
+        with pytest.raises(ValueError):
+            store.set_earlier(identity, kid, KEY)
+        with pytest.raises(ValueError):
+            store.get_earlier(identity, kid)
+    assert keychain_mod.earlier_account(IDENTITY, "630DCD29") == IDENTITY + "-earlier-630DCD29"
+    assert not keychain_mod.valid_identity(IDENTITY + "-earlier-630DCD29")
+    with pytest.raises(ValueError):
+        MemoryStore().set(WIRE, KEY)
+
+
+EARLIER_DUMP = """keychain: "/tmp/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="clawd-AABBCCDDEEFF-earlier-630DCD29"
+    "svce"<blob>="claude-voice"
+keychain: "/tmp/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="clawd-AABBCCDDEEFF"
+    "svce"<blob>="claude-voice"
+keychain: "/tmp/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="clawd-AABBCCDDEEFF-earlier-ae216c2e"
+    "svce"<blob>="claude-voice"
+keychain: "/tmp/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="clawd-AABBCCDDEE01-earlier-72CD6E84"
+    "svce"<blob>="claude-voice"
+"""
+
+
+def test_keychain_lists_earlier_keys_per_board_and_the_lookup_skips_them(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args[1])
+        if args[1] == "find-generic-password":
+            return subprocess.CompletedProcess(args, 0, EARLIER_DUMP.split("keychain: ")[1], "")
+        return subprocess.CompletedProcess(args, 0, EARLIER_DUMP, "")
+
+    monkeypatch.setattr(keychain_mod.subprocess, "run", fake_run)
+    store = KeychainStore("claude-voice", 5.0)
+    assert store.identities() == ["clawd-AABBCCDDEEFF"]
+    assert store.earlier("clawd-AABBCCDDEEFF") == ["630DCD29"] and store.earlier("clawd-AABBCCDDEE01") == ["72CD6E84"]
+    calls.clear()
+    assert store.find_any() == "clawd-AABBCCDDEEFF"
+    assert calls == ["find-generic-password", "dump-keychain"]
