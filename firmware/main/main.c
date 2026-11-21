@@ -43,9 +43,10 @@ static void send_hello(const char *reason)
     volume_hello_fields(&vol, &vol_set);
     int route = transport_route();
     int n = snprintf(json, sizeof(json),
-                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"%s\",\"paired\":%s,\"vol\":%d,\"vol_set\":%s}",
-                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, link_name(route), net_paired() ? "true" : "false", vol,
-                     vol_set ? "true" : "false");
+                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"%s\",\"paired\":%s,\"store\":\"%s\",\"vol\":%d,"
+                     "\"vol_set\":%s}",
+                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, link_name(route), net_paired() ? "true" : "false",
+                     net_store_known() ? "ok" : "error", vol, vol_set ? "true" : "false");
     transport_send_to(route, T_HELLO, json, n);
 }
 

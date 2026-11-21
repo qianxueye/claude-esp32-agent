@@ -10,7 +10,9 @@ void net_init(void);
 /* Starts the network task; its first WIFI_STATUS follows the boot HELLO. */
 void net_start(void);
 bool net_paired(void);
-/* Validates and stores a PAIR payload; returns NULL or the PAIR_RESULT error code. */
+/* The pairing store's content is known (HELLO `store` "ok"); false before net_init. */
+bool net_store_known(void);
+/* Validates and stores a PAIR payload; returns NULL or the PAIR_RESULT error code; RAM keeps the old pairing on any error. */
 const char *net_pair(const uint8_t *payload, size_t len);
 /* Erases the pairing and drops it from RAM; returns NULL or the FORGET_RESULT error code. */
 const char *net_forget(void);

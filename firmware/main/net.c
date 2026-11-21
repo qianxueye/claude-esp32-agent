@@ -809,25 +809,27 @@ void net_init(void)
         ESP_LOGE(TAG, "network module not started: out of memory");
         return;
     }
-    uint32_t pair_id, remote_id;
-    size_t len = netstore_init() ? netstore_load(s_pair_text, NET_PAIR_MAX_BYTES, &pair_id, s_url_tmp, &remote_id) : 0;
-    if (len) {
-        const char *err = netcfg_parse_pair(s_pair_text, len, s_identity, &s_cfg);
-        if (err) {
-            mbedtls_platform_zeroize(&s_cfg, sizeof s_cfg);
-            ESP_LOGW(TAG, "saved pairing refused (%s): unpaired", err);
-        } else {
-            bool url_ok = s_url_tmp[0] && netcfg_url_split(s_url_tmp, strlen(s_url_tmp), NULL);
-            const char *remote = pr_effective_remote(pair_id, &s_cfg, remote_id, url_ok ? s_url_tmp : NULL);
-            s_paired = true;
-            s_pair_id = pair_id;
-            s_has_remote = remote != NULL;
-            if (remote) {
-                memmove(s_remote, remote, strlen(remote) + 1);
-                memcpy(s_stored, s_remote, sizeof s_stored);
-            }
-            s_has_stored = s_has_remote;
+    netstore_loaded_t ld = {0, 0, 0, PR_READ_FAILED, PR_READ_FAILED};
+    s_url_tmp[0] = 0;
+    if (netstore_init()) {
+        netstore_load(s_pair_text, NET_PAIR_MAX_BYTES, s_url_tmp, &ld);
+    }
+    const char *err = ld.len ? netcfg_parse_pair(s_pair_text, ld.len, s_identity, &s_cfg) : NULL;
+    if (ld.len && err) {
+        mbedtls_platform_zeroize(&s_cfg, sizeof s_cfg);
+        ESP_LOGW(TAG, "saved pairing refused (%s): unpaired", err);
+    }
+    if (pr_load_result(ld.pair_class, ld.remote_class, ld.len && !err).paired) {
+        bool url_ok = s_url_tmp[0] && netcfg_url_split(s_url_tmp, strlen(s_url_tmp), NULL);
+        const char *remote = pr_effective_remote(ld.pair_id, &s_cfg, ld.remote_id, url_ok ? s_url_tmp : NULL);
+        s_paired = true;
+        s_pair_id = ld.pair_id;
+        s_has_remote = remote != NULL;
+        if (remote) {
+            memmove(s_remote, remote, strlen(remote) + 1);
+            memcpy(s_stored, s_remote, sizeof s_stored);
         }
+        s_has_stored = s_has_remote;
     }
     mbedtls_platform_zeroize(s_pair_text, sizeof s_pair_text);
 }
@@ -843,6 +845,11 @@ void net_start(void)
         return;
     }
     s_tx_ok = true;
+}
+
+bool net_store_known(void)
+{
+    return netstore_known();
 }
 
 bool net_paired(void)
@@ -867,8 +874,9 @@ const char *net_pair(const uint8_t *payload, size_t len)
     memcpy(s_pair_text, payload, len);
     const char *err = netcfg_parse_pair(s_pair_text, len, s_identity, &s_pair_tmp);
     uint32_t id = 0;
-    if (!err && !netstore_save_pair(s_pair_text, len, &id)) {
-        err = "storage error";
+    int saved = err ? NS_FAILED : netstore_save_pair(s_pair_text, len, &id);
+    if (!err && saved != NS_SAVED) {
+        err = saved == NS_UNKNOWN ? "storage unknown" : "storage error";
     }
     if (!err) {
         xSemaphoreTake(s_cfg_mtx, portMAX_DELAY);
