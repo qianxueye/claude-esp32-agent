@@ -945,3 +945,34 @@ def test_keychain_lists_a_board_from_its_earlier_items_alone(monkeypatch):
     assert store.identities() == ["clawd-AABBCCDDEEFF", "clawd-AABBCCDDEE01"]
     assert store.find_any() == "clawd-AABBCCDDEEFF"
 
+
+class ListingFails(MemoryStore):
+    """A store whose earlier-key listing fails until `fail` is cleared."""
+
+    fail = True
+
+    def earlier(self, identity):
+        if self.fail:
+            raise KeychainError("dump failed")
+        return super().earlier(identity)
+
+
+async def test_a_failing_listing_at_start_loads_the_current_key_and_never_drops_ring_keys(caplog):
+    from claude_voice.wifi import load_keys
+
+    caplog.set_level(logging.WARNING, logger="claude_voice")
+    store = ListingFails()
+    store.set(IDENTITY, KEY)
+    store.set_earlier(IDENTITY, key_id(KEY2), KEY2)
+    keys = load_keys(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store)
+    assert keys == {WIRE: KEY}
+    assert sum("could not list the earlier keys" in r.getMessage() for r in caplog.records) == 1
+    async with servers(store, keys, Recorder()) as (_lan, _tun, reloader, ring):
+        await reloader.reload()
+        assert dict(ring.keys) == {WIRE: KEY} and ring.removed == 0
+        store.fail = False
+        await reloader.reload()
+        assert dict(ring.keys) == {WIRE: KEY, WIRE2: KEY2} and ring.removed == 0
+        store.fail = True
+        await reloader.reload()
+        assert dict(ring.keys) == {WIRE: KEY, WIRE2: KEY2} and ring.removed == 0

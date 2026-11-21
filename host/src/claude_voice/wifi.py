@@ -12,7 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from .config import Config
-from .keychain import KeychainValueError, PskStore, earlier_account, key_id, psk_identity, wire_identity
+from .keychain import KeychainError, KeychainValueError, PskStore, earlier_account, key_id, psk_identity, wire_identity
 from .link import Transport, TransportClosed
 from .protocol import PSK_IDENTITY_PREFIX
 
@@ -144,11 +144,20 @@ class Admission:
         self._warn_key.flush()
 
 
-def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> dict[str, bytes]:
+def board_keys(
+    store: PskStore, identity: str, bad: Callable[[str], None], unlisted: Callable[[Exception], None] | None = None
+) -> dict[str, bytes]:
     """Every PSK the store keeps for one board, by wire identity with the key id derived from the key.
-    A value that is not a key goes to `bad` and is skipped; any other read error propagates."""
+    A value that is not a key goes to `bad`; a failed earlier-key listing goes to `unlisted`, else propagates."""
     reads: list[tuple[str, Callable[[], bytes | None]]] = [(identity, lambda: store.get(identity))]
-    reads += [(earlier_account(identity, kid), lambda kid=kid: store.get_earlier(identity, kid)) for kid in store.earlier(identity)]
+    try:
+        kids = store.earlier(identity)
+    except KeychainError as e:
+        if unlisted is None:
+            raise
+        unlisted(e)
+        kids = []
+    reads += [(earlier_account(identity, kid), lambda kid=kid: store.get_earlier(identity, kid)) for kid in kids]
     found: dict[str, bytes] = {}
     for name, read in reads:
         try:
@@ -166,11 +175,16 @@ def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> di
 
 
 def load_keys(cfg: Config, store: PskStore) -> dict[str, bytes]:
-    """The paired board's PSKs by wire identity, or nothing when it is not paired."""
+    """The paired board's PSKs by wire identity, or nothing when it is not paired.
+    When earlier keys cannot be listed the current key still loads; the reloader adds them later."""
     identity = psk_identity(cfg.device_serial) if cfg.device_serial else store.find_any()
     if not identity:
         return {}
-    return board_keys(store, identity, lambda name: log.warning("Keychain item %s is not a %d-byte hex key", name, PSK_BYTES))
+    return board_keys(
+        store, identity,
+        lambda name: log.warning("Keychain item %s is not a %d-byte hex key", name, PSK_BYTES),
+        lambda e: log.warning("could not list the earlier keys of %s (%s); loading the current key only", identity, e),
+    )
 
 
 class TcpTransport:
