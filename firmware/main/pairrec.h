@@ -36,5 +36,18 @@ enum { PR_BOOT_OK, PR_BOOT_REFORMAT, PR_BOOT_UNUSABLE };
 
 /* What boot does with the pairing partition after its first init returned init_err. */
 int pr_boot_action(int32_t init_err);
+/* One stored record as read back; data NULL compares id and length only. */
+typedef struct {
+    bool present;
+    uint32_t id;
+    const uint8_t *data;
+    size_t len;
+} pr_view_t;
+
+enum { PR_WRITE_DONE, PR_WRITE_KEPT, PR_WRITE_BROKEN };
+
+/* Judges a record write from what the store holds afterwards; read_ok false means the read-back failed.
+ * DONE: the new record is stored; KEPT: the previous one (or none) still is; BROKEN: anything else. */
+int pr_write_outcome(bool wrote, bool read_ok, pr_view_t got, pr_view_t want, pr_view_t prev);
 /* A SET_REMOTE save may proceed only for the pairing and generation it was planned under. */
 bool pr_save_current(uint32_t stored_id, uint32_t want_id, uint32_t gen, uint32_t want_gen);

@@ -57,6 +57,31 @@ pr_remote_plan_t pr_remote_plan(const char *stored, const char *in_use, const ch
     return p;
 }
 
+static bool same(pr_view_t a, pr_view_t b)
+{
+    if (a.present != b.present) {
+        return false;
+    }
+    if (!a.present) {
+        return true;
+    }
+    return a.id == b.id && a.len == b.len && (!a.data || !b.data || memcmp(a.data, b.data, a.len) == 0);
+}
+
+int pr_write_outcome(bool wrote, bool read_ok, pr_view_t got, pr_view_t want, pr_view_t prev)
+{
+    if (wrote) {
+        return PR_WRITE_DONE;
+    }
+    if (!read_ok) {
+        return PR_WRITE_BROKEN;
+    }
+    if (same(got, want)) {
+        return PR_WRITE_DONE;
+    }
+    return same(got, prev) ? PR_WRITE_KEPT : PR_WRITE_BROKEN;
+}
+
 int pr_boot_action(int32_t init_err)
 {
     if (init_err == 0) {

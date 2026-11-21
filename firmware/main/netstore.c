@@ -13,8 +13,13 @@ static const char *TAG = "netstore";
 static SemaphoreHandle_t s_mtx;
 static bool s_usable; /* the partition is initialised */
 static uint32_t s_cur_id; /* id of the stored PAIR record, 0 for none */
+static size_t s_pair_len;
+static uint32_t s_remote_id; /* the stored SET_REMOTE record, id 0 for none */
+static uint8_t s_remote_raw[NET_URL_MAX];
+static size_t s_remote_len;
 static uint32_t s_max_id; /* largest id still in storage */
 static uint8_t s_blob[PR_PAIR_BLOB_MAX];
+static uint8_t s_back[PR_PAIR_BLOB_MAX];
 
 /* Warnings found under the lock, logged after it is released because logging can take other locks. */
 typedef struct {
@@ -43,6 +48,7 @@ static void unlock(void)
     memcpy(notes, s_notes, sizeof notes);
     s_n_notes = 0;
     mbedtls_platform_zeroize(s_blob, sizeof s_blob);
+    mbedtls_platform_zeroize(s_back, sizeof s_back);
     xSemaphoreGive(s_mtx);
     for (int i = 0; i < n; i++) {
         ESP_LOGW(TAG, "%s %s (%s)", notes[i].what, notes[i].key, esp_err_to_name(notes[i].err));
@@ -99,6 +105,60 @@ static const uint8_t *read_record(nvs_handle_t h, const char *key, size_t max, u
     return data;
 }
 
+/* Reads key back after a fresh init of the partition, which is what the next boot loads. */
+static bool read_back(const char *key, size_t max, pr_view_t *got)
+{
+    got->present = false;
+    nvs_flash_deinit_partition(NET_NVS_PARTITION);
+    if (nvs_flash_init_partition(NET_NVS_PARTITION) != ESP_OK) {
+        s_usable = false;
+        return false;
+    }
+    nvs_handle_t h;
+    esp_err_t e = open_rw(NVS_READONLY, &h);
+    if (e != ESP_OK) {
+        return e == ESP_ERR_NVS_NOT_FOUND;
+    }
+    size_t n = sizeof s_back;
+    e = nvs_get_blob(h, key, s_back, &n);
+    nvs_close(h);
+    if (e != ESP_OK) {
+        return e == ESP_ERR_NVS_NOT_FOUND;
+    }
+    got->present = true;
+    return pr_decode(s_back, n, max, &got->id, &got->data, &got->len);
+}
+
+/* Writes the record in s_blob; after any error the outcome follows what the store holds, and a broken store is unusable. */
+static int write_record(const char *key, size_t n, size_t max, pr_view_t want, pr_view_t prev)
+{
+    nvs_handle_t h;
+    esp_err_t e = n ? open_rw(NVS_READWRITE, &h) : ESP_ERR_INVALID_SIZE;
+    if (e == ESP_OK) {
+        e = nvs_set_blob(h, key, s_blob, n);
+        if (e == ESP_OK) {
+            e = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    if (e == ESP_OK) {
+        return PR_WRITE_DONE;
+    }
+    if (!n || !s_usable) {
+        note("not saved:", key, e);
+        return PR_WRITE_KEPT;
+    }
+    pr_view_t got = {false, 0, NULL, 0};
+    bool read_ok = read_back(key, max, &got);
+    int out = pr_write_outcome(false, read_ok, got, want, prev);
+    if (out == PR_WRITE_BROKEN) {
+        s_usable = false;
+    }
+    note(out == PR_WRITE_DONE ? "saved despite an error:" : out == PR_WRITE_KEPT ? "not saved:" : "store unusable after a failed write:",
+         key, e);
+    return out;
+}
+
 size_t netstore_load(uint8_t *text, size_t cap, uint32_t *pair_id, char url[NET_URL_MAX + 1], uint32_t *remote_id)
 {
     size_t out = 0;
@@ -115,6 +175,9 @@ size_t netstore_load(uint8_t *text, size_t cap, uint32_t *pair_id, char url[NET_
         const uint8_t *d = read_record(h, "remote", NET_URL_MAX, &id, &len);
         if (d) {
             s_max_id = id;
+            s_remote_id = id;
+            s_remote_len = len;
+            memcpy(s_remote_raw, d, len);
         }
         if (d && memchr(d, 0, len) == NULL) {
             memcpy(url, d, len);
@@ -127,6 +190,7 @@ size_t netstore_load(uint8_t *text, size_t cap, uint32_t *pair_id, char url[NET_
             out = len;
             *pair_id = id;
             s_cur_id = id;
+            s_pair_len = len;
             s_max_id = id > s_max_id ? id : s_max_id;
         }
         nvs_close(h);
@@ -142,24 +206,16 @@ bool netstore_save_pair(const uint8_t *text, size_t len, uint32_t *pair_id)
     }
     uint32_t id = pr_next_id(s_max_id, 0);
     size_t n = pr_encode(id, text, len, NET_PAIR_MAX_BYTES, s_blob, sizeof s_blob);
-    nvs_handle_t h;
-    esp_err_t e = n ? open_rw(NVS_READWRITE, &h) : ESP_ERR_INVALID_SIZE;
-    if (e == ESP_OK) {
-        e = nvs_set_blob(h, "pair", s_blob, n);
-        if (e == ESP_OK) {
-            e = nvs_commit(h);
-        }
-        nvs_close(h);
-    }
-    if (e == ESP_OK) {
+    pr_view_t want = {true, id, text, len}, prev = {s_cur_id != 0, s_cur_id, NULL, s_pair_len};
+    bool done = write_record("pair", n, NET_PAIR_MAX_BYTES, want, prev) == PR_WRITE_DONE;
+    if (done) {
         s_cur_id = id;
+        s_pair_len = len;
         s_max_id = id;
         *pair_id = id;
-    } else {
-        note("not saved:", "pair", e);
     }
     unlock();
-    return e == ESP_OK;
+    return done;
 }
 
 int netstore_save_remote(uint32_t pair_id, const _Atomic uint32_t *gen, uint32_t want_gen, const char *url)
@@ -171,18 +227,17 @@ int netstore_save_remote(uint32_t pair_id, const _Atomic uint32_t *gen, uint32_t
         unlock();
         return NS_STALE;
     }
-    size_t n = pr_encode(pair_id, url, strlen(url), NET_URL_MAX, s_blob, sizeof s_blob);
-    nvs_handle_t h;
-    esp_err_t e = n ? open_rw(NVS_READWRITE, &h) : ESP_ERR_INVALID_SIZE;
-    if (e == ESP_OK) {
-        e = nvs_set_blob(h, "remote", s_blob, n);
-        if (e == ESP_OK) {
-            e = nvs_commit(h);
-        }
-        nvs_close(h);
+    size_t len = strlen(url);
+    size_t n = pr_encode(pair_id, url, len, NET_URL_MAX, s_blob, sizeof s_blob);
+    pr_view_t want = {true, pair_id, (const uint8_t *)url, len}, prev = {s_remote_id != 0, s_remote_id, s_remote_raw, s_remote_len};
+    bool done = write_record("remote", n, NET_URL_MAX, want, prev) == PR_WRITE_DONE;
+    if (done) {
+        s_remote_id = pair_id;
+        s_remote_len = len;
+        memcpy(s_remote_raw, url, len);
     }
     unlock();
-    return e == ESP_OK ? NS_SAVED : NS_FAILED;
+    return done ? NS_SAVED : NS_FAILED;
 }
 
 bool netstore_forget(void)
@@ -197,6 +252,9 @@ bool netstore_forget(void)
     s_cur_id = 0;
     if (e == ESP_OK) {
         s_max_id = 0;
+        s_pair_len = 0;
+        s_remote_id = 0;
+        s_remote_len = 0;
     } else {
         note("not erased:", "pairing", e);
     }
