@@ -105,7 +105,7 @@ With the relay reachable and the board paired: the cut backoff (up to 1 s), conn
 The host never deletes a key the board may still hold, except in `forget` and `revoke`, which delete every key item of that board.
 
 - A key's id is the first 8 hex digits of SHA-256 of the PSK, in uppercase; the host sends it as PAIR `key_id`, and a new key never shares an id with a kept one. The relay holds every kept key under its wire identity `clawd-<MAC>-<KID>`, re-deriving the id from the stored key rather than from an account name, so the PAIR field and the Keychain cannot disagree silently. The relay's lookup takes only identities of that form, so a bare `clawd-<MAC>` or another id fails the handshake; Keychain accounts and `security` arguments keep their own strict checks.
-- Keychain items, all under service `claude-voice`: the current key under account `clawd-<MAC>`, and each earlier key the board may still hold under `clawd-<MAC>-earlier-<KID>`. Lookups for a board identity (`find_any`, `identities`) skip earlier-key accounts.
+- Keychain items, all under service `claude-voice`: the current key under account `clawd-<MAC>`, and each earlier key the board may still hold under `clawd-<MAC>-earlier-<KID>`. A board is listed (`find_any`, `identities`) when it has a current or an earlier item, so `revoke` and the relay also see a board left with earlier items only.
 - `claude-voice pair` first copies the current key to an earlier-key item, then writes the new key as current and sends PAIR. Then:
 
   | Outcome | Keychain |
