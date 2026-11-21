@@ -57,6 +57,17 @@ pr_remote_plan_t pr_remote_plan(const char *stored, const char *in_use, const ch
     return p;
 }
 
+int pr_boot_action(int32_t init_err)
+{
+    if (init_err == 0) {
+        return PR_BOOT_OK;
+    }
+    if (init_err == PR_ERR_NVS_NO_FREE_PAGES || init_err == PR_ERR_NVS_NEW_VERSION_FOUND) {
+        return PR_BOOT_REFORMAT;
+    }
+    return PR_BOOT_UNUSABLE;
+}
+
 bool pr_save_current(uint32_t stored_id, uint32_t want_id, uint32_t gen, uint32_t want_gen)
 {
     return want_id != 0 && stored_id == want_id && gen == want_gen;

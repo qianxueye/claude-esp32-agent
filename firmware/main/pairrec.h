@@ -28,5 +28,13 @@ typedef struct {
 
 /* Plans a valid SET_REMOTE URL against the stored URL and the one in use (NULL for none). */
 pr_remote_plan_t pr_remote_plan(const char *stored, const char *in_use, const char *url);
+/* NVS init results that call for erasing the partition; netstore.c checks them against nvs.h. */
+#define PR_ERR_NVS_NO_FREE_PAGES 0x110d
+#define PR_ERR_NVS_NEW_VERSION_FOUND 0x1110
+
+enum { PR_BOOT_OK, PR_BOOT_REFORMAT, PR_BOOT_UNUSABLE };
+
+/* What boot does with the pairing partition after its first init returned init_err. */
+int pr_boot_action(int32_t init_err);
 /* A SET_REMOTE save may proceed only for the pairing and generation it was planned under. */
 bool pr_save_current(uint32_t stored_id, uint32_t want_id, uint32_t gen, uint32_t want_gen);

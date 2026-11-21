@@ -57,11 +57,14 @@ static esp_err_t open_rw(nvs_open_mode_t mode, nvs_handle_t *h)
     return nvs_open_from_partition(NET_NVS_PARTITION, NET_NVS_NAMESPACE, mode, h);
 }
 
-/* Initialises the partition; it holds only the pairing, so an unreadable one is erased once. */
+_Static_assert(PR_ERR_NVS_NO_FREE_PAGES == ESP_ERR_NVS_NO_FREE_PAGES, "nvs.h code");
+_Static_assert(PR_ERR_NVS_NEW_VERSION_FOUND == ESP_ERR_NVS_NEW_VERSION_FOUND, "nvs.h code");
+
+/* Initialises the partition; only a layout NVS cannot use is erased, any other error leaves it untouched. */
 static esp_err_t start_partition(void)
 {
     esp_err_t e = nvs_flash_init_partition(NET_NVS_PARTITION);
-    if (e != ESP_OK) {
+    if (pr_boot_action(e) == PR_BOOT_REFORMAT) {
         ESP_LOGW(TAG, "pairing partition unreadable (%s): erased", esp_err_to_name(e));
         e = nvs_flash_erase_partition(NET_NVS_PARTITION);
         if (e == ESP_OK) {
@@ -187,18 +190,19 @@ bool netstore_forget(void)
     if (!lock()) {
         return false;
     }
-    /* Erases every sector of the partition (it deinitialises it first), then starts it empty. */
+    /* Runs whatever the store state: erase deinitialises an initialised partition first and works on one that never initialised. */
     esp_err_t e = nvs_flash_erase_partition(NET_NVS_PARTITION);
-    s_usable = nvs_flash_init_partition(NET_NVS_PARTITION) == ESP_OK;
-    if (!s_usable) {
-        note("partition unusable after", "FORGET", ESP_ERR_NVS_NOT_INITIALIZED);
-    }
+    esp_err_t ie = e == ESP_OK ? nvs_flash_init_partition(NET_NVS_PARTITION) : ESP_ERR_INVALID_STATE;
+    s_usable = e == ESP_OK && ie == ESP_OK;
     s_cur_id = 0;
     if (e == ESP_OK) {
         s_max_id = 0;
     } else {
         note("not erased:", "pairing", e);
     }
+    if (e == ESP_OK && ie != ESP_OK) {
+        note("not initialised after erase:", "pairing", ie);
+    }
     unlock();
-    return e == ESP_OK;
+    return s_usable;
 }
