@@ -54,7 +54,7 @@ class KeyReloader:
         bad: list[str] = []
         found = await asyncio.to_thread(self._read, list(dict.fromkeys(owner.values())), bad)
         for name in bad:
-            self._warn_bad.warn("Keychain PSK of %s is not a %d-byte hex key; dropping it", name, PSK_BYTES)
+            self._warn_bad.warn("Keychain PSK of %s is not a %d-byte hex key matching its key id; dropping it", name, PSK_BYTES)
         dropped = []
         for board, fresh in found.items():
             if isinstance(fresh, Exception):
