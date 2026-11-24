@@ -144,6 +144,11 @@
 #define PMU_I2C_ADDR 0x34 /* plain configuration: AXP2101, read-only */
 #define PMU_I2C_HZ 400000 /* plain configuration */
 #define PMU_I2C_TIMEOUT_MS 50 /* plain configuration */
+#define BATT_POLL_MS 2000 /* plain configuration: PMU status poll period */
+#define BATT_LOW_ENTER_PCT 20 /* plain configuration: the low look starts at or below this percentage */
+#define BATT_LOW_EXIT_PCT 25 /* plain configuration: the low look ends at or above this percentage */
+#define BATT_STALE_MS 10000 /* plain configuration: failed reads hide the icon after this long */
+#define BATT_LOG_EVERY_MS 60000 /* plain configuration: the batt line repeats at this period */
 
 /* Display geometry (docs/mascot.md); cell and bubble unit are whole screen pixels */
 #define LCD_SIZE 466

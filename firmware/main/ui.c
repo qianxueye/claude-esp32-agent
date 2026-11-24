@@ -111,7 +111,7 @@ static dp_stage_t s_logged_stage = DP_ACTIVE;
 static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
-static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown"};
+static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown", "power"};
 
 static uint16_t rgb565(uint32_t hex)
 {
