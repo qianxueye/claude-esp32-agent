@@ -104,7 +104,7 @@ class Harness:
             await d.stop()
 
 
-DEVICE_KEYS = ("boot_delay", "consumed0", "proto", "vol")
+DEVICE_KEYS = ("boot_delay", "hello_delay", "consumed0", "proto", "vol")
 
 
 def make(mic=None, stt=None, agent=None, tts=None, speed=SPEED, **over):

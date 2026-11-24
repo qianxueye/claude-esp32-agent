@@ -50,6 +50,7 @@ uv run claude-voice [--config config.toml]
 - 在 `config.toml` 里设置 `cloudflared_bin`（cloudflared 程序的路径）后，中继会启动 cloudflared 的临时隧道，得到一个 `trycloudflare.com` 公网地址，写进日志并发给开发板。cloudflared 退出后中继会自动重启它，每次得到的地址都不同。没有设置时，中继不启动隧道程序。
 - 地址变了以后，开发板要先通过 USB 或局域网连上中继，才能收到新地址。
 - cloudflared 启动失败不影响 USB 和 Wi-Fi 连接。它的日志写在日志目录的 `cloudflared.log`。
+- 中继通过一个看护进程启动 cloudflared。中继退出时，包括被强制结束（SIGKILL），看护进程都会停止 cloudflared。只有看护进程自己被强制结束时，cloudflared 才会留在后台，需要手动结束它。
 - 和 Wi-Fi 端口一样，只在 Wi-Fi 开启、这台 Mac 已和开发板配对时启动。不需要时，在 `config.toml` 里设 `tunnel_enabled = false`。
 
 ## 前提

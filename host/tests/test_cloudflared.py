@@ -1,9 +1,11 @@
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
 import os
 import shutil
+import signal
 import stat
 import sys
 import time
@@ -115,7 +117,7 @@ async def supervised(tmp_path, on_url=None, cfg=None, port=47999, url_timeout=5.
     c = cf_cfg(
         cfg or Config(), tmp_path, binary, cloudflared_url_timeout_s=url_timeout, cloudflared_restart_max_s=restart_max
     )
-    sup = Cloudflared(c, port, on_url or Urls(), stop_timeout_s=0.5)
+    sup = Cloudflared(c, port, on_url or Urls(), grace_s=0.3)
     sup.start()
     return sup
 
@@ -327,18 +329,33 @@ async def test_cloudflared_starts_only_with_a_binary_and_a_listening_tunnel(tmp_
             await sup.close()
 
 
-async def test_set_remote_after_hello_on_usb_and_again_on_change():
-    h = make()
+async def quiet(d, window):
+    """Wait until no SET_REMOTE arrives for `window` seconds and return how many arrived."""
+    async with asyncio.timeout(10):
+        while True:
+            n = len(d.remotes)
+            await asyncio.sleep(window)
+            if len(d.remotes) == n:
+                return n
+
+
+@pytest.mark.parametrize("hello_delay", [0.0, 0.3], ids=["fast-board", "slow-board"])
+async def test_set_remote_after_hello_on_usb_and_again_on_change(hello_delay):
+    h = make(hello_delay=hello_delay)
+    window = hello_delay + 2 * h.cfg.ping_interval_s + 0.1
     h.link.set_remote(url(1))
     await h.up()
     try:
-        assert h.dev.hellos == ["boot", "reply"] and h.dev.remotes == [{"url": url(1)}] * 2
+        d = h.dev
+        await until(lambda: {"boot", "reply"} <= set(d.hellos) and len(d.remotes) >= len(d.hellos), timeout=10)
+        before = await quiet(d, window)
+        assert all(r == {"url": url(1)} for r in d.remotes)
         h.link.set_remote(url(1))
+        assert await quiet(d, window) == before
         h.link.set_remote(url(2))
-        await until(lambda: len(h.dev.remotes) == 3)
+        assert await quiet(d, window) == before + 1 and d.remotes[-1] == {"url": url(2)}
         h.link.set_remote(None)
-        await asyncio.sleep(0.1)
-        assert h.dev.remotes == [{"url": url(1)}] * 2 + [{"url": url(2)}]
+        assert await quiet(d, window) == before + 1
     finally:
         await h.down()
 
@@ -354,22 +371,26 @@ async def test_no_set_remote_while_no_url_is_known():
         await h.down()
 
 
-async def test_set_remote_after_hello_on_lan_and_never_on_an_inactive_session():
-    async with WifiHarness() as w:
+@pytest.mark.parametrize("hello_delay", [0.0, 0.3], ids=["fast-board", "slow-board"])
+async def test_set_remote_after_hello_on_lan_and_never_on_an_inactive_session(hello_delay):
+    async with WifiHarness(hello_delay=hello_delay) as w:
         w.h.link.set_remote(url(1))
         d = await w.board()
         await until(lambda: d.remotes)
         assert d.remotes == [{"url": url(1)}]
         w.h.allow_open = True
-        await until(lambda: w.h.devices and len(w.h.dev.remotes) == 2)
-        assert w.h.link.active_kind == "usb" and w.h.dev.remotes == [{"url": url(1)}] * 2
+        await until(lambda: w.h.devices and len(w.h.dev.remotes) >= 2, timeout=10)
+        assert w.h.link.active_kind == "usb" and all(r == {"url": url(1)} for r in w.h.dev.remotes)
         t = await tls_connect(w.srv.port, IDENTITY, KEY)
         late = FakeDevice(t, link="wifi")
         late.start()
         w.boards.append(late)
         late.hello("boot")
+        await asyncio.sleep(0.2)
+        before = len(w.h.dev.remotes)
         w.h.link.set_remote(url(2))
-        await until(lambda: len(w.h.dev.remotes) == 3)
+        await until(lambda: len(w.h.dev.remotes) > before, timeout=10)
+        assert w.h.dev.remotes[-1] == {"url": url(2)}
         with pytest.raises(TransportClosed):
             for _ in range(40):
                 await t.read(0.05)
@@ -484,3 +505,132 @@ def test_config_rejects_restart_max_below_min(tmp_path):
     p.write_text("cloudflared_restart_min_s = 5.0\ncloudflared_restart_max_s = 2.0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="cloudflared_restart_max_s"):
         load(p)
+
+
+async def test_relay_waits_for_the_guard_to_kill_a_child_that_ignores_sigterm(tmp_path):
+    urls = Urls()
+    sup = await supervised(tmp_path, urls, ignore_term=True)
+    await until(lambda: urls.seen, timeout=10)
+    guard, pid = sup._proc, runs(tmp_path)[0]["pid"]
+    await sup.close()
+    assert not alive(pid) and guard.returncode == 128 + signal.SIGKILL, cf_log(tmp_path)
+
+
+RELAY_STUB = r'''
+import asyncio, dataclasses, sys
+from claude_voice.cloudflared import Cloudflared
+from claude_voice.config import Config
+
+async def main(binary, log_dir):
+    cfg = dataclasses.replace(Config(), cloudflared_bin=binary, log_dir=log_dir, cloudflared_url_timeout_s=10.0)
+    Cloudflared(cfg, 47999, lambda url: None).start()
+    print("up", flush=True)
+    await asyncio.sleep(3600)
+
+asyncio.run(main(sys.argv[1], sys.argv[2]))
+'''
+
+
+async def test_cloudflared_stops_when_the_relay_is_killed(tmp_path):
+    binary = fake_cloudflared(tmp_path)
+    (tmp_path / "relay_stub.py").write_text(RELAY_STUB)
+    relay = await asyncio.create_subprocess_exec(
+        sys.executable, str(tmp_path / "relay_stub.py"), str(binary), str(tmp_path / "logs"),
+        stdout=asyncio.subprocess.PIPE,
+    )
+    pid = None
+    try:
+        await asyncio.wait_for(relay.stdout.readline(), 10)
+        await until(lambda: runs(tmp_path), timeout=10)
+        pid = runs(tmp_path)[0]["pid"]
+        assert alive(pid)
+        relay.kill()
+        await relay.wait()
+        await until(lambda: not alive(pid), timeout=10)
+    finally:
+        if pid is not None and alive(pid):
+            os.kill(pid, signal.SIGKILL)
+        if relay.returncode is None:
+            relay.kill()
+            await relay.wait()
+
+
+DECOY_GUARD = "open({marker!r}, 'w').write('decoy')\n"
+
+
+async def test_guard_is_the_installed_file_not_a_same_named_module(tmp_path, monkeypatch):
+    marker = tmp_path / "decoy-ran"
+    for name in ("cwd", "pythonpath"):
+        pkg = tmp_path / name / "claude_voice"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        (pkg / "cloudflared_guard.py").write_text(DECOY_GUARD.format(marker=str(marker)))
+    monkeypatch.chdir(tmp_path / "cwd")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "pythonpath"))
+    urls = Urls()
+    sup = await supervised(tmp_path, urls)
+    try:
+        await until(lambda: marker.exists() or runs(tmp_path), timeout=10)
+        assert not marker.exists()
+        await until(lambda: urls.seen, timeout=10)
+    finally:
+        await sup.close()
+
+
+async def test_shutdown_right_after_the_guard_starts_still_stops_cloudflared(tmp_path):
+    sup = await supervised(tmp_path)
+    try:
+        for _ in range(2):
+            await asyncio.sleep(0)
+        deadline = time.monotonic() + 10
+        while not runs(tmp_path) and time.monotonic() < deadline:
+            time.sleep(0.01)  # blocks the loop, so nothing the guard start awaits can finish
+        pid = runs(tmp_path)[0]["pid"]
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        async with asyncio.timeout(10):
+            await sup.close()
+        assert not alive(pid), cf_log(tmp_path)
+    finally:
+        await sup.close()
+
+
+async def test_close_cancelled_twice_still_stops_cloudflared(tmp_path, monkeypatch):
+    urls = Urls()
+    sup = await supervised(tmp_path, urls, ignore_term=True)
+    original = cloudflared_mod.reaped
+    closing = None
+    try:
+        await until(lambda: urls.seen, timeout=10)
+        pid = runs(tmp_path)[0]["pid"]
+        entered = [asyncio.Event(), asyncio.Event()]
+        never = asyncio.Event()
+
+        async def blocking_reaped(proc, timeout_s=None):
+            # blocks the first two timed stop waits (supervise task, then close()) until cancelled
+            if timeout_s is not None and entered:
+                entered.pop(0).set()
+                await never.wait()
+            return await original(proc, timeout_s)
+
+        first, second = entered
+        monkeypatch.setattr(cloudflared_mod, "reaped", blocking_reaped)
+        closing = asyncio.create_task(sup.close())
+        async with asyncio.timeout(5):
+            await first.wait()  # close() is awaiting the supervise task
+            closing.cancel()  # swallowed there
+            await second.wait()  # close() is inside its own timed stop wait
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        await until(lambda: not alive(pid), timeout=sup._grace + cloudflared_mod.STOP_MARGIN_S)
+    finally:
+        # an early timeout must not leave the blocking wrapper or a pending close() behind
+        monkeypatch.setattr(cloudflared_mod, "reaped", original)
+        if closing is not None and not closing.done():
+            closing.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await closing
+        await sup.close()
