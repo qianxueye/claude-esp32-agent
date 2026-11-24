@@ -98,7 +98,7 @@ batt_out_t batt_step(batt_state_t *s, const batt_in_t *in)
     }
     s->look = o.look;
     s->bars = o.bars;
-    const int key = present | (vbus << 1) | (dir << 2) | (chg << 4) | (o.bars << 7);
+    const int key = present | (vbus << 1) | (dir << 2) | (chg << 4) | (o.bars << 7) | (known << 10);
     o.log = !s->logged || key != s->logged_key || o.look != s->logged_look || in->now_ms - s->last_log_ms >= BATT_LOG_EVERY_MS;
     if (o.log) {
         s->logged = true;

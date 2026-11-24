@@ -21,4 +21,9 @@ def test_parse_batt_ignores_other_lines():
 
 
 def test_parse_batt_reports_a_stale_line():
-    assert devctl.parse_batt(b"W (123) clawd: batt: stale") == {"look": "stale"}
+    assert devctl.parse_batt(b"W (123) app: batt: stale") == {"look": "stale"}
+    assert devctl.parse_batt(b"\x1b[0;33mW (123) app: batt: stale\x1b[0m") == {"look": "stale"}
+
+
+def test_parse_batt_ignores_stale_text_in_other_logs():
+    assert devctl.parse_batt(b"I (5) net: joining batt: stale") is None

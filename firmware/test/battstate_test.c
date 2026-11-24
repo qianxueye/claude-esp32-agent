@@ -218,6 +218,14 @@ static void test_log_on_change_and_every_minute(void)
     assert(read_at(&s, 4000 + BATT_LOG_EVERY_MS, PRESENT, DIR(DISCHARGE), 80).log);
 }
 
+static void test_percentage_validity_change_logs_while_done(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    assert(read_at(&s, 0, PRESENT | VBUS, DIR(STANDBY) | 4, BATT_UNKNOWN_PCT).log);
+    assert(read_at(&s, 2000, PRESENT | VBUS, DIR(STANDBY) | 4, 100).log);
+}
+
 static void test_failure_logs_once_per_run(void)
 {
     batt_state_t s;
@@ -278,6 +286,7 @@ int main(void)
     test_never_read_is_hidden();
     test_first_read_never_wakes_and_plug_in_does();
     test_log_on_change_and_every_minute();
+    test_percentage_validity_change_logs_while_done();
     test_failure_logs_once_per_run();
     test_layout_fits_its_box();
     puts("battstate_test ok");
