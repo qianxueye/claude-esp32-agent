@@ -6,9 +6,30 @@ effort = "low"
 tools = ["WebSearch", "WebFetch"]
 voice = "Tingting"
 rate = 0            # words per minute, 0 = voice default
+# Qwen3-TTS through an mlx-audio speech server; any failure falls back to `say` for that sentence.
+# tts_engine = "qwen3"                        # default "say"
+# qwen_server_cmd = ["/path/to/venv/bin/python", "-m", "mlx_audio.server"]   # started on a free local port
+# qwen_url = "http://127.0.0.1:8000"          # used when qwen_server_cmd is not set (e.g. an SSH-forwarded server)
+# qwen_model = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+# qwen_voice = "ono_anna"
+# qwen_lang_code = "chinese"                  # or "japanese"
+# qwen_voices = { japanese = "ono_anna" }     # per-language voice override
+# qwen_connect_timeout_s = 2.0
+# qwen_skip_s = 30.0                          # after a failure, use say for this long
+# qwen_ready_timeout_s = 180.0
 volume = 70         # initial value for a board with no stored volume
 vad_min_speech_ms = 300
 vad_end_silence_ms = 800
 no_speech_timeout_s = 8.0
 max_listen_s = 30.0
 conversation_idle_reset_s = 600.0
+# Tunnel endpoint on 127.0.0.1 for the board over the internet; off when Wi-Fi is off or the board is not paired.
+# tunnel_enabled = true
+# tunnel_port = 47802
+# cloudflared Quick Tunnel to that endpoint, started and restarted by the relay; empty leaves it off.
+# The relay starts it with `--config` pointing at an empty file and without TUNNEL_* variables.
+# cloudflared_bin = "/opt/homebrew/bin/cloudflared"
+# cloudflared_url_timeout_s = 30.0             # no public hostname by then: restart cloudflared
+# cloudflared_restart_min_s = 1.0              # restart delay doubles from this ...
+# cloudflared_restart_max_s = 60.0             # ... up to this; a longer run resets it
+# key_reload_interval_s = 10.0                 # the running relay re-reads its PSKs; `claude-voice revoke` takes effect within this

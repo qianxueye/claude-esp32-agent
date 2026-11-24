@@ -1,4 +1,4 @@
-"""Entry point: `uv run claude-voice [--config PATH] [run|pair|forget]`."""
+"""Entry point: `uv run claude-voice [--config PATH] [run|pair|forget|revoke]`."""
 
 from __future__ import annotations
 
@@ -9,18 +9,26 @@ import getpass
 import logging
 import logging.handlers
 import resource
+import signal
 import sys
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any
 
 from . import config as config_mod
 from .agent import ClaudeAgent
+from .cloudflared import Cloudflared
 from .keychain import KeychainError, KeychainStore, PskStore, psk_identity
 from .link import Link, Opener, SerialTransport, list_boards, serial_opener
-from .pairing import PairError, current_ssid, forget, pair
+from .pairing import PairError, check_pair_size, current_ssid, forget, pair
+from .protocol import PAIR_NETWORKS_MAX
 from .relay import Relay
+from .revoke import KeyReloader, revoke
 from .stt import WhisperStt
+from .qwen_tts import QwenTts
 from .tts import SayTts
-from .wifi import WifiServer, load_keys
+from .tunnel import TunnelServer
+from .wifi import Keyring, WifiServer, load_keys
 
 
 def setup_logging(cfg: config_mod.Config, *, console: bool = True) -> None:
@@ -55,16 +63,25 @@ def keychain(cfg: config_mod.Config) -> KeychainStore:
     return KeychainStore(cfg.keychain_service, cfg.keychain_timeout_s)
 
 
-async def start_wifi(cfg: config_mod.Config, link: Link, store: PskStore) -> WifiServer | None:
+def wifi_keys(cfg: config_mod.Config, store: PskStore) -> dict[str, bytes]:
+    """The paired board's PSK for the network links, or {} after logging why they stay off."""
     if not cfg.wifi_enabled:
-        return None
+        return {}
     try:
         keys = load_keys(cfg, store)
     except (KeychainError, ValueError) as e:
         logging.error("Wi-Fi link off: %s", e)
-        return None
+        return {}
     if not keys:
         logging.info("Wi-Fi link off: no paired board (run `claude-voice pair`)")
+    return keys
+
+
+async def start_wifi(
+    cfg: config_mod.Config, link: Link, store: PskStore, keys: Keyring | dict[str, bytes] | None = None
+) -> WifiServer | None:
+    keys = wifi_keys(cfg, store) if keys is None else keys
+    if not keys:
         return None
     server = WifiServer(cfg, keys, link.serve_wifi)
     try:
@@ -76,29 +93,112 @@ async def start_wifi(cfg: config_mod.Config, link: Link, store: PskStore) -> Wif
     return server
 
 
+async def start_tunnel(
+    cfg: config_mod.Config, link: Link, keys: Keyring | dict[str, bytes]
+) -> TunnelServer | None:
+    if not (cfg.tunnel_enabled and cfg.wifi_enabled and keys):
+        return None
+    server = TunnelServer(cfg, keys, lambda t: link.serve_wifi(t, "tunnel"))
+    try:
+        await server.start()
+    except OSError as e:
+        logging.error("tunnel link off: cannot listen on port %d: %s", cfg.tunnel_port, e.strerror)
+        return None
+    logging.info("tunnel link listening on %s:%d", server.address, server.port)
+    return server
+
+
+def key_reloader(
+    cfg: config_mod.Config, store: PskStore, ring: Keyring, servers: list[WifiServer | TunnelServer | None]
+) -> KeyReloader | None:
+    """A reloader for the listeners that run; None when neither does."""
+    running = [s for s in servers if s is not None]
+    return KeyReloader(cfg, store, ring, running) if running else None
+
+
+def start_cloudflared(cfg: config_mod.Config, link: Link, tunnel: TunnelServer | None) -> Cloudflared | None:
+    """Start the Quick Tunnel supervisor when `cloudflared_bin` is set and the tunnel endpoint listens."""
+    if not cfg.cloudflared_bin:
+        return None
+    if tunnel is None:
+        logging.info("cloudflared not started: the tunnel endpoint is off")
+        return None
+    supervisor = Cloudflared(cfg, tunnel.port, link.set_remote)
+    supervisor.start()
+    logging.info("starting cloudflared for the tunnel endpoint")
+    return supervisor
+
+
 async def run(cfg: config_mod.Config, opener: Opener | None = None) -> None:
     stt = WhisperStt(cfg)
     agent = ClaudeAgent(cfg)
-    relay = Relay(cfg, stt, agent, SayTts(cfg))
+    tts = QwenTts(cfg, SayTts(cfg)) if cfg.tts_engine == "qwen3" else SayTts(cfg)
+    relay = Relay(cfg, stt, agent, tts)
     link = Link(cfg, opener or serial_opener(cfg), relay)
     relay.attach(link)
     tasks: list[asyncio.Task] = []
     server: WifiServer | None = None
+    tunnel: TunnelServer | None = None
+    quick: Cloudflared | None = None
     try:
         logging.info("starting whisper-server (first start may take a while)")
         await stt.start()
+        if isinstance(tts, QwenTts):
+            await tts.start()
         agent.start()
-        server = await start_wifi(cfg, link, keychain(cfg))
+        store = keychain(cfg)
+        ring = Keyring(wifi_keys(cfg, store))
+        server = await start_wifi(cfg, link, store, ring)
+        tunnel = await start_tunnel(cfg, link, ring)
+        quick = start_cloudflared(cfg, link, tunnel)
         tasks = [asyncio.create_task(link.run()), asyncio.create_task(relay.idle_reset_loop())]
+        reloader = key_reloader(cfg, store, ring, [server, tunnel])
+        if reloader is not None:
+            tasks.append(asyncio.create_task(reloader.run()))
         await asyncio.gather(*tasks)
     finally:
         for t in tasks:
             t.cancel()
+        if quick is not None:
+            await quick.close()
         if server is not None:
             await server.close()
+        if tunnel is not None:
+            await tunnel.close()
         with contextlib.suppress(Exception):
             await agent.close()
+        if isinstance(tts, QwenTts):
+            await tts.close()
         await stt.close()
+
+
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+def run_until_signal(main: Coroutine[Any, Any, None]) -> None:
+    """Run `main` as the loop's main task; the first SIGTERM or SIGHUP cancels it so its cleanup runs.
+    Signals during a cancellation already under way (Ctrl-C or an earlier signal) are ignored."""
+
+    async def runner() -> None:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        stopping = False
+
+        def stop() -> None:
+            nonlocal stopping
+            if not stopping and task is not None and not task.cancelling():
+                stopping = True
+                task.cancel()
+
+        for sig in STOP_SIGNALS:
+            loop.add_signal_handler(sig, stop)
+        try:
+            await main
+        except asyncio.CancelledError:
+            if not stopping:
+                raise
+
+    asyncio.run(runner())
 
 
 def _board(cfg: config_mod.Config) -> tuple[str, str]:
@@ -116,16 +216,44 @@ def _board(cfg: config_mod.Config) -> tuple[str, str]:
     return port, serial
 
 
+def _check_ssid(ssid: str) -> str:
+    if not ssid or len(ssid.encode()) > 32:
+        raise PairError("Wi-Fi 名称不能为空，且不能超过 32 个字符（一个汉字算 3 个）。")
+    return ssid
+
+
+def _check_password(password: str) -> str:
+    """The board's rule: empty, 8 to 63 bytes, or exactly 64 hex digits."""
+    n = len(password.encode())
+    is_hex_key = len(password) == 64 and all(c in "0123456789abcdefABCDEF" for c in password)
+    if n != 0 and not (8 <= n <= 63) and not is_hex_key:
+        raise PairError("Wi-Fi 密码应为 8 到 63 个字符（一个汉字算 3 个），或 64 位十六进制数；没有密码的网络直接按回车。")
+    return password
+
+
+def _ask_password(prompt: str) -> str:
+    return _check_password(getpass.getpass(prompt))
+
+
 def _ask_wifi(cfg: config_mod.Config) -> tuple[str, str]:
     default = current_ssid(cfg)
     prompt = f"Wi-Fi 名称 [{default}]：" if default else "Wi-Fi 名称："
-    ssid = input(prompt).strip() or (default or "")
-    if not ssid or len(ssid.encode()) > 32:
-        raise PairError("Wi-Fi 名称不能为空，且不能超过 32 字节。")
-    password = getpass.getpass("Wi-Fi 密码（输入时不显示）：")
-    if len(password.encode()) > 63 or 0 < len(password) < 8:
-        raise PairError("Wi-Fi 密码应为 8 到 63 个字符；没有密码的网络直接按回车。")
-    return ssid, password
+    ssid = _check_ssid(input(prompt).strip() or (default or ""))
+    return ssid, _ask_password("Wi-Fi 密码（输入时不显示）：")
+
+
+def _ask_more_wifi(main_ssid: str) -> list[tuple[str, str]]:
+    """Up to the protocol's limit of further networks, such as a phone hotspot; an empty name ends the list."""
+    extra: list[tuple[str, str]] = []
+    while (left := PAIR_NETWORKS_MAX - 1 - len(extra)) > 0:
+        ssid = input(f"其他 Wi-Fi 名称（还可添加 {left} 个，例如手机热点；直接按回车结束）：").strip()
+        if not ssid:
+            break
+        _check_ssid(ssid)
+        if ssid == main_ssid or any(ssid == s for s, _ in extra):
+            raise PairError(f"Wi-Fi「{ssid}」已经输入过了。")
+        extra.append((ssid, _ask_password(f"「{ssid}」的密码（输入时不显示）：")))
+    return extra
 
 
 async def _usb(cfg: config_mod.Config, port: str) -> SerialTransport:
@@ -138,11 +266,13 @@ async def _usb(cfg: config_mod.Config, port: str) -> SerialTransport:
 async def pair_command(cfg: config_mod.Config) -> bool:
     port, serial = _board(cfg)
     ssid, password = _ask_wifi(cfg)
+    extra = _ask_more_wifi(ssid)
+    check_pair_size(cfg, serial=serial, ssid=ssid, password=password, extra_networks=extra)
     print("正在连接设备（设备会重启，约 3 秒）……")
     transport = await _usb(cfg, port)
     return await pair(
         cfg, transport=transport, store=keychain(cfg),
-        serial=serial, ssid=ssid, password=password, out=print,
+        serial=serial, ssid=ssid, password=password, out=print, extra_networks=extra,
     )
 
 
@@ -152,19 +282,23 @@ async def forget_command(cfg: config_mod.Config) -> bool:
     return await forget(cfg, transport=transport, store=keychain(cfg), serial=serial, out=print)
 
 
+async def revoke_command(cfg: config_mod.Config) -> bool:
+    return revoke(cfg, store=keychain(cfg), out=print)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="claude-voice")
     ap.add_argument("--config", help="TOML file (default: host/config.toml if present)")
-    ap.add_argument("command", nargs="?", default="run", choices=["run", "pair", "forget"])
+    ap.add_argument("command", nargs="?", default="run", choices=["run", "pair", "forget", "revoke"])
     args = ap.parse_args()
     cfg = config_mod.load(args.config)
     setup_logging(cfg, console=args.command == "run")
     raise_open_files_limit(cfg.open_files_limit)
     if args.command == "run":
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(run(cfg))
+            run_until_signal(run(cfg))
         return
-    command = pair_command if args.command == "pair" else forget_command
+    command = {"pair": pair_command, "forget": forget_command, "revoke": revoke_command}[args.command]
     try:
         ok = asyncio.run(command(cfg))
     except PairError as e:

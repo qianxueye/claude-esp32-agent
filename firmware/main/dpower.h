@@ -6,7 +6,7 @@
 /* Display power timeline: activity events and a millisecond clock in, stage and panel level out. Model in docs/display-power.md. */
 
 typedef enum { DP_ACTIVE, DP_DIM, DP_OFF } dp_stage_t;
-typedef enum { DP_CAUSE_NONE, DP_CAUSE_BOOT, DP_CAUSE_TOUCH, DP_CAUSE_BUTTON, DP_CAUSE_STATE, DP_CAUSE_MOTION, DP_CAUSE_TIMER, DP_CAUSE_FORCE, DP_CAUSE_SETDOWN, DP_CAUSE_N } dp_cause_t;
+typedef enum { DP_CAUSE_NONE, DP_CAUSE_BOOT, DP_CAUSE_TOUCH, DP_CAUSE_BUTTON, DP_CAUSE_STATE, DP_CAUSE_MOTION, DP_CAUSE_TIMER, DP_CAUSE_FORCE, DP_CAUSE_SETDOWN, DP_CAUSE_POWER, DP_CAUSE_N } dp_cause_t;
 
 /* Same numbering as the device states in docs/protocol.md. */
 enum { DP_STATE_IDLE, DP_STATE_LISTENING, DP_STATE_THINKING, DP_STATE_SPEAKING, DP_STATE_ERROR, DP_STATE_OFFLINE };

@@ -15,6 +15,7 @@ from .config import Config
 from .protocol import PARTIAL_TIMEOUT, PROTO_VERSION, Decoder, State, T, encode
 
 log = logging.getLogger("claude_voice.link")
+LOG_NAMES = {"wifi": "Wi-Fi"}
 
 
 class TransportClosed(Exception):
@@ -184,13 +185,15 @@ def parse_hello(payload: bytes) -> dict:
 
 
 class Session:
-    def __init__(self, kind: str, transport: Transport) -> None:
+    def __init__(self, kind: str, transport: Transport, label: str | None = None) -> None:
         self.kind = kind
+        self.label = label or kind  # names the session in logs only
         self.t = transport
         self.dec = Decoder(PARTIAL_TIMEOUT if kind == "usb" else None)
         self.got_hello = False
         self.ready = False
         self.refused = False
+        self.remote_sent: str | None = None  # remote URL this session has accepted a SET_REMOTE for
         self.done = asyncio.Event()
 
 
@@ -204,6 +207,7 @@ class Link:
         self._active: Session | None = None
         self._switch = asyncio.Lock()
         self._nonce = 0
+        self._remote_url: str | None = None
 
     @property
     def connected(self) -> bool:
@@ -223,6 +227,22 @@ class Link:
 
     def send_state(self, state: int) -> None:
         self.send(T.SET_STATE, bytes([int(state)]))
+
+    def set_remote(self, url: str | None) -> None:
+        """Remember the board's remote URL and send it on the active session when it changed."""
+        if url == self._remote_url:
+            return
+        self._remote_url = url
+        if self._active is not None:
+            self._send_remote(self._active)
+
+    def _send_remote(self, s: Session) -> None:
+        """Send the remote URL on `s` if it is the ready active session and has not taken this URL yet."""
+        url = self._remote_url
+        if not url or not s.ready or self._active is not s or s.remote_sent == url:
+            return
+        if self._write(s, T.SET_REMOTE, json.dumps({"url": url}).encode()):
+            s.remote_sent = url
 
     def _write(self, s: Session, ftype: int, payload: bytes = b"") -> bool:
         try:
@@ -252,26 +272,26 @@ class Link:
             if not heard:
                 await asyncio.sleep(backoff)
 
-    async def serve_wifi(self, t: Transport) -> None:
-        """Run an authenticated Wi-Fi session; it replaces an older Wi-Fi session but never USB."""
-        await self._session("wifi", t)
+    async def serve_wifi(self, t: Transport, label: str = "wifi") -> None:
+        """Run an authenticated network session; it replaces an older network session but never USB."""
+        await self._session("wifi", t, label)
 
     async def _activate(self, s: Session) -> bool:
         async with self._switch:
             old = self._active
             if s.kind == "wifi" and old is not None and old.kind == "usb":
-                log.info("Wi-Fi session refused: the board is on USB")
+                log.info("%s session refused: the board is on USB", LOG_NAMES.get(s.label, s.label))
                 return False
             if old is not None:
-                log.info("%s session replaces the %s session", s.kind, old.kind)
+                log.info("%s session replaces the %s session", s.label, old.label)
                 await old.t.close()
                 await old.done.wait()
             self._active = s
             return True
 
-    async def _session(self, kind: str, t: Transport) -> bool:
+    async def _session(self, kind: str, t: Transport, label: str | None = None) -> bool:
         """Run one session; True if the board sent HELLO on it."""
-        s = Session(kind, t)
+        s = Session(kind, t, label)
         try:
             if not await self._activate(s):
                 return False
@@ -283,7 +303,7 @@ class Link:
 
     async def _run_session(self, s: Session) -> None:
         cfg = self._cfg
-        log.info("%s link open", s.kind)
+        log.info("%s link open", s.label)
         self._h.on_connect()
         pinger: asyncio.Task | None = None
         now = time.monotonic()
@@ -317,14 +337,17 @@ class Link:
                     else:
                         self._dispatch(s, ftype, payload)
                 if s.kind == "wifi" and now - last_valid > cfg.wifi_silence_timeout_s:
-                    log.warning("no frame on Wi-Fi for %.0f s; closing the session", cfg.wifi_silence_timeout_s)
+                    log.warning(
+                        "no frame on %s for %.0f s; closing the session",
+                        LOG_NAMES.get(s.label, s.label), cfg.wifi_silence_timeout_s,
+                    )
                     return
         except TransportClosed:
             pass
         finally:
             if pinger is not None:
                 pinger.cancel()
-            log.info("%s link closed", s.kind)
+            log.info("%s link closed", s.label)
             if self._active is s:
                 self._active = None
                 self._h.on_disconnect()
@@ -342,13 +365,17 @@ class Link:
             return
         if s.refused:
             return
-        log.info("board HELLO on %s: %s", s.kind, payload.decode(errors="replace"))
-        if info.get("paired") is False and s.kind == "usb":
+        log.info("board HELLO on %s: %s", s.label, payload.decode(errors="replace"))
+        if info.get("store") == "error":
+            log.warning("board could not read its pairing storage; its pairing state is unknown")
+        elif info.get("paired") is False and s.kind == "usb":
             log.info("board is not paired for Wi-Fi; run `claude-voice pair`")
         s.ready = True
         reason = str(info.get("reason", ""))
         self._h.on_hello(reason, info)
         self.send_state(self._h.current_state())
+        s.remote_sent = None
+        self._send_remote(s)
         if s.kind == "usb" and first and reason == "boot":
             # the board reset when the port opened, so it never saw the HOST_HELLO of this open
             self._send_host_hello(s)
@@ -366,3 +393,4 @@ class Link:
             await asyncio.sleep(self._cfg.ping_interval_s)
             self._nonce = (self._nonce + 1) & 0xFFFFFFFF
             self._write(s, T.PING, struct.pack("<I", self._nonce))
+            self._send_remote(s)

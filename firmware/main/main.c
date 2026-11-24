@@ -13,11 +13,15 @@
 #include "imu.h"
 #include "keydebounce.h"
 #include "aglue.h"
+#include "battstate.h"
 #include "bright.h"
 #include "nvstore.h"
 #include "skin.h"
 #include "volknob.h"
 #include "volstate.h"
+#include "linkstate.h"
+#include "net.h"
+#include "netcfg.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -44,15 +48,13 @@ static void send_hello(const char *reason)
     int vol;
     bool vol_set;
     volume_hello_fields(&vol, &vol_set);
+    int route = transport_route();
     int n = snprintf(json, sizeof(json),
-                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"usb\",\"paired\":false,\"vol\":%d,\"vol_set\":%s}",
-                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, vol, vol_set ? "true" : "false");
-    transport_send(T_HELLO, json, proto_json_len(n, sizeof(json)));
-}
-
-static void send_json(uint8_t type, const char *json)
-{
-    transport_send(type, json, strlen(json));
+                     "{\"proto\":%d,\"fw\":\"%s\",\"rate\":%d,\"reason\":\"%s\",\"link\":\"%s\",\"paired\":%s,\"store\":\"%s\",\"vol\":%d,"
+                     "\"vol_set\":%s}",
+                     PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, link_name(route), net_paired() ? "true" : "false",
+                     net_store_known() ? "ok" : "error", vol, vol_set ? "true" : "false");
+    transport_send_to(route, T_HELLO, json, proto_json_len(n, sizeof(json)));
 }
 
 /* Finds "key": in a small JSON payload; returns the position after the colon or NULL. */
@@ -257,19 +259,39 @@ static void on_snapshot_request(lv_draw_buf_t *buf)
     }
 }
 
-static void on_frame(const proto_frame_t *f)
+static unsigned task_free_bytes(const char *name)
+{
+    TaskHandle_t t = xTaskGetHandle(name);
+    return t ? (unsigned)uxTaskGetStackHighWaterMark(t) : 0;
+}
+
+static bool accept_frame(const proto_frame_t *f)
+{
+    if (f->type == T_HOST_HELLO && !host_hello_proto_ok(f)) {
+        ESP_LOGW(TAG, "HOST_HELLO ignored: proto mismatch (device speaks %d)", PROTO_VERSION);
+        return false;
+    }
+    return true;
+}
+
+static void send_pairing_result(uint8_t type, const char *err)
+{
+    char json[64];
+    size_t n = netcfg_result_json(err, json, sizeof json);
+    transport_send_usb(type, json, n);
+}
+
+static void on_frame(const proto_frame_t *f, bool live)
 {
     if (!s_ready) {
         return;
     }
-    if (f->type == T_HOST_HELLO && !host_hello_proto_ok(f)) {
-        ESP_LOGW(TAG, "HOST_HELLO ignored: proto mismatch (device speaks %d)", PROTO_VERSION);
-        return;
+    if (live) {
+        s_last_host_ms = now_ms();
     }
-    s_last_host_ms = now_ms();
     lv_draw_buf_t *snap = f->type == T_SNAPSHOT ? ui_snapshot_take() : NULL;
     const char *reply = "reply";
-    if (s_state == ST_OFFLINE && f->type != T_SNAPSHOT) {
+    if (live && s_state == ST_OFFLINE && f->type != T_SNAPSHOT) {
         set_state(ST_IDLE);
         reply = "resume";
         if (f->type != T_HOST_HELLO) {
@@ -280,7 +302,11 @@ static void on_frame(const proto_frame_t *f)
     case T_HOST_HELLO:
         volume_session_reset();
         send_hello(reply);
-        send_json(T_WIFI_STATUS, "{\"wifi\":\"off\",\"relay\":\"none\"}");
+        {
+            char json[NET_STATUS_JSON_BYTES];
+            size_t n = net_status_json(json, sizeof json);
+            transport_send(T_WIFI_STATUS, json, n);
+        }
         break;
     case T_SET_STATE:
         if (f->len == 1 && f->payload[0] < ST_COUNT) {
@@ -293,10 +319,13 @@ static void on_frame(const proto_frame_t *f)
         }
         break;
     case T_PAIR:
-        send_json(T_PAIR_RESULT, "{\"ok\":false,\"error\":\"not implemented\"}");
+        send_pairing_result(T_PAIR_RESULT, net_pair(f->payload, f->len));
         break;
     case T_FORGET:
-        send_json(T_FORGET_RESULT, "{\"ok\":false,\"error\":\"not implemented\"}");
+        send_pairing_result(T_FORGET_RESULT, net_forget());
+        break;
+    case T_SET_REMOTE:
+        net_set_remote(f->payload, f->len);
         break;
     case T_SPK_AUDIO:
         if (f->len > 0 && (f->len & 1) == 0) {
@@ -331,9 +360,60 @@ static void on_frame(const proto_frame_t *f)
     }
 }
 
+static i2c_master_dev_handle_t s_pmu;
+static batt_state_t s_batt;
+
+static void pmu_open(void)
+{
+    i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
+    i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = PMU_I2C_ADDR, .scl_speed_hz = PMU_I2C_HZ};
+    if (bus == NULL || i2c_master_bus_add_device(bus, &cfg, &s_pmu) != ESP_OK) {
+        s_pmu = NULL;
+        ESP_LOGW(TAG, "pmu: no device");
+    }
+}
+
+/* Read-only: the firmware never writes a PMU register. */
+static esp_err_t pmu_read(uint8_t reg, uint8_t *buf, size_t n)
+{
+    return s_pmu == NULL ? ESP_ERR_INVALID_STATE : i2c_master_transmit_receive(s_pmu, &reg, 1, buf, n, PMU_I2C_TIMEOUT_MS);
+}
+
+static void batt_poll(uint32_t t)
+{
+    uint8_t r00 = 0, r01 = 0, pct = 0, vh = 0, vl = 0;
+    esp_err_t err = pmu_read(0x00, &r00, 1);
+    const bool r00_ok = err == ESP_OK;
+    if (err == ESP_OK) {
+        err = pmu_read(0x01, &r01, 1);
+    }
+    if (err == ESP_OK) {
+        err = pmu_read(0xA4, &pct, 1);
+    }
+    int mv = -1;
+    if (err == ESP_OK && batt_present(r00) && pmu_read(0x34, &vh, 1) == ESP_OK && pmu_read(0x35, &vl, 1) == ESP_OK) {
+        mv = ((vh & 0x1F) << 8) | vl;
+    }
+    batt_in_t in = {.ok = err == ESP_OK, .reg00_ok = r00_ok, .reg00 = r00, .reg01 = r01, .pct = pct, .now_ms = t};
+    batt_out_t o = batt_step(&s_batt, &in);
+    ui_set_battery(BATT_PACK(o.look, o.bars));
+    if (o.wake) {
+        ui_wake(DP_CAUSE_POWER);
+    }
+    if (o.log_stale) {
+        ESP_LOGW(TAG, "batt: stale");
+    }
+    if (o.log_fail) {
+        ESP_LOGW(TAG, "batt: read failed err=%d", (int)err);
+    }
+    if (o.log) {
+        ESP_LOGI(TAG, BATT_LINE_FMT, (int)pct, (int)batt_present(r00), (int)batt_vbus(r00), batt_dir(r01), batt_chg(r01), mv, o.bars, batt_look_name(o.look));
+    }
+}
+
 static void life_task(void *arg)
 {
-    uint32_t last_stats = now_ms();
+    uint32_t last_stats = now_ms(), last_batt = last_stats - BATT_POLL_MS;
     bool saved_logged = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(LIFE_PERIOD_MS));
@@ -352,6 +432,10 @@ static void life_task(void *arg)
             saved_logged = true;
             ESP_LOGI(TAG, "volume saved; life stack high-water %u words", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
+        if (t - last_batt >= BATT_POLL_MS) {
+            last_batt = t;
+            batt_poll(t);
+        }
         if (t - last_stats >= STATS_LOG_PERIOD_MS) {
             last_stats = t;
             transport_stats_t st;
@@ -364,8 +448,11 @@ static void life_task(void *arg)
                      (unsigned)st.tx_frames, (unsigned)st.tx_bytes, (unsigned)st.tx_dropped,
                      (unsigned)audio_spk_queued(), (unsigned)audio_spk_overflow_frames(), (int)audio_pa_is_on(),
                      (unsigned)ac.spk_underruns, (unsigned)ac.spk_slow_writes, (unsigned)ac.mic_gaps, (unsigned)ac.mic_dropped);
-            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u pwr_err=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
-                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)s_pwr_read_errors);
+            ESP_LOGI(TAG, "stack free B: rx=%u net=%u sys_evt=%u wifi=%u tiT=%u; net drop=%u", (unsigned)transport_rx_stack_hwm(),
+                     (unsigned)net_stack_hwm(), task_free_bytes("sys_evt"), task_free_bytes("wifi"), task_free_bytes("tiT"),
+                     (unsigned)net_tx_dropped());
+            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u power=%u pwr_err=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
+                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)wk[DP_CAUSE_POWER], (unsigned)s_pwr_read_errors);
             volume_stats_t vs;
             volume_stats(&vs);
             ESP_LOGI(TAG, VOLUME_LINE_FMT, vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms, (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves,
@@ -399,18 +486,11 @@ static void key_press(const char *name)
     transport_send(T_INPUT, &code, 1);
 }
 
-static void log_pmu_regs(i2c_master_bus_handle_t bus)
+static void log_pmu_regs(void)
 {
-    i2c_master_dev_handle_t dev;
-    i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = PMU_I2C_ADDR, .scl_speed_hz = PMU_I2C_HZ};
-    if (bus == NULL || i2c_master_bus_add_device(bus, &cfg, &dev) != ESP_OK) {
-        ESP_LOGW(TAG, "pmu: no device");
-        return;
-    }
-    uint8_t r22 = 0, r27 = 0, a22 = 0x22, a27 = 0x27;
-    esp_err_t e1 = i2c_master_transmit_receive(dev, &a22, 1, &r22, 1, PMU_I2C_TIMEOUT_MS);
-    esp_err_t e2 = i2c_master_transmit_receive(dev, &a27, 1, &r27, 1, PMU_I2C_TIMEOUT_MS);
-    i2c_master_bus_rm_device(dev);
+    uint8_t r22 = 0, r27 = 0;
+    esp_err_t e1 = pmu_read(0x22, &r22, 1);
+    esp_err_t e2 = pmu_read(0x27, &r27, 1);
     if (e1 != ESP_OK || e2 != ESP_OK) {
         ESP_LOGW(TAG, "pmu: read failed %d %d", (int)e1, (int)e2);
         return;
@@ -426,7 +506,7 @@ static void button_task(void *arg)
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     gpio_config(&io);
-    log_pmu_regs(bsp_i2c_get_handle());
+    log_pmu_regs();
     esp_io_expander_handle_t exp = bsp_io_expander_init();
     keydeb_t boot, pwr;
     keydeb_init(&boot);
@@ -465,7 +545,7 @@ void app_main(void)
     s_snap_queue = xQueueCreate(SNAPSHOT_QUEUE_DEPTH, sizeof(lv_draw_buf_t *));
     xTaskCreate(snapshot_task, "snap", STACK_WORKER, NULL, PRIO_WORKER, NULL);
     s_last_host_ms = now_ms();
-    transport_start(on_frame);
+    transport_start(on_frame, accept_frame);
     ESP_LOGI(TAG, "boot fw=%s reset_reason=%d", FW_VERSION, (int)esp_reset_reason());
     nvstore_init();
     volume_init();
@@ -477,9 +557,12 @@ void app_main(void)
     audio_start();
     imu_start();
     ESP_LOGI(TAG, "audio up");
+    net_init();
+    pmu_open();
     xTaskCreate(button_task, "button", STACK_BUTTON, NULL, PRIO_BUTTON, NULL);
     s_last_host_ms = now_ms();
     s_ready = true;
     xTaskCreate(life_task, "life", STACK_LIFE, NULL, PRIO_LIFE, NULL);
     send_hello("boot");
+    net_start();
 }

@@ -44,6 +44,21 @@ class Config:
     wifi_silence_timeout_s: float = 5.0  # no valid frame from the board: the session is dead
     wifi_write_buffer_max: int = 262144  # frames are dropped while this much is unsent
     wifi_close_timeout_s: float = 2.0
+    # tunnel link: WebSocket endpoint on 127.0.0.1 for a tunnel connector such as cloudflared
+    tunnel_enabled: bool = True
+    tunnel_port: int = 47802  # 0: an ephemeral port
+    tunnel_preauth_max: int = 4  # tunnel connections from WebSocket accept to the end of the TLS handshake
+    tunnel_preauth_per_addr_max: int = 2  # per CF-Connecting-IP IPv4 address or IPv6 /64
+    tunnel_upgrade_timeout_s: float = 10.0
+    tunnel_ws_max_message: int = 32768
+    tunnel_preauth_bytes_max: int = 32768  # inbound bytes before the TLS session is authenticated
+    tunnel_write_buffer_max: int = 262144  # frames are dropped while this much is unsent
+    # cloudflared Quick Tunnel to the tunnel endpoint, started by the relay; "" leaves it off
+    cloudflared_bin: str = ""
+    cloudflared_url_timeout_s: float = 30.0  # no public hostname by then: restart cloudflared
+    cloudflared_restart_min_s: float = 1.0
+    cloudflared_restart_max_s: float = 60.0  # a run longer than this resets the delay to the minimum
+    key_reload_interval_s: float = 10.0  # the running relay re-reads its PSKs; a deleted one stops working
     keychain_service: str = "claude-voice"
     keychain_timeout_s: float = 30.0  # `security` may wait for the user to unlock the Keychain
 
@@ -102,6 +117,17 @@ class Config:
     rate: int = 0  # words per minute for `say -r`; 0 keeps the voice default
     first_chunk_min_chars: int = 12  # a comma may end the first chunk once it is this long
     tts_timeout_s: float = 30.0
+    tts_engine: str = "say"  # "say" or "qwen3"; qwen3 falls back to say per sentence
+    qwen_url: str = ""  # speech server base URL; ignored when qwen_server_cmd is set
+    qwen_server_cmd: list[str] = field(default_factory=list)  # argv; --host/--port are appended
+    qwen_model: str = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+    qwen_voice: str = "ono_anna"
+    qwen_lang_code: str = "chinese"  # "chinese" or "japanese"
+    qwen_voices: dict[str, str] = field(default_factory=dict)  # per lang_code voice override
+    qwen_connect_timeout_s: float = 2.0
+    qwen_skip_s: float = 30.0  # after a failure, use say for this long before trying the server again
+    qwen_ready_timeout_s: float = 180.0
+    afconvert_bin: str = "/usr/bin/afconvert"
 
     # earcons
     earcon_gain: float = 0.35
@@ -111,6 +137,14 @@ class Config:
     log_max_bytes: int = 5 * 1024 * 1024  # relay.log rotates at this size
     log_backup_count: int = 3
     open_files_limit: int = 4096  # soft RLIMIT_NOFILE raised to this at startup, never above the hard limit
+
+
+POSITIVE_KEYS = (
+    "tunnel_preauth_max", "tunnel_preauth_per_addr_max", "tunnel_upgrade_timeout_s",
+    "tunnel_ws_max_message", "tunnel_preauth_bytes_max", "tunnel_write_buffer_max",
+    "cloudflared_url_timeout_s", "cloudflared_restart_min_s", "cloudflared_restart_max_s",
+    "key_reload_interval_s",
+)
 
 
 def load(path: Path | str | None = None) -> Config:
@@ -126,6 +160,15 @@ def load(path: Path | str | None = None) -> Config:
     if unknown:
         raise ValueError(f"unknown config keys in {p}: {', '.join(unknown)}")
     cfg = dataclasses.replace(cfg, **data)
+    if not 0 <= cfg.tunnel_port <= 65535:
+        raise ValueError(f"tunnel_port must be 0-65535, got {cfg.tunnel_port} in {p}")
+    for key in POSITIVE_KEYS:
+        if not getattr(cfg, key) > 0:
+            raise ValueError(f"{key} must be positive, got {getattr(cfg, key)} in {p}")
+    if cfg.cloudflared_restart_max_s < cfg.cloudflared_restart_min_s:
+        raise ValueError(f"cloudflared_restart_max_s must not be below cloudflared_restart_min_s in {p}")
     if not 0 <= cfg.volume <= 100:
         raise ValueError(f"volume must be 0-100, got {cfg.volume} in {p}")
+    if cfg.tts_engine not in ("say", "qwen3"):
+        raise ValueError(f'tts_engine must be "say" or "qwen3", got {cfg.tts_engine!r} in {p}')
     return cfg

@@ -13,7 +13,7 @@ from fake_device import FAKE_SERIAL, FakeDevice, client_context, tls_connect
 from test_relay import make, settle, until
 
 from claude_voice.config import Config
-from claude_voice.keychain import MemoryStore, psk_identity
+from claude_voice.keychain import MemoryStore, key_id, psk_identity, valid_identity, wire_identity
 from claude_voice.link import TransportClosed
 from claude_voice.protocol import Input, State, T, encode
 from claude_voice.wifi import (
@@ -21,11 +21,13 @@ from claude_voice.wifi import (
     TcpTransport,
     WifiServer,
     load_keys,
+    parse_wire_identity,
     server_context,
 )
 
-IDENTITY = psk_identity(FAKE_SERIAL)
+BOARD = psk_identity(FAKE_SERIAL)
 KEY = bytes(range(32))
+IDENTITY = wire_identity(BOARD, key_id(KEY))  # what the board sends in the handshake
 OPENSSL = "/opt/homebrew/opt/openssl@3/bin/openssl"
 
 
@@ -77,13 +79,17 @@ def test_server_context_allows_tls12_and_one_suite_only():
     "identity,key,kw",
     [
         (IDENTITY, bytes(32), {}),
-        (psk_identity("AA:BB:CC:DD:EE:00"), KEY, {}),
+        (wire_identity(psk_identity("AA:BB:CC:DD:EE:00"), key_id(KEY)), KEY, {}),
+        (BOARD, KEY, {}),
+        (wire_identity(BOARD, "00000000"), KEY, {}),
+        (IDENTITY.lower(), KEY, {}),
         ("not-an-identity", KEY, {}),
         (IDENTITY, KEY, {"cipher": "ECDHE-PSK-AES128-CBC-SHA256"}),
         (IDENTITY, KEY, {"cipher": "PSK-CHACHA20-POLY1305"}),
         (IDENTITY, KEY, {"tls13": True}),
     ],
-    ids=["wrong-key", "wrong-identity", "malformed-identity", "other-cipher", "no-ecdhe", "tls13"],
+    ids=["wrong-key", "wrong-identity", "bare-board-identity", "other-key-id", "lowercase-key-id", "malformed-identity",
+         "other-cipher", "no-ecdhe", "tls13"],
 )
 async def test_handshake_fails_and_nothing_is_processed(identity, key, kw):
     rec = Recorder()
@@ -127,14 +133,22 @@ async def test_openssl_s_client(args, ok):
         assert bool(rec.sessions) is ok
 
 
+def test_key_id_and_wire_identity_of_one_fixed_psk():
+    assert key_id(bytes(range(32))) == "630DCD29"
+    assert IDENTITY == BOARD + "-630DCD29" and parse_wire_identity(IDENTITY) == (BOARD, "630DCD29")
+    for other in (BOARD, IDENTITY.lower(), IDENTITY + "0", IDENTITY[:-1], "x" + IDENTITY, None, ""):
+        assert parse_wire_identity(other) is None, other
+    assert valid_identity(BOARD) and not valid_identity(IDENTITY)
+
+
 def test_load_keys_by_pinned_serial_or_single_item():
     store = MemoryStore()
     assert load_keys(Config(), store) == {}
-    store.set(IDENTITY, KEY)
+    store.set(BOARD, KEY)
     assert load_keys(Config(), store) == {IDENTITY: KEY}
     assert load_keys(dataclasses.replace(Config(), device_serial=FAKE_SERIAL), store) == {IDENTITY: KEY}
     assert load_keys(dataclasses.replace(Config(), device_serial="AA:BB:CC:DD:EE:00"), store) == {}
-    store.set(IDENTITY, b"short")
+    store.set(BOARD, b"short")
     assert load_keys(Config(), store) == {}
 
 

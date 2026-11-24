@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "app_config.h"
 #include "aplay.h"
 #include "dpower.h"
 #include "rotblit.h"
@@ -38,7 +39,7 @@ typedef struct {
 /* Scene position of the sticker crop's top-left pixel: canvas centre on the scene centre plus the recentred orbit, no bubble shift, not clipped. */
 ag_place_t ag_sticker_place(const ap_pack_t *p, const ap_clip_t *c, int gx, int gy, int scene);
 
-#define AG_BUBBLE_H_UNITS 18 /* plain configuration: bubble height in units, as ui.c draws it */
+#define AG_BUBBLE_H_UNITS BUBBLE_HEIGHT_UNITS /* bubble height in units, as ui.c draws it */
 #define AG_BUBBLE_Y_MAX_PX 96 /* plain configuration: largest bubble offset from the art centre */
 #define AG_BUBBLE_FIT_MARGIN_PX 2 /* mathematical model: slack between a content corner and the ring clear radius, as volarc_test A2 and A2s keep it */
 

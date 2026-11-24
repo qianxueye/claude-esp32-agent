@@ -20,8 +20,6 @@ uv run claude-voice [--config config.toml]
 
 ## Wi-Fi 配对
 
-开发板固件的 Wi-Fi 部分还在开发，现在配对会收到设备「未实现」的回复。下面是完成后的流程。
-
 配对只需做一次，通过 USB 完成：
 
 1. 停止正在运行的 `claude-voice`（配对要独占设备的串口和端口 47801）。
@@ -31,21 +29,47 @@ uv run claude-voice [--config config.toml]
    uv run claude-voice pair
    ```
 
-3. 按提示输入 Wi-Fi 名称和密码。密码输入时不显示，不会写进日志。设备会重启一次。
+3. 按提示输入 Wi-Fi 名称和密码，之后可以再输入最多 3 个其他 Wi-Fi（例如手机热点），直接按回车结束。密码输入时不显示，不会写进日志。
 4. 程序生成配对密钥，存进 macOS 钥匙串（服务名 `claude-voice`），连同 Wi-Fi 设置和本机的局域网名称、地址一起写入设备，然后等设备通过 Wi-Fi 连上本机，并显示结果。
 5. 第一次配对时 macOS 防火墙可能弹窗，询问是否允许 Python 接受传入连接。请点「允许」，否则设备连不上本机。
 6. 配对完成后拔掉 USB 线（或改用充电器供电），再运行 `uv run claude-voice`，设备就会通过 Wi-Fi 连上。
 
 - 换了 Wi-Fi 或本机地址变了，重新运行一次 `pair` 即可。
 - 清除配对：`uv run claude-voice forget`（设备要用 USB 连着）。它清除设备上的 Wi-Fi 设置，并删除钥匙串里的密钥。
+- 设备丢失时：运行 `uv run claude-voice revoke`，不需要连接设备。它删除钥匙串里这台设备的配对密钥，正在运行的中继会在 10 秒内断开这台设备。拿到设备的人仍能读出其中保存的 Wi-Fi 密码，请修改这些 Wi-Fi 的密码。钥匙串里有多台设备的密钥时，先在 `config.toml` 里用 `device_serial` 指定要撤销的设备。
+- 配对结果无法确认时，钥匙串会保留这次的配对密钥，之前的也不删除，直到下一次配对成功，或运行 forget 或 revoke。
 - Mac 睡眠或中继没在运行时，设备屏幕显示「离线」；Mac 唤醒、中继启动后设备会自动重连。
 - 设备没有开启闪存加密，拿到设备的人可以读出其中的 Wi-Fi 密码和配对密钥。
+
+## 远程连接端点
+
+中继在本机 `127.0.0.1` 的 47802 端口（`tunnel_port`）上提供 WebSocket 端点 `/clawd/v1`，用来接收隧道程序（如 cloudflared）从互联网转来的开发板连接。
+
+- 只有这台 Mac 上的程序能连到这个端口，局域网上的其他设备连不到。
+- 端点里传的是与 Wi-Fi 相同的加密连接，没有配对密钥的连接会被断开。
+- 在 `config.toml` 里设置 `cloudflared_bin`（cloudflared 程序的路径）后，中继会启动 cloudflared 的临时隧道，得到一个 `trycloudflare.com` 公网地址，写进日志并发给开发板。cloudflared 退出后中继会自动重启它，每次得到的地址都不同。没有设置时，中继不启动隧道程序。
+- 地址变了以后，开发板要先通过 USB 或局域网连上中继，才能收到新地址。
+- cloudflared 启动失败不影响 USB 和 Wi-Fi 连接。它的日志写在日志目录的 `cloudflared.log`。
+- 中继通过一个看护进程启动 cloudflared。中继退出时，包括被强制结束（SIGKILL），看护进程都会停止 cloudflared。只有看护进程自己被强制结束时，cloudflared 才会留在后台，需要手动结束它。
+- 和 Wi-Fi 端口一样，只在 Wi-Fi 开启、这台 Mac 已和开发板配对时启动。不需要时，在 `config.toml` 里设 `tunnel_enabled = false`。
 
 ## 前提
 
 - whisper 模型文件（如 `ggml-medium.bin`）：在 `config.toml` 里用 `whisper_model` 写明路径。没写或文件不存在时，启动会报错并指出该配置项。
 - 已登录的 Claude Code CLI（`claude_cli`，默认取 `PATH` 里的 `claude`）。会话用 `--safe-mode --restricted`，只开 `WebSearch`、`WebFetch`，无 MCP，工作目录 `~/.claude-voice-agent-ws`。
 - 不需要 `ANTHROPIC_API_KEY`。
+
+## 语音合成
+
+默认用 macOS `say`。把 `tts_engine` 设为 `"qwen3"`，改用 mlx-audio 语音服务上的 Qwen3-TTS（默认模型 0.6B，声音 `ono_anna`）：
+
+- `qwen_server_cmd`：服务的启动命令（参数列表）。设置后，中继在启动时选一个本机空闲端口启动服务，用一句短话预热，退出时停止服务。
+- `qwen_url`：没有设置 `qwen_server_cmd` 时，连接这个地址的服务，例如经 SSH 端口转发的另一台 Mac。
+- `qwen_lang_code`（`chinese` 或 `japanese`）和 `qwen_voice` 由配置决定，不自动识别语言；`qwen_voices` 可按语言指定不同的声音。
+- 服务返回 24 kHz 音频，中继用 `afconvert` 转成 16 kHz。
+- 服务启动失败或没有就绪时，中继在日志里记一条错误，并继续使用 `say`。某一句合成失败时，这一句改用 `say`，日志记一条警告，之后 `qwen_skip_s` 秒内的句子直接用 `say`，不再等待超时。
+- 用 `qwen_url` 连接的服务失败后，中继在 `qwen_skip_s` 秒后再次尝试连接；由中继自己启动的服务一旦失败，不会重启，中继保持使用 `say`，直到重新启动中继。
+- 服务日志写在日志目录的 `qwen-tts-server.log`。
 
 ## 操作
 

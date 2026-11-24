@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import json
 import logging
 import os
 import socket
@@ -8,13 +9,13 @@ import subprocess
 import uuid
 
 import pytest
-from fake_device import FAKE_SERIAL, FakeDevice, tls_connect
+from fake_device import FAKE_SERIAL, FakeDevice, board_identity, tls_connect
 
 from claude_voice import keychain as keychain_mod
 from claude_voice.config import Config
-from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, psk_identity
-from claude_voice.link import memory_pair
-from claude_voice.pairing import PairError, forget, pair, private_ipv4
+from claude_voice.keychain import KeychainError, KeychainStore, MemoryStore, key_id, psk_identity, wire_identity
+from claude_voice.link import TransportClosed, memory_pair
+from claude_voice.pairing import REFUSALS, PairError, forget, pair, private_ipv4
 from claude_voice.protocol import T
 
 PASSWORD = "fake-Pa55word-Zq9!"
@@ -44,7 +45,7 @@ class Board:
     async def _connect(self, info):
         key = self.key_override or bytes.fromhex(info["psk"])
         try:
-            t = await tls_connect(info["relay_port"], info["psk_identity"], key)
+            t = await tls_connect(info["relay_port"], board_identity(info), key)
             self.sessions.append(t)
             self.wifi_rx = await t.read(0.2)
         except (ssl.SSLError, ConnectionError):
@@ -61,10 +62,10 @@ class Board:
             await t.close()
 
 
-async def run_pair(board, c=None, store=None, out=None, ssid="家里的网"):
+async def run_pair(board, c=None, store=None, out=None, ssid="家里的网", password=PASSWORD):
     return await pair(
         c or cfg(), transport=board.host, store=store if store is not None else MemoryStore(),
-        serial=FAKE_SERIAL, ssid=ssid, password=PASSWORD, out=(out if out is not None else []).append,
+        serial=FAKE_SERIAL, ssid=ssid, password=password, out=(out if out is not None else []).append,
     )
 
 
@@ -77,7 +78,7 @@ async def test_pair_end_to_end_without_leaking_secrets(caplog, capsys):
     assert ok, out
     sent = b.dev.paired
     key = store.get(IDENTITY)
-    assert key is not None and len(key) == 32 and sent["psk"] == key.hex()
+    assert key is not None and len(key) == 32 and sent["psk"] == key.hex() and sent["key_id"] == key_id(key)
     assert sent["password"] == PASSWORD and sent["ssid"] == "家里的网" and sent["psk_identity"] == IDENTITY
     assert sent["relay_names"] == ["relay-test.local"] and sent["relay_addrs"] == ["10.0.0.2"]
     assert b.sessions and b.wifi_rx == b"", "TLS-PSK session with the new key, held without HOST_HELLO"
@@ -100,28 +101,37 @@ async def test_pair_log_shows_only_the_ssid(caplog):
 
 
 OLD_KEY = b"\x01" * 32
+EARLIER_KEY = b"\x03" * 32
 STALE_KEY = "钥匙串中的配对密钥可能与设备不一致。请重新运行 claude-voice pair。"
 
 
-async def test_pair_without_result_or_join_is_unknown_and_restores_key():
+def kept(store, *keys):
+    """The store holds exactly `keys`: the first as the current key, the rest as earlier keys."""
+    want = {IDENTITY: keys[0], **{f"{IDENTITY}-earlier-{key_id(k)}": k for k in keys[1:]}}
+    return store.items == want
+
+
+async def test_pair_without_result_or_join_is_unknown_and_keeps_every_key():
     store, out = MemoryStore(), []
     store.set(IDENTITY, OLD_KEY)
     async with Board() as b:
         b.dev.ignore_pair = True
         assert not await run_pair(b, store=store, out=out)
-    assert T.PAIR in b.dev.received and store.get(IDENTITY) == OLD_KEY
+    new = store.get(IDENTITY)
+    assert T.PAIR in b.dev.received and new not in (None, OLD_KEY) and kept(store, new, OLD_KEY)
     assert not any("配对失败" in line for line in out)
-    assert "无法确认" in out[-1] and "claude-voice pair" in out[-1]
+    assert out[-1] == "无法确认配对结果：设备没有回复，也没有通过 Wi-Fi 连上本机。请重新运行 claude-voice pair。"
 
 
 async def test_pair_board_joining_with_new_key_is_success_without_result():
     store, out = MemoryStore(), []
     store.set(IDENTITY, OLD_KEY)
+    store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
     async with Board() as b:
         b.dev.pair_reply = False
         assert await run_pair(b, store=store, out=out), out
     assert T.PAIR_RESULT not in b.dev.received and b.sessions
-    assert store.get(IDENTITY) == bytes.fromhex(b.dev.paired["psk"]) and out[-1].startswith("配对完成")
+    assert kept(store, bytes.fromhex(b.dev.paired["psk"])) and out[-1].startswith("配对完成")
 
 
 class FailingRestoreStore(MemoryStore):
@@ -142,13 +152,13 @@ async def test_pair_closes_usb_and_listener_when_restore_raises():
         port = s.getsockname()[1]
     out = []
     async with Board() as b:
-        b.dev.ignore_pair = True
+        b.dev.refuse_pair = True
         with pytest.raises(KeychainError):
             await run_pair(b, c=cfg(wifi_port=port), store=FailingRestoreStore(), out=out)
         assert b.host.closed
     with pytest.raises(OSError):
         socket.create_connection(("127.0.0.1", port), timeout=1).close()
-    assert "无法确认" in out[-2] and out[-1] == STALE_KEY
+    assert "配对失败" in out[-2] and out[-1] == STALE_KEY
 
 
 class FailingSecondSetStore(MemoryStore):
@@ -169,14 +179,14 @@ class FailingSecondSetStore(MemoryStore):
 async def test_pair_tells_user_to_pair_again_when_previous_key_cannot_be_restored():
     store, out = FailingSecondSetStore(OLD_KEY), []
     async with Board() as b:
-        b.dev.ignore_pair = True
+        b.dev.refuse_pair = True
         with pytest.raises(KeychainError):
             await run_pair(b, store=store, out=out)
     assert store.get(IDENTITY) not in (None, OLD_KEY)
-    assert "无法确认" in out[-2] and out[-1] == STALE_KEY
+    assert "配对失败" in out[-2] and out[-1] == STALE_KEY
 
 
-async def test_pair_interrupted_after_sending_is_unknown_and_restores_key():
+async def test_pair_interrupted_after_sending_is_unknown_and_keeps_every_key():
     store, out = MemoryStore(), []
     store.set(IDENTITY, OLD_KEY)
     async with Board() as b:
@@ -188,8 +198,178 @@ async def test_pair_interrupted_after_sending_is_unknown_and_restores_key():
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-    assert store.get(IDENTITY) == OLD_KEY and b.host.closed
-    assert not any("配对失败" in line for line in out) and "claude-voice pair" in out[-1]
+    new = store.get(IDENTITY)
+    assert new not in (None, OLD_KEY) and kept(store, new, OLD_KEY) and b.host.closed
+    assert not any("配对失败" in line for line in out) and out[-1] == "配对已中断，无法确认结果。请重新运行 claude-voice pair。"
+
+
+class CurrentSetFails(MemoryStore):
+    """Accepts the earlier-key copy of the old key, then fails to write the new current key."""
+
+    def set(self, identity, key):
+        if identity in self.items:
+            raise KeychainError("locked")
+        super().set(identity, key)
+
+
+async def test_pair_whose_current_key_cannot_be_written_or_restored_keeps_the_old_key():
+    store, out = CurrentSetFails(), []
+    store.items[IDENTITY] = OLD_KEY
+    store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
+    async with Board() as b:
+        with pytest.raises(KeychainError):
+            await run_pair(b, store=store, out=out)
+    assert T.PAIR not in b.dev.received and kept(store, OLD_KEY, EARLIER_KEY, OLD_KEY) and out[-1] == STALE_KEY
+
+
+UNKNOWN_KEPT = (
+    "设备保存配对时出错，无法确认是否已经保存。本机钥匙串保留了这次的配对密钥，之前的配对密钥也没有删除，"
+    "设备用其中哪一个，本机都能接受。要重新配对，请先运行 claude-voice forget，再运行 claude-voice pair。"
+)
+UNKNOWN_FIRST = (
+    "设备保存配对时出错，无法确认是否已经保存。本机钥匙串保留了这次的配对密钥。"
+    "要重新配对，请先运行 claude-voice forget，再运行 claude-voice pair。"
+)
+
+
+async def pair_storage_unknown(store, out):
+    async with Board() as b:
+        b.dev.refuse_pair, b.dev.refuse_reason = True, "storage unknown"
+        assert not await run_pair(b, store=store, out=out)
+    return store.get(IDENTITY)
+
+
+async def test_pair_storage_unknown_first_pairing_keeps_the_new_key():
+    store, out = MemoryStore(), []
+    new = await pair_storage_unknown(store, out)
+    assert new is not None and kept(store, new) and out[-1] == UNKNOWN_FIRST
+
+
+async def test_pair_storage_unknown_keeps_the_new_key_and_every_earlier_key():
+    store, out = MemoryStore(), []
+    store.set(IDENTITY, OLD_KEY)
+    store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
+    new = await pair_storage_unknown(store, out)
+    assert new not in (None, OLD_KEY, EARLIER_KEY) and kept(store, new, OLD_KEY, EARLIER_KEY)
+    assert out[-1] == UNKNOWN_KEPT and not any("配对失败" in line for line in out)
+
+
+async def test_two_unknown_saves_in_a_row_keep_three_keys():
+    store, out = MemoryStore(), []
+    store.set(IDENTITY, OLD_KEY)
+    first = await pair_storage_unknown(store, out)
+    second = await pair_storage_unknown(store, out)
+    assert len({OLD_KEY, first, second}) == 3 and kept(store, second, OLD_KEY, first) and out[-1] == UNKNOWN_KEPT
+
+
+async def test_pair_ok_after_unknown_saves_keeps_only_the_new_key():
+    store = MemoryStore()
+    store.set(IDENTITY, OLD_KEY)
+    await pair_storage_unknown(store, [])
+    async with Board() as b:
+        assert await run_pair(b, store=store)
+    assert kept(store, bytes.fromhex(b.dev.paired["psk"]))
+
+
+@pytest.mark.parametrize("reason", ["storage error", "identity mismatch", "bad json", "nvs full"])
+async def test_pair_refused_restores_exactly_the_items_before_the_run(reason):
+    store, out = MemoryStore(), []
+    store.set(IDENTITY, OLD_KEY)
+    store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
+    before = dict(store.items)
+    async with Board() as b:
+        b.dev.refuse_pair, b.dev.refuse_reason = True, reason
+        assert not await run_pair(b, store=store, out=out)
+    expected = REFUSALS.get(reason, f"配对失败：设备拒绝了配对（{reason}）。")
+    assert store.items == before and out[-1] == expected
+
+
+@pytest.mark.parametrize(("reason", "password"), [("storage error", "storage error"), ("identity mismatch", "identity")])
+async def test_refusal_line_is_found_when_the_password_overlaps_the_code(reason, password):
+    out = []
+    async with Board() as b:
+        b.dev.refuse_pair, b.dev.refuse_reason = True, reason
+        assert not await run_pair(b, out=out, password=password)
+    assert out[-1] == REFUSALS[reason]
+
+
+def test_refusal_lines_are_the_reviewed_copy():
+    assert REFUSALS["storage error"] == (
+        "配对失败：设备没能保存配对，设备上原来的配对没有改变。请再运行一次 claude-voice pair；"
+        "仍然失败时，先运行 claude-voice forget，再运行 claude-voice pair。"
+    )
+    assert REFUSALS["identity mismatch"] == (
+        "配对失败：设备自身的硬件地址与本机从 USB 读到的序列号不一致（identity mismatch），这台设备现在无法配对。"
+    )
+
+
+async def test_pair_stops_before_pair_when_the_board_store_is_unreadable():
+    store, out = MemoryStore(), []
+    store.set(IDENTITY, OLD_KEY)
+    store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
+    before = dict(store.items)
+    async with Board() as b:
+        b.dev.store = "error"
+        assert await run_pair(b, store=store, out=out) is False
+        assert b.dev.paired is None
+    assert store.items == before
+    assert out == ["设备这次开机时读不出它保存的配对，暂时不能保存新的配对。请先运行 claude-voice forget，再运行 claude-voice pair。"]
+
+
+async def test_pair_proceeds_when_an_older_board_sends_no_store_field():
+    async with Board() as b:
+        b.dev.store = None
+        assert await run_pair(b)
+        assert b.dev.paired is not None
+
+
+@pytest.mark.parametrize(
+    ("password", "ok"),
+    [
+        ("1234567", False),
+        ("密码密", True),
+        ("密" * 21, True),
+        ("密" * 22, False),
+        ("a1" * 32, True),
+        ("A" * 63, True),
+        ("z" * 64, False),
+        ("g" * 63 + "1", False),
+        ("", True),
+    ],
+    ids=["7-ascii", "3-cjk", "21-cjk", "22-cjk", "64-hex", "63-ascii", "64-nonhex", "64-nonhex-tail", "empty"],
+)
+def test_password_check_follows_the_board_in_bytes(password, ok):
+    from claude_voice import cli
+
+    if ok:
+        assert cli._check_password(password) == password
+    else:
+        with pytest.raises(PairError) as e:
+            cli._check_password(password)
+        assert str(e.value) == "Wi-Fi 密码应为 8 到 63 个字符（一个汉字算 3 个），或 64 位十六进制数；没有密码的网络直接按回车。"
+
+
+def test_ssid_check_counts_bytes():
+    from claude_voice import cli
+
+    assert cli._check_ssid("网" * 10 + "ab") == "网" * 10 + "ab"
+    with pytest.raises(PairError) as e:
+        cli._check_ssid("网" * 11)
+    assert str(e.value) == "Wi-Fi 名称不能为空，且不能超过 32 个字符（一个汉字算 3 个）。"
+
+
+async def test_new_key_id_never_equals_a_kept_key_id(monkeypatch):
+    from claude_voice import pairing as pairing_mod
+
+    store = MemoryStore()
+    store.set(IDENTITY, OLD_KEY)
+    store.set_earlier(IDENTITY, key_id(EARLIER_KEY), EARLIER_KEY)
+    fresh = bytes(range(100, 132))
+    draws = iter([OLD_KEY, EARLIER_KEY, fresh])
+    monkeypatch.setattr(pairing_mod.secrets, "token_bytes", lambda n: next(draws))
+    async with Board() as b:
+        assert await run_pair(b, store=store)
+    assert b.dev.paired["key_id"] == key_id(fresh) and kept(store, fresh)
 
 
 async def test_pair_refused_restores_previous_key():
@@ -334,7 +514,7 @@ async def test_relay_starts_wifi_only_when_paired():
     server = await cli.start_wifi(c, link, store)
     try:
         assert server is not None and server.port > 0
-        t = await tls_connect(server.port, IDENTITY, KEY32)
+        t = await tls_connect(server.port, wire_identity(IDENTITY, key_id(KEY32)), KEY32)
         await t.close()
     finally:
         await server.close()
@@ -354,3 +534,258 @@ def test_ask_wifi_validates_input(monkeypatch):
     monkeypatch.setattr(cli, "current_ssid", lambda c: None)
     with pytest.raises(PairError):
         cli._ask_wifi(cfg())
+
+
+HOTSPOT_PASSWORD = "hot-Sp0t-pass-Qx7"
+CAFE_PASSWORD = "cafe-Pa55-Wq2!xyz"
+
+
+async def test_pair_sends_every_network_with_lan_only_on_the_main_one(caplog, capsys):
+    caplog.set_level(logging.DEBUG)
+    store, out = MemoryStore(), []
+    extra = [("我的手机", HOTSPOT_PASSWORD), ("cafe", CAFE_PASSWORD), ("open-net", "")]
+    async with Board() as b:
+        b.dev.leaky_log = True
+        ok = await pair(
+            cfg(), transport=b.host, store=store, serial=FAKE_SERIAL, ssid="家里的网", password=PASSWORD,
+            out=out.append, extra_networks=extra,
+        )
+    assert ok, out
+    sent = b.dev.paired
+    assert sent["ssid"] == "家里的网" and sent["password"] == PASSWORD
+    assert sent["networks"] == [
+        {"ssid": "家里的网", "password": PASSWORD, "lan": True},
+        {"ssid": "我的手机", "password": HOTSPOT_PASSWORD, "lan": False},
+        {"ssid": "cafe", "password": CAFE_PASSWORD, "lan": False},
+        {"ssid": "open-net", "password": "", "lan": False},
+    ]
+    captured = capsys.readouterr()
+    everything = "\n".join([caplog.text, captured.out, captured.err, *out])
+    assert "careless" in caplog.text and "我的手机" in everything
+    for secret in (PASSWORD, HOTSPOT_PASSWORD, CAFE_PASSWORD, sent["psk"]):
+        assert secret not in everything
+
+
+async def test_pair_with_only_the_main_network_still_sends_networks():
+    async with Board() as b:
+        assert await run_pair(b)
+    assert b.dev.paired["networks"] == [{"ssid": "家里的网", "password": PASSWORD, "lan": True}]
+
+
+async def test_pair_refuses_more_than_three_extra_networks():
+    async with Board() as b:
+        with pytest.raises(ValueError):
+            await pair(
+                cfg(), transport=b.host, store=MemoryStore(), serial=FAKE_SERIAL, ssid="a", password=PASSWORD,
+                out=[].append, extra_networks=[(f"n{i}", PASSWORD) for i in range(4)],
+            )
+    assert b.dev.paired is None
+
+
+def _worst(char_ssid, char_password):
+    return [(char_ssid * 32, char_password * 63) for _ in range(3)]
+
+
+async def test_worst_case_plain_pair_fits_the_device_buffer():
+    from claude_voice.protocol import PAIR_PAYLOAD_MAX
+
+    c = cfg(pair_relay_names=["n" * 63 + ".local"], pair_relay_addrs=["192.168.100.200", "10.100.200.250"])
+    async with Board() as b:
+        assert await pair(
+            c, transport=b.host, store=MemoryStore(), serial=FAKE_SERIAL, ssid="s" * 32, password="p" * 63,
+            out=[].append, extra_networks=_worst("t", "q"),
+        )
+    payload = json.dumps(b.dev.paired, ensure_ascii=False, separators=(",", ":")).encode()
+    assert len(payload) <= PAIR_PAYLOAD_MAX and len(b.dev.paired["networks"]) == 4
+
+
+async def test_oversize_pair_is_refused_before_the_board_or_keychain_is_touched():
+    store = MemoryStore()
+    store.set(IDENTITY, OLD_KEY)
+    async with Board() as b:
+        with pytest.raises(PairError) as e:
+            await pair(
+                cfg(), transport=b.host, store=store, serial=FAKE_SERIAL, ssid='"' * 32, password='"' * 63,
+                out=[].append, extra_networks=_worst('"', '"'),
+            )
+    assert "超过了设备能接收的 1023 字节" in str(e.value) and '"' * 8 not in str(e.value)
+    assert b.dev.paired is None and b.dev.host_hellos == 0 and store.get(IDENTITY) == OLD_KEY
+
+
+def _prompts(monkeypatch, names, passwords):
+    from claude_voice import cli
+
+    asked = {"input": [], "getpass": []}
+    names, passwords = iter(names), iter(passwords)
+    monkeypatch.setattr("builtins.input", lambda prompt: (asked["input"].append(prompt), next(names))[1])
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: (asked["getpass"].append(prompt), next(passwords))[1])
+    return cli, asked
+
+
+def test_more_wifi_stops_at_an_empty_name(monkeypatch):
+    cli, asked = _prompts(monkeypatch, ["我的手机", ""], [HOTSPOT_PASSWORD])
+    assert cli._ask_more_wifi("家里的网") == [("我的手机", HOTSPOT_PASSWORD)]
+    assert asked["input"] == [
+        "其他 Wi-Fi 名称（还可添加 3 个，例如手机热点；直接按回车结束）：",
+        "其他 Wi-Fi 名称（还可添加 2 个，例如手机热点；直接按回车结束）：",
+    ]
+    assert asked["getpass"] == ["「我的手机」的密码（输入时不显示）："]
+
+
+def test_more_wifi_asks_for_at_most_three(monkeypatch):
+    cli, asked = _prompts(monkeypatch, ["a", "b", "c", "d"], [PASSWORD, "", PASSWORD])
+    assert cli._ask_more_wifi("home") == [("a", PASSWORD), ("b", ""), ("c", PASSWORD)]
+    assert len(asked["input"]) == 3 and len(asked["getpass"]) == 3
+
+
+@pytest.mark.parametrize(
+    "names,passwords,message",
+    [
+        (["home"], [], "已经输入过了"),
+        (["a", "a"], [PASSWORD], "已经输入过了"),
+        (["x" * 33], [], "不能超过 32 个字符"),
+        (["a"], ["short"], "8 到 63 个字符"),
+        (["a"], ["p" * 64], "8 到 63 个字符"),
+    ],
+    ids=["same-as-main", "repeated", "long-name", "short-password", "long-password"],
+)
+def test_more_wifi_validates_like_the_main_network(monkeypatch, names, passwords, message):
+    cli, _ = _prompts(monkeypatch, names, passwords)
+    with pytest.raises(PairError, match=message):
+        cli._ask_more_wifi("home")
+
+
+async def test_pair_command_passes_the_extra_networks(monkeypatch):
+    from claude_voice import cli
+
+    seen = {}
+
+    async def fake_pair(c, **kw):
+        seen.update(kw)
+        return True
+
+    async def fake_usb(c, port):
+        return "transport"
+
+    monkeypatch.setattr(cli, "_board", lambda c: ("port", FAKE_SERIAL))
+    monkeypatch.setattr(cli, "_ask_wifi", lambda c: ("家里的网", PASSWORD))
+    monkeypatch.setattr(cli, "_ask_more_wifi", lambda main: [("我的手机", HOTSPOT_PASSWORD)] if main == "家里的网" else [])
+    monkeypatch.setattr(cli, "_usb", fake_usb)
+    monkeypatch.setattr(cli, "keychain", lambda c: MemoryStore())
+    monkeypatch.setattr(cli, "pair", fake_pair)
+    assert await cli.pair_command(cfg())
+    assert seen["extra_networks"] == [("我的手机", HOTSPOT_PASSWORD)] and seen["ssid"] == "家里的网"
+
+
+async def test_pair_command_refuses_an_oversize_pair_before_opening_the_port(monkeypatch):
+    from claude_voice import cli
+
+    opened = []
+
+    async def fake_usb(c, port):
+        opened.append(port)
+        return "transport"
+
+    monkeypatch.setattr(cli, "_board", lambda c: ("port", FAKE_SERIAL))
+    monkeypatch.setattr(cli, "_ask_wifi", lambda c: ('"' * 32, '"' * 63))
+    monkeypatch.setattr(cli, "_ask_more_wifi", lambda main: _worst('"', '"'))
+    monkeypatch.setattr(cli, "_usb", fake_usb)
+    monkeypatch.setattr(cli, "pair", lambda *a, **kw: pytest.fail("pair ran"))
+    with pytest.raises(PairError, match="1023 字节"):
+        await cli.pair_command(cfg())
+    assert opened == []
+
+
+class FailOn(MemoryStore):
+    """Holds OLD_KEY and EARLIER_KEY; the named call raises, after taking effect when `effect` is set."""
+
+    def __init__(self, name, effect=False):
+        super().__init__()
+        self.items[IDENTITY] = OLD_KEY
+        self.items[f"{IDENTITY}-earlier-{key_id(EARLIER_KEY)}"] = EARLIER_KEY
+        self.name, self.effect, self.armed = name, effect, True
+
+    def _maybe(self, name, call):
+        if name == self.name and self.armed:
+            self.armed = False
+            if self.effect:
+                call()
+            raise KeychainError(f"{name} failed")
+        return call()
+
+    def earlier(self, identity):
+        return self._maybe("earlier", lambda: super(FailOn, self).earlier(identity))
+
+    def set_earlier(self, identity, kid, key):
+        return self._maybe("set_earlier", lambda: super(FailOn, self).set_earlier(identity, kid, key))
+
+    def set(self, identity, key):
+        return self._maybe("set", lambda: super(FailOn, self).set(identity, key))
+
+    def delete_earlier(self, identity, kid):
+        return self._maybe("delete_earlier", lambda: super(FailOn, self).delete_earlier(identity, kid))
+
+
+@pytest.mark.parametrize("name,effect", [("earlier", False), ("set_earlier", False), ("set", False), ("set", True)],
+                         ids=["listing", "copy-old-key", "set", "set-took-effect"])
+async def test_pair_start_keychain_failure_aborts_before_pair_and_restores_every_item(name, effect):
+    store = FailOn(name, effect)
+    store.items.pop(f"{IDENTITY}-earlier-{key_id(EARLIER_KEY)}")
+    before, out = dict(store.items), []
+    async with Board() as b:
+        with pytest.raises(KeychainError):
+            await run_pair(b, store=store, out=out)
+    assert T.PAIR not in b.dev.received and store.items == before and STALE_KEY not in out
+
+
+async def test_pair_send_that_reached_the_board_before_failing_never_restores_the_old_key(monkeypatch):
+    from claude_voice import pairing as pairing_mod
+
+    send = pairing_mod.UsbConsole.send
+
+    def send_then_fail(self, ftype, payload=b""):
+        send(self, ftype, payload)
+        if ftype == T.PAIR:
+            raise TransportClosed
+
+    monkeypatch.setattr(pairing_mod.UsbConsole, "send", send_then_fail)
+    store, out = MemoryStore(), []
+    store.set(IDENTITY, OLD_KEY)
+    async with Board() as b:
+        assert await run_pair(b, store=store, out=out), out
+    assert kept(store, bytes.fromhex(b.dev.paired["psk"])) and out[-1].startswith("配对完成")
+
+
+class CleanupListingFails(FailOn):
+    """Lists earlier keys at the start of pair, fails to list them once the new key is current."""
+
+    def earlier(self, identity):
+        if self.items.get(IDENTITY) != OLD_KEY:
+            raise KeychainError("dump failed")
+        return super().earlier(identity)
+
+
+@pytest.mark.parametrize("store_of", [lambda: CleanupListingFails(""), lambda: FailOn("delete_earlier")],
+                         ids=["listing", "earlier-delete"])
+async def test_pair_ok_with_a_failing_cleanup_is_still_a_success(store_of, caplog):
+    caplog.set_level(logging.WARNING, logger="claude_voice")
+    store, out = store_of(), []
+    async with Board() as b:
+        assert await run_pair(b, store=store, out=out), out
+    assert store.get(IDENTITY) == bytes.fromhex(b.dev.paired["psk"]) and STALE_KEY not in out
+    assert out[-1].startswith("配对完成")
+    assert any("not all deleted" in r.getMessage() for r in caplog.records)
+
+
+def test_a_failed_keychain_set_updates_in_place_and_never_deletes(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append((args[1:], kw.get("input")))
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(keychain_mod.subprocess, "run", fake_run)
+    with pytest.raises(KeychainError):
+        KeychainStore("claude-voice-test", 5.0).set(IDENTITY, KEY32)
+    ((args, stdin),) = calls
+    assert args == ["-i"] and stdin.startswith("add-generic-password -U ") and "delete" not in stdin

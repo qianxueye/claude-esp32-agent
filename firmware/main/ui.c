@@ -19,6 +19,7 @@
 #include "acomp.h"
 #include "aglue.h"
 #include "arcvis.h"
+#include "battstate.h"
 #include "bright.h"
 #include "brtmap.h"
 #include "orient.h"
@@ -46,7 +47,7 @@ typedef struct {
     int state, dx, dy, gx, gy, shift;
     int eye_mode, eye_dx, eye_row, eye_h;
     int claw_l, claw_r, legs_up, dim;
-    int pop, bub, dot_phase, spin;
+    int pop, bub, dot_phase, spin, batt;
     int anim_clip, anim_frame;
 } scene_t;
 
@@ -97,6 +98,7 @@ static dev_state_t s_state = ST_IDLE;
 static uint32_t s_state_since, s_last_tick, s_pop_at;
 static int s_pop, s_pop_target, s_bub_state;
 static scene_t s_drawn;
+static volatile int s_batt;
 static volknob_t s_vk;
 static arcvis_t s_av;
 static volarc_t s_arc, s_barc, s_over[2];
@@ -116,7 +118,7 @@ static dp_stage_t s_logged_stage = DP_ACTIVE;
 static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
-static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown"};
+static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown", "power"};
 static aplay_t s_ap;
 static bool s_ap_ready, s_skin_on = true;
 static int s_anim_pin = -1, s_pal_clip = -1;
@@ -324,6 +326,34 @@ static void draw_bubble(const scene_t *s)
     }
 }
 
+/* Whether the icon sits beside the bubble of this state; the other bubbles hide it. */
+static const bool BATT_BESIDE_BUBBLE[ST_COUNT] = {[ST_ERROR] = true, [ST_OFFLINE] = true};
+
+static void draw_battery(const scene_t *s)
+{
+    batt_rect_t r[BATT_RECTS_MAX];
+    int w, h, n = batt_layout((batt_look_t)BATT_LOOK(s->batt), BATT_BARS(s->batt), r, &w, &h);
+    const bool below = s->pop == 0, beside = s->pop == 3 && BATT_BESIDE_BUBBLE[s->bub];
+    int bx, by;
+    if (n == 0 || s_art_ready || (!below && !beside)) {
+        return;
+    }
+    if (below) {
+        bx = SCENE / 2 + BATT_CENTER_DX_PX + s->gx - w / 2;
+        by = SCENE / 2 + 5 * C + BATT_GAP_UNITS * U + s->gy - (h - BATT_PLAIN_H);
+    } else {
+        const bubble_def_t *b = &BUBBLES[s->bub];
+        const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(ag_content_units(bubble_content(b))), b->thought, s->pop, s->gx, s->gy, SCENE);
+        bx = t.body.x + t.body.w + 2 * U;
+        bx = bx < SCENE / 2 + BATT_BESIDE_MAX_DX_PX - w ? bx : SCENE / 2 + BATT_BESIDE_MAX_DX_PX - w;
+        by = t.body.y + BUBBLE_HEIGHT_UNITS / 2 * U - h / 2;
+    }
+    static const uint8_t COL[] = {[BATT_C_GREY] = PAL_OFFLINE_FILL, [BATT_C_CREAM] = PAL_FILL, [BATT_C_RED] = PAL_ERROR};
+    for (int i = 0; i < n; i++) {
+        fill(bx + r[i].x, by + r[i].y, r[i].w, r[i].h, COL[r[i].color]);
+    }
+}
+
 static void render_masks(lv_obj_t *scr)
 {
     for (int st = 0; st < ST_COUNT; st++) {
@@ -423,6 +453,7 @@ static void compute_scene(scene_t *s, uint32_t now)
     s->dim = 100;
     s->bub = s_bub_state;
     s->pop = s_pop;
+    s->batt = __atomic_load_n(&s_batt, __ATOMIC_RELAXED);
     s->shift = (BUBBLE_SHIFT_UNITS * s_pop / 3) * U;
     if (s_pop == 3 && BUBBLES[s_bub_state].dots) {
         s->dot_phase = (int)((t / BUBBLE_DOT_PULSE_MS) % 3);
@@ -520,6 +551,7 @@ static void redraw(const scene_t *s)
         draw_anim(s);
     }
     draw_bubble(s);
+    draw_battery(s);
     s_prev_bb = s_bb;
     s_model_dirty = true;
     s_redraw_us += (uint32_t)(esp_timer_get_time() - t0);
@@ -1488,4 +1520,9 @@ void ui_anim_stats(ui_anim_stats_t *out)
         .seeks = s_held.seeks,
         .verify_ms = skin_verify_ms(),
     };
+}
+
+void ui_set_battery(int packed)
+{
+    __atomic_store_n(&s_batt, packed, __ATOMIC_RELAXED);
 }

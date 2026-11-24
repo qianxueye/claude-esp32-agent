@@ -16,6 +16,34 @@
 #define HOST_JSON_BYTES 128
 #define SNAPSHOT_QUEUE_DEPTH 8
 
+/* Network link (docs/protocol.md "Links", "Pairing") */
+#define NET_PAIR_MAX_BYTES 1023 /* PAIR text; its buffer keeps one more byte for the terminator */
+#define NET_REMOTE_MAX_BYTES 511 /* SET_REMOTE payload; its buffer keeps one more byte */
+#define NET_URL_MAX 255
+#define WIFI_NETWORKS_MAX 4
+#define NET_RELAY_NAMES_MAX 4
+#define NET_RELAY_NAME_MAX 63
+#define NET_RELAY_ADDRS_MAX 8
+#define LAN_CONNECT_TIMEOUT_MS 1500 /* TCP connect to one relay address on the LAN */
+#define REMOTE_CONNECT_TIMEOUT_MS 15000 /* DNS, TCP, outer TLS and upgrade of the remote URL */
+#define NET_BACKOFF_MIN_MS 1000 /* relay and association retry, doubling */
+#define NET_BACKOFF_MAX_MS 30000
+#define NET_NVS_PARTITION "clawdnet" /* its own partition, so FORGET can erase its flash */
+#define NET_NVS_NAMESPACE "clawdnet"
+#define NET_INNER_HANDSHAKE_MS 10000 /* the relay's own handshake limit */
+#define REMOTE_STEP_TIMEOUT_MS 5000 /* per blocking step of the tunnel connect; docs/network.md "Bounds" */
+#define NET_SCAN_TIMEOUT_MS 10000
+#define NET_ASSOC_TIMEOUT_MS 20000 /* association and DHCP */
+#define NET_POLL_MS 20 /* socket wait per network task loop */
+#define NET_WS_READ_TIMEOUT_MS 5000 /* rest of a WebSocket message once its first byte is readable */
+#define NET_WS_WRITE_TIMEOUT_MS 5000
+#define NET_WS_TX_BYTES 4352 /* one inner TLS record per WebSocket message */
+#define NET_TX_RING_BYTES 32768 /* network frame queue; at least twice the largest frame */
+#define NET_TX_LOCK_WAIT_MS 5
+#define NET_READ_CHUNK_BYTES 1024
+#define NET_EVENT_QUEUE_DEPTH 16
+#define NET_STATUS_JSON_BYTES 128
+
 /* USB-Serial-JTAG transport */
 #define USB_RX_BUFFER_BYTES 16384
 #define USB_TX_BUFFER_BYTES 32768
@@ -127,6 +155,11 @@
 #define PMU_I2C_ADDR 0x34 /* plain configuration: AXP2101, read-only */
 #define PMU_I2C_HZ 400000 /* plain configuration */
 #define PMU_I2C_TIMEOUT_MS 50 /* plain configuration */
+#define BATT_POLL_MS 2000 /* plain configuration: PMU status poll period */
+#define BATT_LOW_ENTER_PCT 20 /* plain configuration: the low look starts at or below this percentage */
+#define BATT_LOW_EXIT_PCT 25 /* plain configuration: the low look ends at or above this percentage */
+#define BATT_STALE_MS 10000 /* plain configuration: failed reads hide the icon after this long */
+#define BATT_LOG_EVERY_MS 60000 /* plain configuration: the batt line repeats at this period */
 
 /* Display geometry (docs/mascot.md); cell and bubble unit are whole screen pixels */
 #define LCD_SIZE 466
@@ -146,6 +179,10 @@ _Static_assert(SCENE_SIZE_PX % 32 == 0 && (SCENE_SIZE_PX / 32) % 2 == 1, "mathem
 #define BUBBLE_OFFLINE_FILL_COLOR 0x8A877F
 #define BUBBLE_SHIFT_UNITS 10 /* mascot moves down this many units while a bubble is shown */
 #define BUBBLE_GAP_UNITS 3
+#define BUBBLE_HEIGHT_UNITS 18 /* bubble body height */
+#define BATT_GAP_UNITS 6 /* plain configuration: space between the legs and the battery outline */
+#define BATT_CENTER_DX_PX -2 /* plain configuration: icon centre relative to the scene centre */
+#define BATT_BESIDE_MAX_DX_PX 160 /* plain configuration: farthest right edge of the icon beside the top bubble, from the scene centre */
 #define BUBBLE_PAD_UNITS 2
 #define BUBBLE_POP_STEP_MS 60
 #define BUBBLE_DOT_PULSE_MS 300
@@ -253,7 +290,8 @@ _Static_assert((ORBIT_COLS - 1) * ORBIT_PITCH_PX % 2 == 0 && (ORBIT_ROWS - 1) * 
 #define PRIO_BLIT 5
 #define PRIO_WORKER 5
 #define PRIO_SKIN_VERIFY 3 /* plain configuration: below the UI, audio and rx tasks */
-#define STACK_RX 4096
+#define PRIO_NET 5
+#define STACK_RX 6144 /* PAIR parsing and its NVS write run on it */
 #define STACK_TX 4096
 #define STACK_MIC 6144
 #define STACK_SPK 6144
@@ -263,3 +301,4 @@ _Static_assert((ORBIT_COLS - 1) * ORBIT_PITCH_PX % 2 == 0 && (ORBIT_ROWS - 1) * 
 #define STACK_BLIT 3072
 #define STACK_WORKER 6144
 #define STACK_SKIN_VERIFY 3072
+#define STACK_NET 12288 /* inner and outer mbedTLS calls nest on it */

@@ -40,6 +40,8 @@ void ui_set_arc_over(int cells);
 /* Test aids: pin the ACTIVE brightness without storing it (negative releases), or set and store it as a swipe would; values are snapped to the ladder. */
 void ui_set_brightness_pin(int pct);
 void ui_set_brightness(int pct);
+/* Battery look and bars packed with BATT_PACK; drawn on the next UI tick. */
+void ui_set_battery(int packed);
 /* The percent last written to the panel. */
 int ui_panel_level(void);
 /* Renders the active screen into an RGB565 buffer; release it with ui_snapshot_free. */
