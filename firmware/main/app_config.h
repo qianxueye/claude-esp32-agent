@@ -182,6 +182,7 @@ _Static_assert(SCENE_SIZE_PX % 32 == 0 && (SCENE_SIZE_PX / 32) % 2 == 1, "mathem
 #define BUBBLE_HEIGHT_UNITS 18 /* bubble body height */
 #define BATT_GAP_UNITS 6 /* plain configuration: space between the legs and the battery outline */
 #define BATT_CENTER_DX_PX -2 /* plain configuration: icon centre relative to the scene centre */
+#define BATT_BESIDE_GAP_UNITS 2 /* plain configuration: space between a bubble and the icon beside it */
 #define BATT_BESIDE_MAX_DX_PX 160 /* plain configuration: farthest right edge of the icon beside the top bubble, from the scene centre */
 #define BUBBLE_PAD_UNITS 2
 #define BUBBLE_POP_STEP_MS 60

@@ -334,23 +334,20 @@ static void draw_battery(const scene_t *s)
     batt_rect_t r[BATT_RECTS_MAX];
     int w, h, n = batt_layout((batt_look_t)BATT_LOOK(s->batt), BATT_BARS(s->batt), r, &w, &h);
     const bool below = s->pop == 0, beside = s->pop == 3 && BATT_BESIDE_BUBBLE[s->bub];
-    int bx, by;
     if (n == 0 || s_art_ready || (!below && !beside)) {
         return;
     }
+    ag_rect_t at;
     if (below) {
-        bx = SCENE / 2 + BATT_CENTER_DX_PX + s->gx - w / 2;
-        by = SCENE / 2 + 5 * C + BATT_GAP_UNITS * U + s->gy - (h - BATT_PLAIN_H);
+        at = ag_batt_below(w, h, s->gx, s->gy, SCENE);
     } else {
         const bubble_def_t *b = &BUBBLES[s->bub];
         const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(ag_content_units(bubble_content(b))), b->thought, s->pop, s->gx, s->gy, SCENE);
-        bx = t.body.x + t.body.w + 2 * U;
-        bx = bx < SCENE / 2 + BATT_BESIDE_MAX_DX_PX - w ? bx : SCENE / 2 + BATT_BESIDE_MAX_DX_PX - w;
-        by = t.body.y + BUBBLE_HEIGHT_UNITS / 2 * U - h / 2;
+        at = ag_batt_beside_top(&t, w, h, SCENE);
     }
     static const uint8_t COL[] = {[BATT_C_GREY] = PAL_OFFLINE_FILL, [BATT_C_CREAM] = PAL_FILL, [BATT_C_RED] = PAL_ERROR};
     for (int i = 0; i < n; i++) {
-        fill(bx + r[i].x, by + r[i].y, r[i].w, r[i].h, COL[r[i].color]);
+        fill(at.x + r[i].x, at.y + r[i].y, r[i].w, r[i].h, COL[r[i].color]);
     }
 }
 

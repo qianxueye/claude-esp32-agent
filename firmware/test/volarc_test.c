@@ -197,18 +197,17 @@ static double case_corner(const scene_case_t *s)
                     x1 = x1 > (cx - w / 2 + w) * u ? x1 : (cx - w / 2 + w) * u;
                     y0 = y0 < (bottom_u - BUBBLE_HEIGHT_UNITS) * u ? y0 : (bottom_u - BUBBLE_HEIGHT_UNITS) * u;
                     if (s->beside) {
-                        int ix = (cx - w / 2 + w) * u + 2 * u, iy = (bottom_u - BUBBLE_HEIGHT_UNITS + BUBBLE_HEIGHT_UNITS / 2) * u - BATT_BOLT_H / 2;
-                        int ix_max = half + BATT_BESIDE_MAX_DX_PX - BATT_BOLT_W;
-                        ix = ix < ix_max ? ix : ix_max;
-                        x1 = x1 > ix + BATT_BOLT_W ? x1 : ix + BATT_BOLT_W;
-                        y0 = y0 < iy ? y0 : iy;
-                        y1 = y1 > iy + BATT_BOLT_H ? y1 : iy + BATT_BOLT_H;
+                        const ag_top_bubble_t t = ag_top_bubble(w, s->thought, 3, gx, gy, SCENE_SIZE_PX);
+                        const ag_rect_t r = ag_batt_beside_top(&t, BATT_BOLT_W, BATT_BOLT_H, SCENE_SIZE_PX);
+                        x1 = x1 > r.x + r.w ? x1 : r.x + r.w;
+                        y0 = y0 < r.y ? y0 : r.y;
+                        y1 = y1 > r.y + r.h ? y1 : r.y + r.h;
                     }
                 } else {
-                    int ix = half + BATT_CENTER_DX_PX + gx - BATT_BOLT_W / 2, iy = half + 5 * c + BATT_GAP_UNITS * u + gy - (BATT_BOLT_H - BATT_PLAIN_H);
-                    x0 = x0 < ix ? x0 : ix;
-                    x1 = x1 > ix + BATT_BOLT_W ? x1 : ix + BATT_BOLT_W;
-                    y1 = y1 > iy + BATT_BOLT_H ? y1 : iy + BATT_BOLT_H;
+                    const ag_rect_t r = ag_batt_below(BATT_BOLT_W, BATT_BOLT_H, gx, gy, SCENE_SIZE_PX);
+                    x0 = x0 < r.x ? x0 : r.x;
+                    x1 = x1 > r.x + r.w ? x1 : r.x + r.w;
+                    y1 = y1 > r.y + r.h ? y1 : r.y + r.h;
                 }
                 double ax = fmax(abs(x0 - 1 - half), abs(x1 + 1 - half)), ay = fmax(abs(y0 - 1 - half), abs(y1 + 1 - half));
                 worst = fmax(worst, hypot(ax, ay));

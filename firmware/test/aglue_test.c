@@ -5,6 +5,7 @@
 #include "aglue.h"
 #include "apack_golden.h"
 #include "app_config.h"
+#include "battstate.h"
 #include "motion.h"
 
 #define SCENE SCENE_SIZE_PX
@@ -263,6 +264,32 @@ static void test_b4_top_bubble_unchanged(void)
     const ag_top_bubble_t t = ag_top_bubble(40, false, 3, -12, -4, SCENE);
     assert(t.body.w == 160 && t.body.h == 72 && t.cx_u == (SCENE / 2 - 12) / 4 && t.body.x == (t.cx_u - 20) * 4);
     printf("B4: %d cases\n", n);
+}
+
+/* B5: the battery icon's offset from the scene centre, pinned to the pixel layout of the 320 px scene; the last pin is where the beside clamp binds. */
+static void test_b5_battery_pins(void)
+{
+    enum { BELOW, ERROR_TOP, OFFLINE_TOP };
+    static const struct {
+        int at, w, h, gx, gy, dx, dy;
+    } PINS[] = {
+        {BELOW, BATT_PLAIN_W, BATT_PLAIN_H, -12, -4, -32, 100},
+        {BELOW, BATT_BOLT_W, BATT_BOLT_H, -12, -4, -46, 96},
+        {ERROR_TOP, BATT_PLAIN_W, BATT_PLAIN_H, -12, -4, 80, -112},
+        {OFFLINE_TOP, BATT_BOLT_W, BATT_BOLT_H, -12, -4, 56, -114},
+        {ERROR_TOP, BATT_BOLT_W, BATT_BOLT_H, 8, 24, 96, -86},
+    };
+    const int half = SCENE / 2;
+    for (size_t k = 0; k < sizeof PINS / sizeof PINS[0]; k++) {
+        ag_rect_t r = ag_batt_below(PINS[k].w, PINS[k].h, PINS[k].gx, PINS[k].gy, SCENE);
+        if (PINS[k].at != BELOW) {
+            const ag_content_t c = {PINS[k].at == ERROR_TOP ? 3 : 2, false, false};
+            const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(ag_content_units(c)), false, 3, PINS[k].gx, PINS[k].gy, SCENE);
+            r = ag_batt_beside_top(&t, PINS[k].w, PINS[k].h, SCENE);
+        }
+        assert(r.x - half == PINS[k].dx && r.y - half == PINS[k].dy && r.w == PINS[k].w && r.h == PINS[k].h);
+    }
+    printf("B5: %zu battery pins\n", sizeof PINS / sizeof PINS[0]);
 }
 
 static void test_bring_follows_the_decode_rules(void)
@@ -571,6 +598,7 @@ int main(void)
     test_b2_left_mirrors_right();
     test_b3_bub_y_snap_and_edge();
     test_b4_top_bubble_unchanged();
+    test_b5_battery_pins();
     test_bring_follows_the_decode_rules();
     test_g1_bring_not_ready();
     test_stage_map();

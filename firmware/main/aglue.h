@@ -96,6 +96,11 @@ irect_t ag_bubble_bbox(const ag_bubble_t *b);
 /* Clawd's bubble above the mascot, as ui.c draws it. */
 ag_top_bubble_t ag_top_bubble(int w_units, bool thought, int pop, int gx, int gy, int scene);
 
+/* The w x h battery icon below the legs on the raw orbit, the spot it takes with no bubble (docs/mascot.md "Battery icon"). */
+ag_rect_t ag_batt_below(int w, int h, int gx, int gy, int scene);
+/* The icon right of Clawd's full top bubble, centred on its body; its right edge at most BATT_BESIDE_MAX_DX_PX from the scene centre. */
+ag_rect_t ag_batt_beside_top(const ag_top_bubble_t *t, int w, int h, int scene);
+
 /* A running count, sum and maximum of per-frame times in microseconds. */
 typedef struct {
     uint32_t n, sum, max;

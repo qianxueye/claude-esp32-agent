@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "app_config.h"
+#include "battstate.h"
 #include "motion.h"
 
 uint32_t ag_imu_bits(int motion_ev, bool lifted)
@@ -188,6 +189,17 @@ ag_top_bubble_t ag_top_bubble(int w_units, bool thought, int pop, int gx, int gy
     t.cx_u = (scene / 2 + gx) / U;
     t.body = (ag_rect_t){(t.cx_u - ws / 2) * U, (t.bottom_u - hs) * U, ws * U, hs * U};
     return t;
+}
+
+ag_rect_t ag_batt_below(int w, int h, int gx, int gy, int scene)
+{
+    return (ag_rect_t){scene / 2 + BATT_CENTER_DX_PX + gx - w / 2, scene / 2 + 5 * MASCOT_CELL_PX + BATT_GAP_UNITS * U + gy - (h - BATT_PLAIN_H), w, h};
+}
+
+ag_rect_t ag_batt_beside_top(const ag_top_bubble_t *t, int w, int h, int scene)
+{
+    const int x = t->body.x + t->body.w + BATT_BESIDE_GAP_UNITS * U, x_max = scene / 2 + BATT_BESIDE_MAX_DX_PX - w;
+    return (ag_rect_t){x < x_max ? x : x_max, t->body.y + BUBBLE_HEIGHT_UNITS / 2 * U - h / 2, w, h};
 }
 
 void ag_acc_add(ag_acc_t *a, uint32_t us)
