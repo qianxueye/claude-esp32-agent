@@ -1518,6 +1518,7 @@ void ui_set_anim_pin(int clip)
 
 void ui_anim_stats(ui_anim_stats_t *out)
 {
+    bsp_display_lock(-1); /* the UI task updates these counters under this lock */
     *out = (ui_anim_stats_t){
         .pack = (int)skin_status(),
         .skin = s_skin_on,
@@ -1539,6 +1540,7 @@ void ui_anim_stats(ui_anim_stats_t *out)
         .seeks = s_held.seeks,
         .verify_ms = skin_verify_ms(),
     };
+    bsp_display_unlock();
 }
 
 void ui_set_battery(int packed)
