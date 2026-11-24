@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 from test_qwen_tts import SAY_PCM, FakeSay, needs_afconvert, write_fake_server
@@ -759,6 +760,27 @@ async def test_disconnect_during_a_request_warns_once(tmp_path, remotes, caplog)
     await ready(q, remote, n=2)
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert len(warnings) == 1, warnings
+    await q.close()
+
+
+@needs_afconvert
+async def test_a_working_request_ends_the_outage_for_logging(tmp_path, remotes, caplog, monkeypatch):
+    caplog.set_level("INFO", logger="claude_voice.qwen_tts")
+    q, remote = await engine(tmp_path, remotes, qwen_skip_s=0.0)
+    await q.start()
+    await ready(q, remote)
+
+    async def reset(*_a, **_k):
+        raise httpx.ReadError("connection reset")
+
+    with monkeypatch.context() as m:
+        m.setattr(q, "_request", reset)
+        assert await q.synth("一。") == SAY_PCM
+    assert await q.synth("二。") != SAY_PCM
+    (remote.dir / "drop").touch()
+    await ready(q, remote, n=2)
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 2 and "exited with 255" in warnings[1], warnings
     await q.close()
 
 

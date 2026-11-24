@@ -406,13 +406,17 @@ class QwenTts:
             pcm = await self._request(text)
         except Exception as e:
             msg = f"qwen3 synthesis failed; using say for the next {self._cfg.qwen_skip_s:g} s: {e!r}"
-            if self._cfg.qwen_ssh_host and isinstance(e, httpx.TransportError):
+            if (
+                self._cfg.qwen_ssh_host and isinstance(e, httpx.TransportError)
+                and not isinstance(e, httpx.TimeoutException)  # a slow sentence is not a broken link
+            ):
                 self._report("link", logging.WARNING, msg)  # the same outage the supervisor reports
             elif not self._failing:
                 log.warning("%s", msg)
             self._mark_failed()
             return await self._fallback.synth(text)
         self._failing = False
+        self._reported.clear()  # a working request ends an outage as a ready does
         log.debug("qwen3 synth %d chars in %.2f s", len(text), time.monotonic() - t0)
         return pcm
 
