@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -599,10 +600,11 @@ async def test_shutdown_right_after_the_guard_starts_still_stops_cloudflared(tmp
 async def test_close_cancelled_twice_still_stops_cloudflared(tmp_path, monkeypatch):
     urls = Urls()
     sup = await supervised(tmp_path, urls, ignore_term=True)
+    original = cloudflared_mod.reaped
+    closing = None
     try:
         await until(lambda: urls.seen, timeout=10)
         pid = runs(tmp_path)[0]["pid"]
-        original = cloudflared_mod.reaped
         entered = [asyncio.Event(), asyncio.Event()]
         never = asyncio.Event()
 
@@ -625,4 +627,10 @@ async def test_close_cancelled_twice_still_stops_cloudflared(tmp_path, monkeypat
                 await closing
         await until(lambda: not alive(pid), timeout=sup._grace + cloudflared_mod.STOP_MARGIN_S)
     finally:
+        # an early timeout must not leave the blocking wrapper or a pending close() behind
+        monkeypatch.setattr(cloudflared_mod, "reaped", original)
+        if closing is not None and not closing.done():
+            closing.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await closing
         await sup.close()
