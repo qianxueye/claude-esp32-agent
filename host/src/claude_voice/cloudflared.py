@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -22,10 +23,12 @@ HOSTNAME = re.compile(r"[a-z0-9-]{1,63}\.trycloudflare\.com")
 # the banner URL is a whole token, so `xhttps://…`, `….trycloudflare.com.evil` or `…/path` never match
 BANNER = re.compile(r"(?<![^\s|])https://([a-z0-9-]{1,63}\.trycloudflare\.com)(?=\s|$)", re.MULTILINE)
 POLL_S = 0.2
-STOP_TIMEOUT_S = 5.0
+GRACE_S = 3.0  # the guard's SIGTERM-to-SIGKILL wait for cloudflared
+STOP_MARGIN_S = 2.0  # the relay waits GRACE_S + this for the guard, so it never kills the guard first
 BANNER_READ_MAX = 256 * 1024  # bytes of one run's log searched for the banner
 HOST_CHARS = 80  # longest refused hostname kept for logs
 EMPTY_CONFIG = "{}\n"  # content of the file passed as `--config`
+GUARD = "claude_voice.cloudflared_guard"  # holds cloudflared; stops it when the relay's pipe closes
 ENV_PREFIX = "TUNNEL_"  # cloudflared reads its flags from these variables
 
 
@@ -61,12 +64,12 @@ class Cloudflared:
     """Supervises one cloudflared child; never raises into the relay, which keeps working without it."""
 
     def __init__(
-        self, cfg: Config, port: int, on_url: Callable[[str | None], None], stop_timeout_s: float = STOP_TIMEOUT_S
+        self, cfg: Config, port: int, on_url: Callable[[str | None], None], grace_s: float = GRACE_S
     ) -> None:
         self._cfg = cfg
         self._port = port
         self._on_url = on_url
-        self._stop_timeout = stop_timeout_s
+        self._grace = grace_s
         self._proc: asyncio.subprocess.Process | None = None
         self._log_file = None
         self._log_path = Path(cfg.log_dir) / "cloudflared.log"
@@ -104,11 +107,12 @@ class Cloudflared:
         offset = self._log_file.seek(0, 2)
         config = self._write_config()
         args = [
-            cfg.cloudflared_bin, "tunnel", "--no-autoupdate", "--config", config,
-            "--url", f"http://127.0.0.1:{self._port}",
+            sys.executable, "-m", GUARD, f"{self._grace:g}", cfg.cloudflared_bin,
+            "tunnel", "--no-autoupdate", "--config", config, "--url", f"http://127.0.0.1:{self._port}",
         ]
         self._proc = await asyncio.create_subprocess_exec(
-            *args, stdin=subprocess.DEVNULL, stdout=self._log_file, stderr=self._log_file, env=child_env()
+            *args, stdin=subprocess.PIPE, stdout=self._log_file, stderr=self._log_file, env=child_env(),
+            start_new_session=True,
         )
         host = await self._wait_hostname(offset)
         self._set_url(remote_url(host))
@@ -171,7 +175,7 @@ class Cloudflared:
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
-            await asyncio.wait_for(asyncio.shield(proc.wait()), self._stop_timeout)
+            await asyncio.wait_for(asyncio.shield(proc.wait()), self._grace + STOP_MARGIN_S)
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()

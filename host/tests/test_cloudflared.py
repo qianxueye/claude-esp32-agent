@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import stat
 import sys
 import time
@@ -115,7 +116,7 @@ async def supervised(tmp_path, on_url=None, cfg=None, port=47999, url_timeout=5.
     c = cf_cfg(
         cfg or Config(), tmp_path, binary, cloudflared_url_timeout_s=url_timeout, cloudflared_restart_max_s=restart_max
     )
-    sup = Cloudflared(c, port, on_url or Urls(), stop_timeout_s=0.5)
+    sup = Cloudflared(c, port, on_url or Urls(), grace_s=0.3)
     sup.start()
     return sup
 
@@ -484,3 +485,51 @@ def test_config_rejects_restart_max_below_min(tmp_path):
     p.write_text("cloudflared_restart_min_s = 5.0\ncloudflared_restart_max_s = 2.0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="cloudflared_restart_max_s"):
         load(p)
+
+
+async def test_relay_waits_for_the_guard_to_kill_a_child_that_ignores_sigterm(tmp_path):
+    urls = Urls()
+    sup = await supervised(tmp_path, urls, ignore_term=True)
+    await until(lambda: urls.seen, timeout=10)
+    guard, pid = sup._proc, runs(tmp_path)[0]["pid"]
+    await sup.close()
+    assert not alive(pid) and guard.returncode == 128 + signal.SIGKILL, cf_log(tmp_path)
+
+
+RELAY_STUB = r'''
+import asyncio, dataclasses, sys
+from claude_voice.cloudflared import Cloudflared
+from claude_voice.config import Config
+
+async def main(binary, log_dir):
+    cfg = dataclasses.replace(Config(), cloudflared_bin=binary, log_dir=log_dir, cloudflared_url_timeout_s=10.0)
+    Cloudflared(cfg, 47999, lambda url: None).start()
+    print("up", flush=True)
+    await asyncio.sleep(3600)
+
+asyncio.run(main(sys.argv[1], sys.argv[2]))
+'''
+
+
+async def test_cloudflared_stops_when_the_relay_is_killed(tmp_path):
+    binary = fake_cloudflared(tmp_path)
+    (tmp_path / "relay_stub.py").write_text(RELAY_STUB)
+    relay = await asyncio.create_subprocess_exec(
+        sys.executable, str(tmp_path / "relay_stub.py"), str(binary), str(tmp_path / "logs"),
+        stdout=asyncio.subprocess.PIPE,
+    )
+    pid = None
+    try:
+        await asyncio.wait_for(relay.stdout.readline(), 10)
+        await until(lambda: runs(tmp_path), timeout=10)
+        pid = runs(tmp_path)[0]["pid"]
+        assert alive(pid)
+        relay.kill()
+        await relay.wait()
+        await until(lambda: not alive(pid), timeout=10)
+    finally:
+        if pid is not None and alive(pid):
+            os.kill(pid, signal.SIGKILL)
+        if relay.returncode is None:
+            relay.kill()
+            await relay.wait()
