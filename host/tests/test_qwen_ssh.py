@@ -190,7 +190,7 @@ def test_guard_parses_on_python39_and_is_stdlib_only():
     tree = ast.parse(GUARD_FILE.read_text(), feature_version=(3, 9))
     names = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     names |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    assert names <= {"base64", "json", "os", "select", "signal", "socket", "subprocess", "sys", "time"}
+    assert names <= {"base64", "json", "os", "select", "shutil", "signal", "socket", "subprocess", "sys", "time"}
 
 
 @pytest.mark.parametrize("reason", ["eof", "heartbeat", "signal"])
@@ -732,6 +732,31 @@ async def test_busy_remote_port_fails_the_attempt(tmp_path, remotes, caplog):
         await q.close()
     finally:
         holder.close()
+
+
+async def test_listener_outside_the_server_group_gets_no_speech(tmp_path, remotes, caplog):
+    q, remote = await engine(tmp_path, remotes, hold=True, qwen_restart_min_s=30.0, qwen_restart_max_s=30.0)
+    await q.start()
+    await until(lambda: remote.servers(), timeout=30)  # the server is alive and has not bound its port
+    rival = socket.socket()
+    rival.bind(("127.0.0.1", q._cfg.qwen_remote_port))
+    rival.listen()
+    rival.setblocking(False)
+    try:
+        await until(lambda: any(r.levelname == "WARNING" for r in caplog.records), timeout=30)
+        received = b""
+        with contextlib.suppress(BlockingIOError):
+            while True:
+                conn, _ = rival.accept()
+                conn.setblocking(False)
+                with contextlib.suppress(BlockingIOError):
+                    received += conn.recv(65536)
+                conn.close()
+        assert received == b"" and "clawd-speech listening" not in remote.guard_out(), remote.log()
+        assert "is in use" in caplog.text and q._http is None
+        await q.close()
+    finally:
+        rival.close()
 
 
 async def test_shutdown_during_startup_keeps_ownership(tmp_path, remotes, monkeypatch):

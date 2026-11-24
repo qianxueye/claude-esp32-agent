@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import select
+import shutil
 import signal
 import socket
 import subprocess
@@ -13,6 +14,7 @@ import time
 
 TAG = "clawd-speech"
 POLL_S = 0.1
+LSOF_TIMEOUT_S = 5.0
 
 
 class Gone(Exception):
@@ -47,6 +49,24 @@ def listening(port):
         return False
 
 
+def listener_groups(lsof, port):
+    """Process groups of the processes listening on `port`, or None when lsof fails."""
+    try:
+        out = subprocess.run(
+            [lsof, "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN", "-t"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=LSOF_TIMEOUT_S,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    groups = set()
+    for pid in out.split():
+        try:
+            groups.add(os.getpgid(int(pid)))
+        except (OSError, ValueError):  # gone since lsof listed it
+            pass
+    return groups
+
+
 def kill_group(pgid, sig):
     try:
         os.killpg(pgid, sig)
@@ -78,7 +98,7 @@ def stop(child, grace_s):
     return 128 - code if code < 0 else code
 
 
-def watch(child, cfg, stopping):
+def watch(child, cfg, lsof, stopping):
     """Returns why the server must stop, or None once it has exited by itself."""
     port, deadline_s = cfg["port"], cfg["deadline_s"]
     last_beat = time.monotonic()
@@ -86,9 +106,14 @@ def watch(child, cfg, stopping):
     while not stopping:
         if child.poll() is not None:
             return None
-        if not ready and listening(port) and child.poll() is None:
-            ready = True
-            status("listening")
+        if not ready and listening(port):
+            groups = listener_groups(lsof, port)  # lsof runs only once something answers on the port
+            if groups and groups != {child.pid}:
+                status("busy %d" % port)
+                return "busy"
+            if groups and child.poll() is None:
+                ready = True
+                status("listening")
         readable, _, _ = select.select([0], [], [], POLL_S)
         if readable:
             if not os.read(0, 4096):
@@ -104,7 +129,11 @@ def main(payload):
     stopping = []
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, lambda s, _f: stopping.append(s))
+    lsof = "/usr/sbin/lsof" if os.path.exists("/usr/sbin/lsof") else shutil.which("lsof")
     try:
+        if lsof is None:
+            status("nolsof")
+            return 1
         if not port_free(cfg["port"]):
             status("busy %d" % cfg["port"])
             return 1
@@ -120,7 +149,7 @@ def main(payload):
         return 1
     reason = None
     try:
-        reason = watch(child, cfg, stopping)
+        reason = watch(child, cfg, lsof, stopping)
     except Gone:
         reason = "stdout"
     finally:

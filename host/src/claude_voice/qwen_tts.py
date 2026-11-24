@@ -248,7 +248,7 @@ class QwenTts:
         deadline = time.monotonic() + cfg.qwen_ready_timeout_s
         while "listening" not in statuses:
             for s in statuses:
-                if s.startswith(("busy", "exit")):
+                if s.startswith(("busy", "exit", "nolsof")):
                     raise TtsError(self._ended(proc, statuses))
             if proc.poll() is not None:
                 raise TtsError(self._ended(proc, statuses))
@@ -276,6 +276,8 @@ class QwenTts:
 
     def _ended(self, proc: subprocess.Popen, statuses: list[str]) -> str:
         for s in reversed(statuses):
+            if s == "nolsof":
+                return f"{self._cfg.qwen_ssh_host} has no lsof, so the speech server's port cannot be checked"
             if s.startswith("busy"):
                 return f"port {s.split()[-1]} on {self._cfg.qwen_ssh_host} is in use, maybe by an earlier server"
             if s.startswith("exit"):
