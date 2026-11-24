@@ -161,7 +161,7 @@ class QwenTts:
     def _ssh_argv(self, lport: int) -> list[str]:
         cfg = self._cfg
         opts = {
-            "BatchMode": "yes", "ExitOnForwardFailure": "yes",
+            "BatchMode": "yes", "StrictHostKeyChecking": "yes", "UpdateHostKeys": "no", "ExitOnForwardFailure": "yes",
             "ConnectTimeout": math.ceil(cfg.qwen_ssh_connect_timeout_s),
             "ServerAliveInterval": max(1, math.ceil(cfg.qwen_link_timeout_s / BEATS)),
             "ServerAliveCountMax": BEATS,

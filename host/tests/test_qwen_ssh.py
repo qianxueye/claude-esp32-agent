@@ -452,7 +452,8 @@ def test_ssh_argv_neutralises_user_config_and_binds_loopback(tmp_path):
     assert argv[:2] == ["/usr/bin/ssh", "-T"]
     opts = [argv[i + 1] for i, a in enumerate(argv) if a == "-o"]
     assert opts == [
-        "BatchMode=yes", "ExitOnForwardFailure=yes", "ConnectTimeout=10", "ServerAliveInterval=2",
+        "BatchMode=yes", "StrictHostKeyChecking=yes", "UpdateHostKeys=no", "ExitOnForwardFailure=yes",
+        "ConnectTimeout=10", "ServerAliveInterval=2",
         "ServerAliveCountMax=5", "ControlMaster=no", "ControlPath=none", "RemoteCommand=none", "RequestTTY=no",
         "SessionType=default", "StdinNull=no", "ForkAfterAuthentication=no", "ForwardAgent=no", "ForwardX11=no",
         "PermitLocalCommand=no",
