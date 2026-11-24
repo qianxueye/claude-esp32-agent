@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import math
+import re
 import shutil
 import tomllib
 from dataclasses import dataclass, field
@@ -119,7 +121,8 @@ class Config:
     tts_timeout_s: float = 30.0
     tts_engine: str = "say"  # "say" or "qwen3"; qwen3 falls back to say per sentence
     qwen_url: str = ""  # speech server base URL; ignored when qwen_server_cmd is set
-    qwen_server_cmd: list[str] = field(default_factory=list)  # argv; --host/--port are appended
+    # argv; --host/--port are appended; started on a free local port, or on qwen_ssh_host
+    qwen_server_cmd: list[str] = field(default_factory=list)
     qwen_model: str = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
     qwen_voice: str = "ono_anna"
     qwen_lang_code: str = "chinese"  # "chinese" or "japanese"
@@ -127,6 +130,14 @@ class Config:
     qwen_connect_timeout_s: float = 2.0
     qwen_skip_s: float = 30.0  # after a failure, use say for this long before trying the server again
     qwen_ready_timeout_s: float = 180.0
+    qwen_ssh_host: str = ""  # ssh config alias of the Mac that runs qwen_server_cmd; "" runs it here
+    qwen_ssh_bin: str = "/usr/bin/ssh"
+    qwen_remote_python: str = "/usr/bin/python3"  # runs the stdlib guard on that Mac
+    qwen_remote_port: int = 47803  # the server's port on that Mac, forwarded to a free local port
+    qwen_ssh_connect_timeout_s: float = 10.0  # ssh ConnectTimeout, which also covers the key exchange
+    qwen_link_timeout_s: float = 10.0  # no heartbeat for this long: the remote server is stopped
+    qwen_restart_min_s: float = 5.0
+    qwen_restart_max_s: float = 300.0  # a run longer than this resets the restart delay to the minimum
     afconvert_bin: str = "/usr/bin/afconvert"
 
     # earcons
@@ -143,8 +154,12 @@ POSITIVE_KEYS = (
     "tunnel_preauth_max", "tunnel_preauth_per_addr_max", "tunnel_upgrade_timeout_s",
     "tunnel_ws_max_message", "tunnel_preauth_bytes_max", "tunnel_write_buffer_max",
     "cloudflared_url_timeout_s", "cloudflared_restart_min_s", "cloudflared_restart_max_s",
-    "key_reload_interval_s",
+    "key_reload_interval_s", "qwen_ssh_connect_timeout_s", "qwen_link_timeout_s", "qwen_restart_min_s",
+    "qwen_restart_max_s",
 )
+SSH_TIMING_KEYS = ("qwen_ssh_connect_timeout_s", "qwen_link_timeout_s", "qwen_restart_min_s", "qwen_restart_max_s")
+# the remote python is pasted into the remote shell's command line, so it is limited to inert characters
+REMOTE_PYTHON = re.compile(r"/[A-Za-z0-9._/+-]+")
 
 
 def load(path: Path | str | None = None) -> Config:
@@ -165,8 +180,22 @@ def load(path: Path | str | None = None) -> Config:
     for key in POSITIVE_KEYS:
         if not getattr(cfg, key) > 0:
             raise ValueError(f"{key} must be positive, got {getattr(cfg, key)} in {p}")
+    for key in SSH_TIMING_KEYS:
+        if not math.isfinite(getattr(cfg, key)):
+            raise ValueError(f"{key} must be finite, got {getattr(cfg, key)} in {p}")
     if cfg.cloudflared_restart_max_s < cfg.cloudflared_restart_min_s:
         raise ValueError(f"cloudflared_restart_max_s must not be below cloudflared_restart_min_s in {p}")
+    if cfg.qwen_restart_max_s < cfg.qwen_restart_min_s:
+        raise ValueError(f"qwen_restart_max_s must not be below qwen_restart_min_s in {p}")
+    if type(cfg.qwen_remote_port) is not int or not 1 <= cfg.qwen_remote_port <= 65535:
+        raise ValueError(f"qwen_remote_port must be an integer 1-65535, got {cfg.qwen_remote_port!r} in {p}")
+    if cfg.qwen_ssh_host:
+        if cfg.qwen_ssh_host.startswith("-") or any(c.isspace() or not c.isprintable() for c in cfg.qwen_ssh_host):
+            raise ValueError(f"qwen_ssh_host must be an ssh alias without spaces or a leading '-' in {p}")
+        if not cfg.qwen_server_cmd:
+            raise ValueError(f"qwen_ssh_host needs qwen_server_cmd in {p}")
+    if not REMOTE_PYTHON.fullmatch(cfg.qwen_remote_python):
+        raise ValueError(f"qwen_remote_python must be an absolute path of letters, digits and ._+-/ in {p}")
     if not 0 <= cfg.volume <= 100:
         raise ValueError(f"volume must be 0-100, got {cfg.volume} in {p}")
     if cfg.tts_engine not in ("say", "qwen3"):

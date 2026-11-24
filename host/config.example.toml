@@ -8,7 +8,7 @@ voice = "Tingting"
 rate = 0            # words per minute, 0 = voice default
 # Qwen3-TTS through an mlx-audio speech server; any failure falls back to `say` for that sentence.
 # tts_engine = "qwen3"                        # default "say"
-# qwen_server_cmd = ["/path/to/venv/bin/python", "-m", "mlx_audio.server"]   # started on a free local port
+# qwen_server_cmd = ["/path/to/venv/bin/python", "-m", "mlx_audio.server"]   # started on a free local port, or on qwen_ssh_host
 # qwen_url = "http://127.0.0.1:8000"          # used when qwen_server_cmd is not set (e.g. an SSH-forwarded server)
 # qwen_model = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
 # qwen_voice = "ono_anna"
@@ -17,6 +17,14 @@ rate = 0            # words per minute, 0 = voice default
 # qwen_connect_timeout_s = 2.0
 # qwen_skip_s = 30.0                          # after a failure, use say for this long
 # qwen_ready_timeout_s = 180.0
+# Run qwen_server_cmd on another Mac over ssh; its paths are then paths on that Mac.
+# qwen_ssh_host = "speech-mac"                # placeholder: an alias in ~/.ssh/config with a key and a known host key
+# qwen_remote_python = "/usr/bin/python3"     # runs the relay's small stdlib guard on that Mac
+# qwen_remote_port = 47803                    # the server's port on that Mac
+# qwen_ssh_connect_timeout_s = 10.0
+# qwen_link_timeout_s = 10.0                  # that Mac stops the server this long after the relay goes silent
+# qwen_restart_min_s = 5.0                    # reconnect delay doubles from this ...
+# qwen_restart_max_s = 300.0                  # ... up to this; a longer run resets it
 volume = 70         # initial value for a board with no stored volume
 vad_min_speech_ms = 300
 vad_end_silence_ms = 800
