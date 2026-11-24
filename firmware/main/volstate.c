@@ -7,8 +7,13 @@ int vs_effective(const volst_t *s)
 
 bool vs_load(volst_t *s, int result, uint32_t raw)
 {
-    bool ok = result == VS_LOAD_FOUND && raw <= 100;
-    *s = (volst_t){.user = ok ? (int)raw : DEFAULT_VOLUME,
+    return vs_load_range(s, result, raw, 0, 100, DEFAULT_VOLUME);
+}
+
+bool vs_load_range(volst_t *s, int result, uint32_t raw, int lo, int hi, int dflt)
+{
+    bool ok = result == VS_LOAD_FOUND && raw >= (uint32_t)lo && raw <= (uint32_t)hi;
+    *s = (volst_t){.user = ok ? (int)raw : dflt,
                    .stored = ok ? (int)raw : -1,
                    .ovr = -1,
                    .set = ok,
@@ -69,6 +74,11 @@ bool vs_knob_end(volst_t *s, bool cancel)
     return s->user != s->base;
 }
 
+bool vs_swipe_end(volst_t *s, bool cancel)
+{
+    return vs_knob_end(s, cancel || s->user == s->base);
+}
+
 void vs_saved(volst_t *s, int v)
 {
     s->stored = v;
@@ -92,4 +102,12 @@ bool vs_needs_save(const volst_t *s)
 bool vs_save_due(const volst_t *s, uint32_t now, uint32_t last_write, bool quiet)
 {
     return vs_needs_save(s) && quiet && !s->knob && now - last_write >= VOL_SAVE_MIN_MS;
+}
+
+int vs_save_pick(bool a_due, bool b_due, int last)
+{
+    if (a_due && b_due) {
+        return last == VS_PICK_A ? VS_PICK_B : VS_PICK_A;
+    }
+    return a_due ? VS_PICK_A : b_due ? VS_PICK_B : VS_PICK_NONE;
 }

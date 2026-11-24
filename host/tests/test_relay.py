@@ -135,7 +135,7 @@ async def until(pred, timeout=5.0):
 
 
 async def test_happy_path_states_and_audio(h):
-    h.dev.inject(Input.TAP)
+    h.dev.inject(Input.BOOT_BUTTON)
     await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states)
     assert h.dev.states == [State.LISTENING, State.THINKING, State.SPEAKING, State.IDLE]
     assert h.agent.asked == ["你好"]
@@ -151,14 +151,14 @@ async def test_boot_button_starts_listening(h):
     await settle(h.dev, State.LISTENING)
 
 
-async def test_tap_ends_listening_early():
+async def test_key_ends_listening_early():
     h = make(mic=speech_pcm(lead_ms=200, speech_ms=20000), stt=FakeStt(delay=0.5))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.LISTENING)
         await asyncio.sleep(0.1)
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.THINKING)
     finally:
         await h.down()
@@ -168,7 +168,7 @@ async def test_no_speech_returns_to_idle():
     h = make(mic=b"", no_speech_timeout_s=0.3)
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.LISTENING)
         await until(lambda: h.dev.states[-1] == State.IDLE)
         assert h.stt.calls == []
@@ -180,7 +180,7 @@ async def test_max_listen_limit():
     h = make(mic=speech_pcm(speech_ms=60000), max_listen_s=0.4, stt=FakeStt(delay=0.5))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.THINKING)
     finally:
         await h.down()
@@ -190,7 +190,7 @@ async def test_empty_transcript_returns_to_idle():
     h = make(stt=FakeStt(text=""))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-2:] == [State.THINKING, State.IDLE])
         assert h.agent.asked == []
     finally:
@@ -201,10 +201,10 @@ async def test_barge_in_while_thinking():
     h = make(agent=FakeAgent(hang=True))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.THINKING)
         flushes = h.dev.flushes
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-1] == State.LISTENING)
         assert h.agent.interrupts >= 1 and h.dev.flushes > flushes
     finally:
@@ -215,10 +215,10 @@ async def test_barge_in_while_speaking():
     h = make(tts=FakeTts(ms=3000))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.SPEAKING)
         flushes = h.dev.flushes
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-1] == State.LISTENING and h.dev.flushes > flushes)
         assert h.agent.interrupts >= 1
         await until(lambda: h.dev.states[-1] == State.IDLE or State.SPEAKING in h.dev.states[-3:])
@@ -226,27 +226,61 @@ async def test_barge_in_while_speaking():
         await h.down()
 
 
-async def test_long_press_resets_conversation():
-    h = make(tts=FakeTts(ms=3000))
+TOUCH_CODES = (Input.TAP, Input.LONG_PRESS)
+
+
+REAL_ON_INPUT = Relay._on_input
+
+
+def key_as_touch(self, code):
+    """A wrong rule: a touch code acts like the BOOT or PWR key."""
+    REAL_ON_INPUT(self, Input.BOOT_BUTTON if code in TOUCH_CODES else code)
+
+
+async def check_touch_ignored(code, where):
+    """Drive the relay into `where`, send a touch code, and assert that nothing the key would do happened."""
+    mic = speech_pcm(lead_ms=200, speech_ms=20000) if where == State.LISTENING else None
+    agent = FakeAgent(hang=True) if where == State.THINKING else FakeAgent()
+    h = make(mic=mic, agent=agent, tts=FakeTts(ms=60000), stt=FakeStt(delay=0.5))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
-        await settle(h.dev, State.SPEAKING)
-        h.dev.inject(Input.LONG_PRESS)
-        await until(lambda: h.agent.resets == 1 and h.dev.states[-1] == State.IDLE)
-        assert h.dev.flushes >= 1
-        assert h.dev.clips  # reset earcon was ended
+        if where != State.IDLE:
+            h.dev.inject(Input.BOOT_BUTTON)
+            await settle(h.dev, where)
+        flushes, interrupts, calls, task = h.dev.flushes, h.agent.interrupts, len(h.stt.calls), h.relay._task
+        h.dev.inject(code)
+        await asyncio.sleep(0.15)
+        assert h.relay.state == where and h.dev.state == where
+        assert h.dev.flushes == flushes and h.agent.interrupts == interrupts
+        assert h.agent.resets == 0 and len(h.stt.calls) == calls and h.relay._task is task
+        if where == State.IDLE:
+            assert h.dev.states == [] and h.agent.asked == []
     finally:
         await h.down()
 
 
-async def test_long_press_while_idle():
+@pytest.mark.parametrize("where", [State.IDLE, State.LISTENING, State.THINKING, State.SPEAKING])
+@pytest.mark.parametrize("code", TOUCH_CODES)
+async def test_touch_codes_change_nothing(code, where):
+    await check_touch_ignored(code, where)
+
+
+@pytest.mark.parametrize("where", [State.IDLE, State.LISTENING, State.THINKING, State.SPEAKING])
+@pytest.mark.parametrize("code", TOUCH_CODES)
+async def test_touch_codes_check_catches_a_wrong_rule(monkeypatch, code, where):
+    monkeypatch.setattr(Relay, "_on_input", key_as_touch)
+    with pytest.raises(AssertionError):
+        await check_touch_ignored(code, where)
+
+
+async def test_key_after_touch_still_acts():
     h = make()
     await h.up()
     try:
+        h.dev.inject(Input.TAP)
         h.dev.inject(Input.LONG_PRESS)
-        await until(lambda: h.agent.resets == 1)
-        assert h.dev.state == State.IDLE
+        h.dev.inject(Input.BOOT_BUTTON)
+        await settle(h.dev, State.LISTENING)
     finally:
         await h.down()
 
@@ -255,7 +289,7 @@ async def test_stt_failure_goes_error_then_idle():
     h = make(stt=FakeStt(fail=True))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: State.ERROR in h.dev.states)
         await until(lambda: h.dev.states[-1] == State.IDLE)
         assert h.dev.flushes >= 1
@@ -267,7 +301,7 @@ async def test_agent_failure_goes_error_then_idle():
     h = make(agent=FakeAgent(fail=True))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: State.ERROR in h.dev.states)
         await until(lambda: h.dev.states[-1] == State.IDLE)
     finally:
@@ -278,7 +312,7 @@ async def test_boot_hello_mid_session_gets_state_but_no_host_hello_or_volume():
     h = make(agent=FakeAgent(hang=True))
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.THINKING)
         hellos = h.dev.host_hellos
         sets = len(h.dev.set_volumes)
@@ -305,7 +339,7 @@ async def test_reconnect_after_port_disappears():
         h.allow_open = True
         await until(lambda: len(h.devices) == 2 and T.SET_STATE in h.dev.received)
         assert h.dev is not first and 1 <= h.dev.host_hellos <= 2
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await settle(h.dev, State.LISTENING)
     finally:
         await h.down()
@@ -324,7 +358,7 @@ async def test_flow_control_never_exceeds_64000():
     h = make(tts=FakeTts(ms=4000), speed=1.0)
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states, timeout=20)
         assert len(h.dev.spk) >= 2 * 4000 * 32
         assert 60000 < h.dev.max_queued <= 64000

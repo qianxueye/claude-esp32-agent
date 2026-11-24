@@ -25,7 +25,7 @@ from claude_voice.wifi import CIPHER, WifiServer
 
 KEY = bytes(range(32))
 IDENTITY = wire_identity(psk_identity(FAKE_SERIAL), key_id(KEY))
-TURN_INPUT = Input.TAP  # the input that starts a turn
+TURN_INPUT = Input.BOOT_BUTTON  # the input that starts a turn
 _client_log = logging.getLogger("tunnel-test-client")
 _client_log.disabled = True
 

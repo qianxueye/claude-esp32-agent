@@ -317,7 +317,7 @@ async def test_relay_speaks_from_qwen_engine():
     h = make(tts=q)
     await h.up()
     try:
-        h.dev.inject(Input.TAP)
+        h.dev.inject(Input.BOOT_BUTTON)
         await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states)
         assert say.texts == []
         assert len(server.requests) >= 3

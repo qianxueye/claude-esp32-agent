@@ -12,6 +12,10 @@
 #include "esp_log.h"
 #include "imu.h"
 #include "keydebounce.h"
+#include "bright.h"
+#include "nvstore.h"
+#include "volknob.h"
+#include "volstate.h"
 #include "linkstate.h"
 #include "net.h"
 #include "netcfg.h"
@@ -126,9 +130,25 @@ static void handle_debug(const proto_frame_t *f)
     if (v) {
         ui_set_arc(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
     }
+    v = json_value(json, "brt_arc");
+    if (v) {
+        ui_set_brt_arc(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "arc_over");
+    if (v) {
+        ui_set_arc_over(strncmp(v, "null", 4) == 0 ? 0 : atoi(v));
+    }
     v = json_value(json, "fill");
     if (v) {
         ui_set_fill(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "brt");
+    if (v) {
+        ui_set_brightness_pin(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
+    }
+    v = json_value(json, "brt_set");
+    if (v) {
+        ui_set_brightness(atoi(v));
     }
 }
 
@@ -340,7 +360,13 @@ static void life_task(void *arg)
         if (s_ready && s_state != ST_OFFLINE && t - last_host >= PROTO_HOST_SILENCE_TIMEOUT_MS) {
             set_state(ST_OFFLINE);
         }
-        if (volume_poll(t, !audio_pa_active() && s_state != ST_LISTENING) && !saved_logged) {
+        bool quiet = !audio_pa_active() && s_state != ST_LISTENING;
+        const char *last_key = nvstore_last_key();
+        int last = !last_key ? VS_PICK_NONE : strcmp(last_key, VOL_NVS_KEY) == 0 ? VS_PICK_A : VS_PICK_B;
+        int pick = vs_save_pick(volume_save_due(t, quiet), bright_save_due(t, quiet), last);
+        if (pick == VS_PICK_B) {
+            bright_poll(t, quiet);
+        } else if (pick == VS_PICK_A && volume_poll(t, quiet) && !saved_logged) {
             saved_logged = true;
             ESP_LOGI(TAG, "volume saved; life stack high-water %u words", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
@@ -363,8 +389,12 @@ static void life_task(void *arg)
                      (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)s_pwr_read_errors);
             volume_stats_t vs;
             volume_stats(&vs);
-            ESP_LOGI(TAG, "knob vol=%d eff=%d set=%d arms=%u cancels=%u edge=%u saves=%u", vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms,
-                     (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves);
+            ESP_LOGI(TAG, VOLUME_LINE_FMT, vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms, (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves,
+                     vk_ov_log(vs.over[0]), vk_ov_log(vs.over[1]), vk_ov_log(vs.over[2]));
+            bright_stats_t bs;
+            bright_stats(&bs);
+            ESP_LOGI(TAG, BRIGHT_LINE_FMT, bs.user, bs.effective, ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels,
+                     (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves, vk_ov_log(bs.over[0]), vk_ov_log(bs.over[1]), vk_ov_log(bs.over[2]));
         }
     }
 }
@@ -445,7 +475,9 @@ void app_main(void)
     s_last_host_ms = now_ms();
     transport_start(on_frame, accept_frame);
     ESP_LOGI(TAG, "boot fw=%s reset_reason=%d", FW_VERSION, (int)esp_reset_reason());
+    nvstore_init();
     volume_init();
+    bright_init();
     ui_start();
     ESP_LOGI(TAG, "display up; free internal %u largest %u psram %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

@@ -184,7 +184,7 @@ async def test_full_turn_over_wifi():
     async with WifiHarness() as w:
         d = await w.board()
         assert d.host_hellos == 1 and d.hellos == ["reply"] and w.h.link.active_kind == "wifi"
-        d.inject(Input.TAP)
+        d.inject(Input.BOOT_BUTTON)
         await until(lambda: d.states[-1:] == [State.IDLE] and State.SPEAKING in d.states)
         assert w.h.stt.calls and w.h.agent.asked == ["你好"]
         assert d.max_queued <= 64000 and d.flushes == 1
@@ -193,7 +193,7 @@ async def test_full_turn_over_wifi():
 async def test_plain_tcp_frames_are_never_processed():
     async with WifiHarness() as w:
         _r, wr = await asyncio.open_connection("127.0.0.1", w.srv.port)
-        wr.write(encode(T.HELLO, b'{"proto":3,"reason":"boot"}') + encode(T.INPUT, bytes([Input.TAP])))
+        wr.write(encode(T.HELLO, b'{"proto":3,"reason":"boot"}') + encode(T.INPUT, bytes([Input.BOOT_BUTTON])))
         await wr.drain()
         await asyncio.sleep(0.3)
         assert w.h.link.active_kind is None and w.h.relay.state == State.IDLE and not w.h.stt.calls
@@ -208,7 +208,7 @@ async def test_failed_handshake_leaves_live_session_intact():
         pings = d.pings
         await until(lambda: d.pings > pings + 2)
         assert w.h.link.active_kind == "wifi" and not d.t._closed
-        d.inject(Input.TAP)
+        d.inject(Input.BOOT_BUTTON)
         await settle(d, State.LISTENING)
 
 
@@ -220,7 +220,7 @@ async def test_new_wifi_session_replaces_old():
         with pytest.raises(TransportClosed):
             for _ in range(20):
                 await first.t.read(0.05)
-        second.inject(Input.TAP)
+        second.inject(Input.BOOT_BUTTON)
         await settle(second, State.LISTENING)
 
 
@@ -245,10 +245,10 @@ async def test_usb_takes_over_from_wifi():
         await until(lambda: w.h.devices and T.SET_STATE in w.h.dev.received)
         assert w.h.link.active_kind == "usb"
         await until(lambda: d.t._closed or d.t._writer.is_closing())
-        d.inject(Input.TAP)
+        d.inject(Input.BOOT_BUTTON)
         await asyncio.sleep(0.2)
         assert w.h.relay.state == State.IDLE
-        w.h.dev.inject(Input.TAP)
+        w.h.dev.inject(Input.BOOT_BUTTON)
         await settle(w.h.dev, State.LISTENING)
 
 
@@ -289,7 +289,7 @@ async def test_idle_connections_over_the_cap_close_at_once_and_spare_the_live_se
         closed = await asyncio.gather(*(_closed_within(r, 0.3) for r, _ in idle))
         assert sum(closed) == 8 and not any(closed[:4]), closed
         pings = d.pings
-        d.inject(Input.TAP)
+        d.inject(Input.BOOT_BUTTON)
         await settle(d, State.LISTENING)
         await until(lambda: d.pings > pings + 2)
         assert w.h.link.active_kind == "wifi" and not d.t._closed

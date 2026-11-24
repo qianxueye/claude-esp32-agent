@@ -31,6 +31,15 @@ void ui_set_orbit(int index);
 void ui_set_fill(int grey);
 /* Test aid: shows the volume arc at a level 0-100 without touching the volume; negative releases. */
 void ui_set_arc(int level);
+/* Test aid: shows the brightness arc at ladder index 0-32 without touching the brightness; negative releases. One forced arc at a time. */
+void ui_set_brt_arc(int index);
+/* Test aid: stretches the forced arc by -3..3 cells past its end (negative at the low end); the level must rest there. 0 releases. */
+void ui_set_arc_over(int cells);
+/* Test aids: pin the ACTIVE brightness without storing it (negative releases), or set and store it as a swipe would; values are snapped to the ladder. */
+void ui_set_brightness_pin(int pct);
+void ui_set_brightness(int pct);
+/* The percent last written to the panel. */
+int ui_panel_level(void);
 /* Renders the active screen into an RGB565 buffer; release it with ui_snapshot_free. */
 lv_draw_buf_t *ui_snapshot_take(void);
 void ui_snapshot_free(lv_draw_buf_t *buf);

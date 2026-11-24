@@ -79,23 +79,21 @@ class Relay:
     # ---- input handling ----
     def _on_input(self, code: int) -> None:
         log.info("input %d in state %s", code, self.state.name)
-        if code == Input.LONG_PRESS:
+        if code != Input.BOOT_BUTTON:
+            log.info("input %d ignored: only the BOOT or PWR key acts", code)
+            return
+        if self.state == State.LISTENING and self._mic is not None:
+            self._mic.put_nowait(_STOP)
+        elif self.state in (State.THINKING, State.SPEAKING):
             self._cancel_activity()
             self.speaker.flush()
-            self._spawn(self._reset_conversation)
-        elif code in (Input.TAP, Input.BOOT_BUTTON):
-            if self.state == State.LISTENING and self._mic is not None:
-                self._mic.put_nowait(_STOP)
-            elif self.state in (State.THINKING, State.SPEAKING):
-                self._cancel_activity()
-                self.speaker.flush()
-                asyncio.get_running_loop().create_task(self.agent.interrupt())
-                self._spawn(self._listen)
-            elif self.state == State.IDLE and self._busy():
-                log.info("input ignored: activity in progress")
-            else:
-                self._cancel_activity()
-                self._spawn(self._listen)
+            asyncio.get_running_loop().create_task(self.agent.interrupt())
+            self._spawn(self._listen)
+        elif self.state == State.IDLE and self._busy():
+            log.info("input ignored: activity in progress")
+        else:
+            self._cancel_activity()
+            self._spawn(self._listen)
 
     def _busy(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -127,12 +125,6 @@ class Relay:
             self.link.send_state(state)
 
     # ---- activities ----
-    async def _reset_conversation(self) -> None:
-        await self.agent.reset()
-        self._mic = None
-        await self.speaker.play(self.sounds["reset"], wait=False)
-        self._set_state(State.IDLE)
-
     async def _fail(self) -> None:
         self._mic = None
         self.speaker.flush()

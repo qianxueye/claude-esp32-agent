@@ -17,6 +17,8 @@
 #include "freertos/task.h"
 #include "core/lv_refr_private.h"
 #include "arcvis.h"
+#include "bright.h"
+#include "brtmap.h"
 #include "orient.h"
 #include "proto.h"
 #include "rotblit.h"
@@ -92,8 +94,8 @@ static int s_pop, s_pop_target, s_bub_state;
 static scene_t s_drawn;
 static volknob_t s_vk;
 static arcvis_t s_av;
-static volarc_t s_arc;
-static uint16_t s_arc_col[3];
+static volarc_t s_arc, s_barc, s_over[2];
+static uint16_t s_arc_col[3], s_barc_col[3];
 static int s_bench, s_ring_width, s_ring_opa;
 static char s_miss[150];
 static uint32_t s_te_missed, s_cover_frames, s_cover_viol;
@@ -544,19 +546,15 @@ static void ui_set_state_locked(dev_state_t s)
     }
 }
 
-static void send_input(uint8_t code)
+/* (Re)starts the power timeline at the current brightness. */
+static void dp_start(void)
 {
-    transport_send(T_INPUT, &code, 1);
+    dp_init(&s_dp, dp_clock());
+    dp_set_active(&s_dp, bright_effective());
 }
 
 static void knob_events(int ev, uint32_t now)
 {
-    if (ev & VK_EV_TAP) {
-        send_input(1);
-    }
-    if (ev & VK_EV_LONG) {
-        send_input(2);
-    }
     if (ev & VK_EV_ARM) {
         vk_rebase(&s_vk, volume_knob_arm());
         av_arm(&s_av, s_vk.v);
@@ -565,21 +563,61 @@ static void knob_events(int ev, uint32_t now)
         volume_knob_set(s_vk.v);
         av_set(&s_av, s_vk.v);
     }
-    if (ev & (VK_EV_ARM | VK_EV_VOL)) {
+    if (ev & VK_EV_BRT_ARM) {
+        vk_swipe_rebase(&s_vk, brt_index(bright_swipe_arm(s_vk.cls == VK_EDGE)));
+        dp_set_active(&s_dp, bright_effective());
+        av_arm_kind(&s_av, AV_BRT, s_vk.bi, s_vk.quad);
+    }
+    if (ev & VK_EV_BRT) {
+        bright_swipe_set(brt_level(s_vk.bi));
+        dp_set_active(&s_dp, bright_effective());
+        av_set(&s_av, s_vk.bi);
+    }
+    if (ev & VK_EV_BRT_STOP) {
+        bright_count_stop();
+        if (BRT_BOUNCE_STEPS > 0) {
+            dp_bump(&s_dp, dp_clock(), brt_level(s_vk.bi == BRT_STEPS ? s_vk.bi - BRT_BOUNCE_STEPS : s_vk.bi + BRT_BOUNCE_STEPS));
+        }
+    }
+    if (ev & VK_EV_OVER) {
+        av_over(&s_av, s_vk.over);
+        int cells = s_vk.over < 0 ? -s_vk.over : s_vk.over;
+        if (s_vk.state == VK_BRIGHT) {
+            bright_count_over(cells);
+        } else if (s_vk.state == VK_ARMED) {
+            volume_count_over(cells);
+        }
+    }
+    if (ev & (VK_EV_ARM | VK_EV_VOL | VK_EV_BRT_ARM | VK_EV_BRT | VK_EV_BRT_STOP | VK_EV_OVER)) {
         dp_activity(&s_dp, dp_clock(), DP_CAUSE_TOUCH);
     }
     if (ev & (VK_EV_COMMIT | VK_EV_CANCEL)) {
         volume_knob_end((ev & VK_EV_CANCEL) != 0);
         av_end(&s_av, s_vk.v, now);
     }
+    if (ev & (VK_EV_BRT_COMMIT | VK_EV_BRT_CANCEL)) {
+        bright_swipe_end((ev & VK_EV_BRT_CANCEL) != 0);
+        dp_set_active(&s_dp, bright_effective());
+        av_end(&s_av, s_vk.bi, now);
+    }
 }
 
 static void log_knob_end(uint32_t now)
 {
-    static const char *const CLS[] = {"idle", "dead", "centre", "edge", "armed"};
-    static const char *const WHY[] = {"none", "dark", "moved", "zone", "jump"};
-    ESP_LOGI(TAG, "knob: end cls=%s armed=%d why=%s v0=%d v=%d travel=%.0f disp=%.0f x0=%d y0=%d r=%.0f dur=%u", CLS[s_vk.cls], s_vk.armed_ever,
-             WHY[s_vk.why], s_vk.v0, s_vk.v, s_vk.travel, s_vk.max_disp, s_vk.x0, s_vk.y0, s_vk.r0, (unsigned)(now - s_vk.t0));
+    ESP_LOGI(TAG, "knob: end cls=%s armed=%d why=%s v0=%d v=%d travel=%.0f disp=%.0f x0=%d y0=%d r=%.0f dur=%u", vk_cls_name(s_vk.cls), s_vk.armed_ever,
+             vk_why_name(s_vk.why), s_vk.v0, s_vk.v, s_vk.travel, s_vk.max_disp, s_vk.x0, s_vk.y0, s_vk.r0, (unsigned)(now - s_vk.t0));
+}
+
+/* One line per touch that left the slop; b0 and b are percent, -1 when the swipe never armed. */
+static void log_swipe_end(uint32_t now)
+{
+    if (!s_vk.moved) {
+        return;
+    }
+    int b0 = s_vk.bright_ever ? brt_level(s_vk.bi0) : -1, b = s_vk.bright_ever ? brt_level(s_vk.bi) : -1;
+    char line[LOG_LINE_MAX_BYTES];
+    vk_swipe_line(line, sizeof(line), &s_vk, b0, b, now);
+    ESP_LOGI(TAG, "%s", line);
 }
 
 static void touch_cb(lv_event_t *e)
@@ -592,7 +630,7 @@ static void touch_cb(lv_event_t *e)
     }
     switch (code) {
     case LV_EVENT_PRESSED: {
-        if (s_vk.state == VK_ARMED) {
+        if (s_vk.state == VK_ARMED || s_vk.state == VK_BRIGHT) {
             knob_events(vk_lost(&s_vk), now);
         }
         dp_touch_press(&s_touch, s_logged_stage);
@@ -601,21 +639,29 @@ static void touch_cb(lv_event_t *e)
         bool set;
         volume_hello_fields(&user, &set);
         vk_press(&s_vk, p.x, p.y, now, !dp_touch_sends(&s_touch), (uint8_t)user);
+        vk_swipe_frame(&s_vk, orient_target());
         if (s_vk.cls == VK_EDGE) {
             volume_count_edge();
         }
         break;
     }
-    case LV_EVENT_PRESSING:
+    case LV_EVENT_PRESSING: {
+        bool slid = s_vk.slid;
         knob_events(vk_move(&s_vk, p.x, p.y, now), now);
+        if (!slid && s_vk.slid) {
+            bright_count_slide();
+        }
         break;
+    }
     case LV_EVENT_RELEASED:
         knob_events(vk_release(&s_vk, now), now);
         log_knob_end(now);
+        log_swipe_end(now);
         break;
     case LV_EVENT_PRESS_LOST:
         knob_events(vk_lost(&s_vk), now);
         log_knob_end(now);
+        log_swipe_end(now);
         break;
     default:
         break;
@@ -684,17 +730,31 @@ static void invalidate_ring(void)
 
 _Static_assert(SCENE_OUT_PX == LCD_SIZE, "the arc and its clear loop index s_out in panel coordinates");
 
-static void arc_put(uint32_t e, int quad, int v)
+static const volarc_t *arc_table(int kind)
+{
+    return kind == AV_BRT ? &s_barc : &s_arc;
+}
+
+static void arc_put(int kind, uint32_t e, int quad, int v)
 {
     int x, y;
     volarc_xy(e, quad, &x, &y);
-    ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = s_arc_col[volarc_class(volarc_thr(e), v)];
+    int t = volarc_thr(e);
+    ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = kind == AV_BRT ? s_barc_col[volarc_seg_class(t, v)] : s_arc_col[volarc_class(t, v)];
 }
 
-static int arc_invalidate(int quad, int lo, int hi)
+static const volarc_t *over_table(int kind)
 {
-    volarc_rect_t r[VOLARC_MAX_AREAS];
-    int n = volarc_areas(&s_arc, quad, lo, hi, r, VOLARC_MAX_AREAS);
+    return &s_over[kind == AV_BRT ? 1 : 0];
+}
+
+static int arc_chunk(int kind)
+{
+    return kind == AV_BRT ? BRT_ARC_CHUNK_CELLS : VOL_ARC_CHUNK_THR;
+}
+
+static int arc_inv_rects(const volarc_rect_t *r, int n)
+{
     lv_display_t *disp = lv_obj_get_display(s_canvas);
     for (int i = 0; i < n; i++) {
         lv_area_t a = {r[i].x1 + CANVAS_OFF, r[i].y1 + CANVAS_OFF, r[i].x2 + CANVAS_OFF, r[i].y2 + CANVAS_OFF};
@@ -703,37 +763,80 @@ static int arc_invalidate(int quad, int lo, int hi)
     return n;
 }
 
-static int arc_paint(int quad, int v, int lo, int hi)
+static int arc_invalidate(int kind, int quad, int lo, int hi)
 {
-    for (int i = s_arc.cnt[lo]; i < s_arc.cnt[hi]; i++) {
-        arc_put(s_arc.e[i], quad, v);
-    }
-    return arc_invalidate(quad, lo, hi);
+    volarc_rect_t r[VOLARC_MAX_AREAS];
+    return arc_inv_rects(r, volarc_areas_chunk(arc_table(kind), quad, lo, hi, arc_chunk(kind), r, VOLARC_MAX_AREAS));
 }
 
-/* Returns the number of areas invalidated; the ring waits for a frame with at most one. */
+/* Whole-meter frame: the lit stretch shares the rectangle of the end chunk it touches. */
+static int arc_invalidate_whole(int kind, int quad, int stretch)
+{
+    volarc_rect_t r[VOLARC_MAX_AREAS];
+    return arc_inv_rects(r, volarc_whole_areas(arc_table(kind), over_table(kind), quad, arc_chunk(kind), stretch, r, VOLARC_MAX_AREAS));
+}
+
+static int arc_paint(int kind, int quad, int v, int lo, int hi)
+{
+    const volarc_t *t = arc_table(kind);
+    for (int i = t->cnt[lo]; i < t->cnt[hi]; i++) {
+        arc_put(kind, t->e[i], quad, v);
+    }
+    return arc_invalidate(kind, quad, lo, hi);
+}
+
+/* Paints the end-cue cells with threshold in (lo, hi] lit or black for stretch over; blank blacks them all. */
+static void over_put(int kind, int quad, int lo, int hi, int over, bool blank)
+{
+    const volarc_t *t = over_table(kind);
+    uint16_t col = kind == AV_BRT ? s_barc_col[volarc_over_class(1, over)] : s_arc_col[volarc_over_class(0, over)];
+    for (int i = t->cnt[lo]; i < t->cnt[hi]; i++) {
+        int x, y;
+        volarc_xy(t->e[i], quad, &x, &y);
+        bool lit = !blank && volarc_over_lit(volarc_thr(t->e[i]), over);
+        ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = lit ? col : 0;
+    }
+}
+
+/* Returns the number of areas invalidated; the ring waits for a frame with more than VOLARC_RING_MAX_AREAS. */
 static int arc_update(uint32_t now)
 {
-    if (s_arc.n == 0) {
-        return 0;
-    }
     avact_t a = av_frame(&s_av, now, ((int)lroundf(orient_target() / 90.0f)) & 3);
     int areas = 0;
-    if (a.flags & AV_CLEAR_OLD) {
-        for (int i = 0; i < s_arc.n; i++) {
+    if ((a.flags & AV_CLEAR_OLD) && arc_table(a.old_kind)->n > 0) {
+        const volarc_t *t = arc_table(a.old_kind);
+        for (int i = 0; i < t->n; i++) {
             int x, y;
-            volarc_xy(s_arc.e[i], a.old_quad, &x, &y);
+            volarc_xy(t->e[i], a.old_quad, &x, &y);
             ((uint16_t *)s_out->data)[(size_t)y * (s_out->header.stride / 2) + x] = 0;
         }
-        areas += arc_invalidate(a.old_quad, 0, 100);
+        over_put(a.old_kind, a.old_quad, 0, 2 * ARC_OVER_CELLS, a.old_over, true);
+        areas += arc_invalidate_whole(a.old_kind, a.old_quad, a.old_over);
     }
-    if (a.flags & AV_DRAW_NEW) {
-        areas += arc_paint(a.quad, a.val, 0, 100);
+    if ((a.flags & AV_DRAW_NEW) && arc_table(a.kind)->n > 0) {
+        const volarc_t *t = arc_table(a.kind);
+        for (int i = 0; i < t->n; i++) {
+            arc_put(a.kind, t->e[i], a.quad, a.val);
+        }
+        over_put(a.kind, a.quad, 0, 2 * ARC_OVER_CELLS, a.over_to, false);
+        areas += arc_invalidate_whole(a.kind, a.quad, a.over_to);
     }
-    if (a.flags & AV_DIFF) {
+    if ((a.flags & AV_DIFF) && arc_table(a.kind)->n > 0) {
         int lo, hi;
-        volarc_change_range(a.from, a.to, &lo, &hi);
-        areas += arc_paint(a.quad, a.to, lo, hi);
+        if (a.kind == AV_BRT) {
+            volarc_seg_change_range(a.from, a.to, &lo, &hi);
+        } else {
+            volarc_change_range(a.from, a.to, &lo, &hi);
+        }
+        areas += arc_paint(a.kind, a.quad, a.to, lo, hi);
+    }
+    if ((a.flags & AV_OVER) && arc_table(a.kind)->n > 0) {
+        int lo[2], hi[2], k = volarc_over_ranges(a.over_from, a.over_to, lo, hi);
+        for (int i = 0; i < k; i++) {
+            over_put(a.kind, a.quad, lo[i], hi[i], a.over_to, false);
+        }
+        volarc_rect_t r[2];
+        areas += arc_inv_rects(r, volarc_over_areas(over_table(a.kind), a.quad, a.over_from, a.over_to, r));
     }
     return areas;
 }
@@ -815,7 +918,7 @@ static void tick_cb(lv_timer_t *t)
     } else if (s_bench == UI_BENCH_SCREEN) {
         lv_obj_invalidate(lv_screen_active());
     }
-    if (arc_update(now) <= 1) {
+    if (arc_update(now) <= VOLARC_RING_MAX_AREAS) {
         update_ring();
     }
     if ((s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK)) {
@@ -829,10 +932,11 @@ static void tick_cb(lv_timer_t *t)
         uint32_t n = s_refr_count, worst = s_refr_worst_ms, sum = s_refr_sum_ms;
         s_refr_count = s_refr_worst_ms = s_refr_sum_ms = 0;
         if (last_log) {
-            ESP_LOGI(TAG, "fps=%u refr=%u/%u ang=%d b=%d blit=%u px=%u cover=%u/%u te=%u edges=%u [%s]",
+            ESP_LOGI(TAG, "fps=%u refr=%u/%u ang=%d b=%d blit=%u px=%u cover=%u/%u te=%u edges=%u stk=%u [%s]",
                      (unsigned)(n * 1000 / (now - last_log)), (unsigned)(n ? sum / n : 0), (unsigned)worst, s_shown_rot, s_bench,
                      (unsigned)(s_blit_n ? s_blit_us / s_blit_n : 0),
-                     (unsigned)(s_blit_n ? s_blit_px / s_blit_n : 0), (unsigned)s_cover_frames, (unsigned)s_cover_viol, (unsigned)s_te_missed, (unsigned)s_te_edges, s_miss);
+                     (unsigned)(s_blit_n ? s_blit_px / s_blit_n : 0), (unsigned)s_cover_frames, (unsigned)s_cover_viol, (unsigned)s_te_missed, (unsigned)s_te_edges,
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL), s_miss);
             s_te_edges = 0;
             s_miss[0] = 0;
             s_redraw_us = s_blit_us = s_redraw_n = s_blit_n = s_blit_px = 0;
@@ -907,7 +1011,8 @@ static lv_display_t *display_start(void)
     ESP_ERROR_CHECK(bsp_touch_new(&cfg, &tp));
     const esp_lv_adapter_touch_config_t tc = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, tp);
     ESP_ERROR_CHECK(esp_lv_adapter_register_touch(&tc) ? ESP_OK : ESP_FAIL);
-    ESP_ERROR_CHECK(bsp_display_brightness_init());
+    s_applied_level = bright_effective();
+    ESP_ERROR_CHECK(bsp_display_brightness_set(s_applied_level));
     ESP_ERROR_CHECK(esp_lv_adapter_start());
     return disp;
 }
@@ -934,12 +1039,30 @@ void ui_start(void)
     s_arc_col[VOLARC_FILL] = rgb565(BUBBLE_FILL_COLOR);
     s_arc_col[VOLARC_TRACK] = rgb565(BUBBLE_OFFLINE_FILL_COLOR);
     s_arc_col[VOLARC_MUTE] = rgb565(BUBBLE_ERROR_COLOR);
+    s_barc_col[VOLARC_FILL] = rgb565(BRT_ARC_FILL_COLOR);
+    s_barc_col[VOLARC_TRACK] = rgb565(BRT_ARC_TRACK_COLOR);
     av_init(&s_av);
+    int64_t tab_t0 = esp_timer_get_time();
     uint32_t *arc_store = heap_caps_malloc(VOLARC_CAP * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     if (!arc_store || volarc_build(&s_arc, arc_store, VOLARC_CAP) < 0) {
         s_arc.n = 0;
         ESP_LOGW(TAG, "volume arc table unavailable");
     }
+    uint32_t *barc_store = heap_caps_malloc(VOLARC_CAP * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+    if (!barc_store || volarc_build_seg(&s_barc, barc_store, VOLARC_CAP, BRT_ARC_START_DEG, BRT_ARC_SWEEP_DEG, BRT_STEPS + 1) < 0) {
+        s_barc.n = 0;
+        ESP_LOGW(TAG, "brightness arc table unavailable");
+    }
+    for (int k = 0; k < 2; k++) {
+        uint32_t *store = heap_caps_malloc(VOLARC_OVER_CAP * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+        bool brt = k == AV_BRT;
+        if (!store || volarc_build_over(&s_over[k], store, VOLARC_OVER_CAP, brt ? BRT_ARC_START_DEG : VOL_ARC_START_DEG, brt ? BRT_ARC_SWEEP_DEG : VOL_SWEEP_DEG,
+                                        brt ? BRT_STEPS + 1 : 100) < 0) {
+            memset(&s_over[k], 0, sizeof(s_over[k]));
+            ESP_LOGW(TAG, "end-cue table %d unavailable", k);
+        }
+    }
+    ESP_LOGI(TAG, "arc tables built in %d ms", (int)((esp_timer_get_time() - tab_t0) / 1000));
     render_masks(scr);
     s_blit_done = xSemaphoreCreateBinary();
     xTaskCreate(blit_worker, "blit", STACK_BLIT, NULL, PRIO_BLIT, &s_blit_task);
@@ -952,7 +1075,7 @@ void ui_start(void)
     lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_START, NULL);
     lv_display_add_event_cb(disp, refr_cb, LV_EVENT_REFR_READY, NULL);
     s_last_tick = lv_tick_get();
-    dp_init(&s_dp, dp_clock());
+    dp_start();
     ui_set_state_locked(ST_IDLE);
     scene_t sc;
     compute_scene(&sc, s_last_tick);
@@ -979,6 +1102,20 @@ void ui_set_arc(int level)
 {
     bsp_display_lock(-1);
     av_force(&s_av, level > 100 ? 100 : level);
+    bsp_display_unlock();
+}
+
+void ui_set_brt_arc(int index)
+{
+    bsp_display_lock(-1);
+    av_force_kind(&s_av, AV_BRT, index > BRT_STEPS ? BRT_STEPS : index);
+    bsp_display_unlock();
+}
+
+void ui_set_arc_over(int cells)
+{
+    bsp_display_lock(-1);
+    av_force_over(&s_av, cells > ARC_OVER_CELLS ? ARC_OVER_CELLS : cells < -ARC_OVER_CELLS ? -ARC_OVER_CELLS : cells);
     bsp_display_unlock();
 }
 
@@ -1020,7 +1157,7 @@ void ui_set_disp_scale(int n)
 {
     bsp_display_lock(-1);
     s_time_scale = n < 1 ? 1 : n;
-    dp_init(&s_dp, dp_clock());
+    dp_start();
     dp_state(&s_dp, dp_clock(), (int)s_state);
     bsp_display_unlock();
 }
@@ -1045,6 +1182,27 @@ void ui_set_fill(int grey)
         lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
     }
     bsp_display_unlock();
+}
+
+void ui_set_brightness_pin(int pct)
+{
+    bsp_display_lock(-1);
+    bright_test_pin(pct);
+    dp_set_active(&s_dp, bright_effective());
+    bsp_display_unlock();
+}
+
+void ui_set_brightness(int pct)
+{
+    bsp_display_lock(-1);
+    bright_set(pct);
+    dp_set_active(&s_dp, bright_effective());
+    bsp_display_unlock();
+}
+
+int ui_panel_level(void)
+{
+    return __atomic_load_n(&s_applied_level, __ATOMIC_RELAXED);
 }
 
 void ui_wake_counts(uint32_t out[DP_CAUSE_N])
