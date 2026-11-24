@@ -95,7 +95,7 @@ class QwenTts:
         self._supervisor: asyncio.Task | None = None
         self._beat_stop = threading.Event()
         self._threads: list[threading.Thread] = []
-        self._warned = False
+        self._reported: set[str] = set()  # outage reasons already logged since the server was last ready
         self._log_file = None
         self._skip_until = 0.0
         self._failing = False
@@ -245,12 +245,10 @@ class QwenTts:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                if not self._warned:
-                    self._warned = True
-                    log.log(getattr(e, "level", logging.WARNING),
-                            "qwen3 speech on %s unavailable; using say and retrying: %s", cfg.qwen_ssh_host, e)
-                else:
-                    log.debug("qwen3 speech attempt failed: %s", e)
+                self._report(
+                    getattr(e, "reason", "link"), getattr(e, "level", logging.WARNING),
+                    f"qwen3 speech on {cfg.qwen_ssh_host} unavailable; using say and retrying: {e}",
+                )
             finally:
                 self._send_eof()
                 await self._drop_client()
@@ -297,12 +295,12 @@ class QwenTts:
         while "listening" not in statuses:
             for s in statuses:
                 if s.startswith(("busy", "exit", "nolsof")):
-                    raise TtsError(self._ended(proc, statuses))
+                    raise self._ended(proc, statuses)
             if proc.poll() is not None:
                 await self._drain(eof)
-                raise TtsError(self._ended(proc, statuses))
+                raise self._ended(proc, statuses)
             if time.monotonic() > deadline:
-                raise TtsError("speech server did not listen in time (see qwen-tts-server.log)")
+                raise Outage("timeout", "speech server did not listen in time (see qwen-tts-server.log)")
             changed.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(changed.wait(), STATUS_POLL_S)
@@ -318,11 +316,11 @@ class QwenTts:
         self._http = http
         self._skip_until = 0.0
         self._failing = False
-        self._warned = False
+        self._reported.clear()
         log.info("qwen3 speech server on %s ready, warm-up %.1f s", cfg.qwen_ssh_host, time.monotonic() - t0)
         await reaped(proc)
         await self._drain(eof)
-        raise TtsError(self._ended(proc, statuses))
+        raise self._ended(proc, statuses)
 
     @staticmethod
     async def _drain(eof: asyncio.Event) -> None:
@@ -330,15 +328,22 @@ class QwenTts:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(eof.wait(), DRAIN_S)
 
-    def _ended(self, proc: subprocess.Popen, statuses: list[str]) -> str:
+    def _ended(self, proc: subprocess.Popen, statuses: list[str]) -> Outage:
+        host = self._cfg.qwen_ssh_host
         for s in reversed(statuses):
             if s == "nolsof":
-                return f"{self._cfg.qwen_ssh_host} has no lsof, so the speech server's port cannot be checked"
+                return Outage("nolsof", f"{host} has no lsof, so the speech server's port cannot be checked",
+                              logging.ERROR)
             if s.startswith("busy"):
-                return f"port {s.split()[-1]} on {self._cfg.qwen_ssh_host} is in use, maybe by an earlier server"
+                return Outage("busy", f"port {s.split()[-1]} on {host} is in use, maybe by an earlier server")
             if s.startswith("exit"):
-                return f"speech server exited with {s.split()[-1]} (see qwen-tts-server.log)"
-        return f"ssh exited with {proc.poll()} (see qwen-tts-server.log)"
+                return Outage("exit", f"speech server exited with {s.split()[-1]} (see qwen-tts-server.log)")
+        return Outage("link", f"ssh exited with {proc.poll()} (see qwen-tts-server.log)")
+
+    def _report(self, reason: str, level: int, message: str) -> None:
+        """Log the first failure of each reason at `level` and its repeats at INFO, until the server is ready."""
+        log.log(logging.INFO if reason in self._reported else level, "%s", message)
+        self._reported.add(reason)
 
     def _send_eof(self) -> None:
         """Stop the heartbeat, which then closes ssh's stdin; from here the guard stops the server by itself."""
@@ -400,8 +405,11 @@ class QwenTts:
         try:
             pcm = await self._request(text)
         except Exception as e:
-            if not self._failing:
-                log.warning("qwen3 synthesis failed; using say for the next %g s: %r", self._cfg.qwen_skip_s, e)
+            msg = f"qwen3 synthesis failed; using say for the next {self._cfg.qwen_skip_s:g} s: {e!r}"
+            if self._cfg.qwen_ssh_host and isinstance(e, httpx.TransportError):
+                self._report("link", logging.WARNING, msg)  # the same outage the supervisor reports
+            elif not self._failing:
+                log.warning("%s", msg)
             self._mark_failed()
             return await self._fallback.synth(text)
         self._failing = False

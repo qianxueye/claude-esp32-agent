@@ -337,12 +337,16 @@ try:
 except OSError:
     sys.exit(255)
 listener.listen()
-def pump(src, dst):
+def pump(src, dst, upstream=False):
     try:
         while True:
             data = src.recv(65536)
             if not data:
                 break
+            drop = os.path.join(here, "drop-on-post")
+            if upstream and data.startswith(b"POST") and os.path.exists(drop):  # the link dies mid-request
+                os.unlink(drop)
+                os._exit(255)
             dst.sendall(data)
     except OSError:
         pass
@@ -359,7 +363,7 @@ def forward():
         except OSError:
             c.close()
             continue
-        threading.Thread(target=pump, args=(c, r), daemon=True).start()
+        threading.Thread(target=pump, args=(c, r, True), daemon=True).start()
         threading.Thread(target=pump, args=(r, c), daemon=True).start()
 threading.Thread(target=forward, daemon=True).start()
 print("Last login: a line from a chatty dotfile", flush=True)
@@ -741,6 +745,34 @@ async def test_synth_uses_say_once_ssh_has_exited(tmp_path, remotes, monkeypatch
     q._ssh.wait()
     assert await q.synth("好。") == SAY_PCM
     assert requests == []
+    await q.close()
+
+
+@needs_afconvert
+async def test_disconnect_during_a_request_warns_once(tmp_path, remotes, caplog):
+    caplog.set_level("INFO", logger="claude_voice.qwen_tts")
+    q, remote = await engine(tmp_path, remotes)
+    await q.start()
+    await ready(q, remote)
+    (remote.dir / "drop-on-post").touch()
+    assert await q.synth("一。") == SAY_PCM
+    await ready(q, remote, n=2)
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1, warnings
+    await q.close()
+
+
+@needs_afconvert
+async def test_a_new_reason_warns_and_a_repeat_logs_at_info(tmp_path, remotes, caplog):
+    caplog.set_level("INFO", logger="claude_voice.qwen_tts")
+    q, remote = await engine(tmp_path, remotes, plan=["ok", "busy", "busy"])
+    await q.start()
+    await ready(q, remote)
+    (remote.dir / "drop").touch()
+    await until(lambda: len([r for r in caplog.records if "is in use" in r.getMessage()]) == 2, timeout=30)
+    in_use = [r.levelname for r in caplog.records if "is in use" in r.getMessage()]
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert in_use == ["WARNING", "INFO"] and len(warnings) == 2 and "exited with 255" in warnings[0], warnings
     await q.close()
 
 
