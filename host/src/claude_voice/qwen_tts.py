@@ -111,7 +111,11 @@ class QwenTts:
 
     def _client(self, base: str) -> httpx.AsyncClient:
         t = httpx.Timeout(self._cfg.tts_timeout_s, connect=self._cfg.qwen_connect_timeout_s)
-        return httpx.AsyncClient(base_url=base, timeout=t, transport=self._transport)
+        return httpx.AsyncClient(base_url=base, timeout=t, transport=self._transport, trust_env=self._trust_env())
+
+    def _trust_env(self) -> bool:
+        """Proxy settings apply except to the ssh forward, which carries reply text that must stay in the tunnel."""
+        return not self._cfg.qwen_ssh_host
 
     async def _spawn(self) -> str:
         cfg = self._cfg
@@ -131,7 +135,7 @@ class QwenTts:
         """Poll `base` until it answers below HTTP 500; fails when `proc` exits or the ready timeout passes."""
         t0 = time.monotonic()
         last = "no response"
-        async with httpx.AsyncClient(timeout=1.0) as probe:
+        async with httpx.AsyncClient(timeout=1.0, trust_env=self._trust_env()) as probe:
             while True:
                 if proc.poll() is not None:
                     raise TtsError(f"{name} exited with {proc.returncode} (see qwen-tts-server.log)")

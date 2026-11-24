@@ -510,6 +510,20 @@ async def test_ssh_mode_ready_and_speaks_through_forward(tmp_path, remotes, capl
 
 
 @needs_afconvert
+async def test_ssh_mode_ignores_proxy_environment(tmp_path, remotes, monkeypatch):
+    dead = f"http://127.0.0.1:{free_port()}"
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(name, dead)
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    q, remote = await engine(tmp_path, remotes)
+    await q.start()
+    await ready(q, remote)
+    assert await q.synth("你好。") != SAY_PCM
+    await q.close()
+
+
+@needs_afconvert
 async def test_start_does_not_block_in_ssh_mode(tmp_path, remotes):
     q, remote = await engine(tmp_path, remotes, hold=True)
     starting = asyncio.create_task(q.start())
