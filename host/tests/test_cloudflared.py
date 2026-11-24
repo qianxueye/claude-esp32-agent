@@ -563,3 +563,34 @@ async def test_guard_is_the_installed_file_not_a_same_named_module(tmp_path, mon
         await until(lambda: urls.seen, timeout=10)
     finally:
         await sup.close()
+
+
+async def test_close_during_the_guard_spawn_still_stops_cloudflared(tmp_path, monkeypatch):
+    real, release, guards = asyncio.create_subprocess_exec, asyncio.Event(), []
+
+    async def held(*args, **kwargs):
+        proc = await real(*args, **kwargs)
+        guards.append(proc)
+        await until(lambda: runs(tmp_path), timeout=10)
+        await release.wait()
+        return proc
+
+    monkeypatch.setattr(cloudflared_mod.asyncio, "create_subprocess_exec", held)
+    sup = await supervised(tmp_path)
+    pid = None
+    try:
+        await until(lambda: runs(tmp_path), timeout=10)
+        pid = runs(tmp_path)[0]["pid"]
+        closing = asyncio.create_task(sup.close())
+        await asyncio.sleep(0.1)
+        release.set()
+        async with asyncio.timeout(10):
+            await closing
+        assert not alive(pid), cf_log(tmp_path)
+    finally:
+        for proc in guards:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+        if pid is not None and alive(pid):
+            os.kill(pid, signal.SIGKILL)

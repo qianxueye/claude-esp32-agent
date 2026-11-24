@@ -71,6 +71,7 @@ class Cloudflared:
         self._on_url = on_url
         self._grace = grace_s
         self._proc: asyncio.subprocess.Process | None = None
+        self._spawn: asyncio.Task[asyncio.subprocess.Process] | None = None
         self._log_file = None
         self._log_path = Path(cfg.log_dir) / "cloudflared.log"
         self._task: asyncio.Task | None = None
@@ -110,10 +111,13 @@ class Cloudflared:
             sys.executable, "-I", GUARD, f"{self._grace:g}", cfg.cloudflared_bin,
             "tunnel", "--no-autoupdate", "--config", config, "--url", f"http://127.0.0.1:{self._port}",
         ]
-        self._proc = await asyncio.create_subprocess_exec(
+        # the spawn lives on `self` so a cancelled run never drops a started guard; `_stop_child` reaps it
+        self._spawn = asyncio.get_running_loop().create_task(asyncio.create_subprocess_exec(
             *args, stdin=subprocess.PIPE, stdout=self._log_file, stderr=self._log_file, env=child_env(),
             start_new_session=True,
-        )
+        ))
+        self._proc = await asyncio.shield(self._spawn)
+        self._spawn = None
         host = await self._wait_hostname(offset)
         self._set_url(remote_url(host))
         code = await self._proc.wait()
@@ -169,8 +173,14 @@ class Cloudflared:
             log.error("remote URL update failed: %r", e)
 
     async def _stop_child(self) -> None:
-        proc, self._proc = self._proc, None
+        """Stop the guard, waiting for an unfinished spawn first; the handles are cleared only once it is reaped."""
+        if self._spawn is not None:
+            with contextlib.suppress(Exception):  # a failed spawn was already reported by `_run_once`
+                self._proc = await asyncio.shield(self._spawn)
+            self._spawn = None
+        proc = self._proc
         if proc is None or proc.returncode is not None:
+            self._proc = None
             return
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
@@ -180,6 +190,7 @@ class Cloudflared:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             await proc.wait()
+        self._proc = None
 
     async def close(self) -> None:
         task, self._task = self._task, None
