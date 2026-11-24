@@ -15,10 +15,10 @@ FIRMWARE = Path(__file__).parents[2] / "firmware" / "main"
 
 
 def anim_lines(ms, frames=100, late=0, cuts=2, pack=1, verify=640, free=101000, large=40000, work=(150000, 9000), dec=(30000, 2100), boot=82, patch=(4200, 6100), defer=3):
-    a = b"I (%d) app: anim: pack=%d skin=1 clip=0 frames=%d late=%d cuts=%d seek=0 verify_ms=%d iheap=%d/%d ilarge=%d" % (
-        ms, pack, frames, late, cuts, verify, free, free - 900, large)
-    t = b"I (%d) app: animt: dec_us=%d/%d work_us=%d/%d cut_ms=40/71 boot_ms=%d patch_us=%d/%d ring_defer=%d" % (
-        ms, dec[0], dec[1], work[0], work[1], boot, patch[0], patch[1], defer)
+    a = b"I (%d) app: anim: pack=%d skin=1 clip=0 frames=%d late=%d cuts=%d seek=0 verify_ms=%d iheap=%d/%d ilarge=%d id=%d" % (
+        ms, pack, frames, late, cuts, verify, free, free - 900, large, ms // 2000)
+    t = b"I (%d) app: animt: dec_us=%d/%d work_us=%d/%d cut_ms=40/71 boot_ms=%d patch_us=%d/%d ring_defer=%d id=%d" % (
+        ms, dec[0], dec[1], work[0], work[1], boot, patch[0], patch[1], defer, ms // 2000)
     return [a, t]
 
 
@@ -32,9 +32,9 @@ def knob(ms, vol, saves):
 
 def sample(ms, **kw):
     s = devctl.AnimSampler()
-    lines = anim_lines(ms, **kw)
-    assert s.feed(lines[0]) is None
-    return s.feed(lines[1])
+    lines = [stats_line(ms - 3)] + anim_lines(ms, **kw)
+    assert s.feed(lines[0]) is None and s.feed(lines[1]) is None
+    return s.feed(lines[2])
 
 
 def test_anim_keys_follow_the_firmware_lines():
@@ -51,15 +51,30 @@ def test_sampler_pairs_the_two_lines_of_one_period():
     a2, t2 = anim_lines(4000, frames=40)
     assert s.feed(t1) is None
     assert s.feed(a1) is None
+    assert s.feed(stats_line(3997)) is None
     assert s.feed(a2) is None
     got = s.feed(t2)
     assert got["frames"] == 40 and got["ms"] == 4000 and got["iheap"] == (101000, 100100) and got["work_us"] == (150000, 9000)
+    assert got["stats"] == devctl.parse_stats(stats_line(3997))
     assert s.feed(t2) is None
     # Red proof: merging every anim line into one dict mixes the frames of one period with the times of another.
     merged = {}
     for p in (a1, t1, a2):
         merged.update(devctl.parse_kv(p.split(b": ", 2)[2].decode()))
     assert merged["frames"] == 40 and merged["dec_us"] == (30000, 2100) and "ms" not in merged
+
+
+def test_sampler_drops_a_group_missing_a_line_of_its_period():
+    s = devctl.AnimSampler()
+    a1, _ = anim_lines(2000)
+    _, t2 = anim_lines(4000)
+    assert s.feed(stats_line(1997)) is None and s.feed(a1) is None
+    assert s.feed(t2) is None
+    # A period whose stats line was lost does not borrow the previous period's counters.
+    a3, t3 = anim_lines(6000)
+    a4, t4 = anim_lines(8000)
+    assert s.feed(stats_line(5997)) is None and s.feed(a3) is None and s.feed(t3)["stats"] is not None
+    assert s.feed(a4) is None and s.feed(t4) is None
 
 
 def colour(line, code=b"0;32"):
@@ -71,10 +86,11 @@ def test_coloured_lines_parse_like_plain_ones():
     assert devctl.parse_stats(colour(plain_stats)) == devctl.parse_stats(plain_stats) is not None
     s = devctl.AnimSampler()
     a, t = anim_lines(2000)
-    assert s.feed(colour(a)) is None
+    assert s.feed(colour(stats_line(1997))) is None and s.feed(colour(a)) is None
     assert s.feed(colour(t)) == sample(2000)
     # A field that is not a number drops the sample instead of reaching the report.
     s = devctl.AnimSampler()
+    s.feed(stats_line(1997))
     s.feed(a.replace(b"frames=100", b"frames=1x"))
     assert s.feed(t) is None
 

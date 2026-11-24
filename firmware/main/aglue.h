@@ -12,8 +12,9 @@
 _Static_assert(DP_CAUSE_N < 31, "the pickup bit sits above every cause bit");
 
 /* The 2 s log lines; two lines so the worst case fits LOG_LINE_MAX_BYTES with its prefix, checked by aglue_test. */
-#define AG_LINE_FMT "anim: pack=%d skin=%d clip=%d frames=%u late=%u cuts=%u seek=%u verify_ms=%u iheap=%u/%u ilarge=%u"
-#define AG_TIME_LINE_FMT "animt: dec_us=%u/%u work_us=%u/%u cut_ms=%u/%u boot_ms=%u patch_us=%u/%u ring_defer=%u"
+#define AG_LINE_FMT "anim: pack=%d skin=%d clip=%d frames=%u late=%u cuts=%u seek=%u verify_ms=%u iheap=%u/%u ilarge=%u id=%u"
+#define AG_TIME_LINE_FMT "animt: dec_us=%u/%u work_us=%u/%u cut_ms=%u/%u boot_ms=%u patch_us=%u/%u ring_defer=%u id=%u"
+typedef uint16_t ag_line_id_t; /* plain configuration: the id both lines of a period carry; 16 bits keep animt within the limit */
 
 /* Wake bits for one IMU sample: the lifted level wakes, only the pickup edge also carries AG_PICKUP_BIT. */
 uint32_t ag_imu_bits(int motion_ev, bool lifted);

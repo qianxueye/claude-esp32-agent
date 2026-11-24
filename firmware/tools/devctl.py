@@ -40,9 +40,10 @@ BATT_STALE = re.compile(rb"\(\d+\) \w+: batt: stale(?:\x1b\[0m)?$")
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 BOARD_MS = re.compile(rb"\((\d+)\) ")
 ANSI_CODE = re.compile(r"\x1b\[[0-9;]*m")
-ANIM_KEYS = ("pack", "skin", "clip", "frames", "late", "cuts", "seek", "verify_ms", "iheap", "ilarge")  # AG_LINE_FMT in firmware/main/aglue.h
-ANIMT_KEYS = ("dec_us", "work_us", "cut_ms", "boot_ms", "patch_us", "ring_defer")  # AG_TIME_LINE_FMT
+ANIM_KEYS = ("pack", "skin", "clip", "frames", "late", "cuts", "seek", "verify_ms", "iheap", "ilarge", "id")  # AG_LINE_FMT in firmware/main/aglue.h
+ANIMT_KEYS = ("dec_us", "work_us", "cut_ms", "boot_ms", "patch_us", "ring_defer", "id")  # AG_TIME_LINE_FMT
 AUDIO_KEYS = ("spkovf", "under", "slow", "micgap", "micdrop")  # stats line counters that gate G3 needs unchanged
+STATS_PAIR_MS = 1000  # mathematical model: half the 2 s log period; one period's stats and anim lines share a tick
 KEEPALIVE_S = 1.0  # plain configuration: below the board's 5 s host-silence timeout
 GATE_VOLUME_MAX = 30  # Owner rule: speech volume during a gate run
 GATE_VERIFY_MS_MAX = 1000  # gate G7, plain configuration, placeholder
@@ -675,25 +676,32 @@ def numeric(v):
 
 
 class AnimSampler:
-    """Pairs an 'anim:' line with the 'animt:' line printed right after it; a sample missing a half is dropped."""
+    """Groups the stats, 'anim:' and 'animt:' lines of one log period; a group missing a line is dropped.
+
+    anim and animt match by id; stats belongs to the anim line within STATS_PAIR_MS of board time after it."""
 
     def __init__(self):
         self.pending = None
+        self.stats = None
 
     def feed(self, p):
+        st = parse_stats(p)
+        if st is not None:
+            self.stats = (board_ms(p), st)
+            return None
         m = re.search(rb"\banim: (pack=.*)", p)
         if m:
             d = parse_kv(m.group(1).decode("utf-8", "replace"))
-            self.pending = d if all(numeric(d.get(k)) for k in ANIM_KEYS) else None
-            if self.pending is not None:
-                self.pending["ms"] = board_ms(p)
+            d["ms"], (st_ms, st), self.stats = board_ms(p), self.stats or (None, None), None
+            ok = all(numeric(d.get(k)) for k in ANIM_KEYS) and d["ms"] is not None and st_ms is not None
+            self.pending = dict(d, stats=st) if ok and 0 <= d["ms"] - st_ms < STATS_PAIR_MS else None
             return None
         m = re.search(rb"\banimt: (dec_us=.*)", p)
         if not m or self.pending is None:
             return None
         d = parse_kv(m.group(1).decode("utf-8", "replace"))
         sample, self.pending = self.pending, None
-        if not all(numeric(d.get(k)) for k in ANIMT_KEYS):
+        if not all(numeric(d.get(k)) for k in ANIMT_KEYS) or d["id"] != sample["id"]:
             return None
         sample.update(d)
         return sample
@@ -750,19 +758,16 @@ def anim_report(a, b, sa, sb):
 
 
 def wait_sample(link, timeout, after=None):
-    """Return (anim sample, latest stats dict) for the first complete sample arriving after the host time 'after', or (None, stats)."""
+    """Return (anim sample, its period's stats dict) for the first complete group arriving after the host time 'after', or (None, None)."""
     end = time.monotonic() + timeout
-    sampler, stats, ping = AnimSampler(), None, Keepalive(link)
+    sampler, ping = AnimSampler(), Keepalive(link)
     while time.monotonic() < end:
         ping.tick()
         for t, p in link.poll():
-            if t != T_LOG:
-                continue
-            stats = parse_stats(p) or stats
-            s = sampler.feed(p)
-            if s and (after is None or time.monotonic() > after) and stats is not None:
-                return s, stats
-    return None, stats
+            s = sampler.feed(p) if t == T_LOG else None
+            if s and (after is None or time.monotonic() > after):
+                return s, s.pop("stats")
+    return None, None
 
 
 def gate_volume(text):

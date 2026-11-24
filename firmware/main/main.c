@@ -461,11 +461,13 @@ static void life_task(void *arg)
             bright_stats(&bs);
             ESP_LOGI(TAG, BRIGHT_LINE_FMT, bs.user, bs.effective, ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels,
                      (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves, vk_ov_log(bs.over[0]), vk_ov_log(bs.over[1]), vk_ov_log(bs.over[2]));
+            static ag_line_id_t anim_id;
+            anim_id++;
             ui_anim_stats_t an;
             ui_anim_stats(&an);
             ESP_LOGI(TAG, AG_LINE_FMT, an.pack, an.skin, an.clip, (unsigned)an.frames, (unsigned)an.late, (unsigned)an.cuts, (unsigned)an.seeks, (unsigned)an.verify_ms,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)anim_id);
             static uint32_t prev_patch_sum, prev_patch_n, prev_defer;
             const uint32_t patch_mean = ag_window_mean(prev_patch_sum, prev_patch_n, an.patch_sum, an.patch_n);
             const uint32_t defer = an.ring_defer - prev_defer;
@@ -473,7 +475,7 @@ static void life_task(void *arg)
             prev_patch_n = an.patch_n;
             prev_defer = an.ring_defer;
             ESP_LOGI(TAG, AG_TIME_LINE_FMT, (unsigned)an.dec_sum, (unsigned)an.dec_max, (unsigned)an.work_sum, (unsigned)an.work_max, (unsigned)an.cut_last, (unsigned)an.cut_max,
-                     (unsigned)an.boot_ms, (unsigned)patch_mean, (unsigned)an.patch_max, (unsigned)defer);
+                     (unsigned)an.boot_ms, (unsigned)patch_mean, (unsigned)an.patch_max, (unsigned)defer, (unsigned)anim_id);
         }
     }
 }

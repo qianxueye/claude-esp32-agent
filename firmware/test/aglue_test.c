@@ -534,15 +534,16 @@ static void test_imu_bits(void)
 /* The longest log prefix, as ESP_LOGI writes it at the largest uptime. */
 #define PREFIX "I (4294967295) app: "
 #define W 4294967295u
+#define ID ((unsigned)(ag_line_id_t)-1)
 
 static void test_log_lines_fit(void)
 {
     char line[512];
-    int n = snprintf(line, sizeof line, PREFIX AG_LINE_FMT, AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W);
+    int n = snprintf(line, sizeof line, PREFIX AG_LINE_FMT, AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W, ID);
     assert(n > 0 && n < LOG_LINE_MAX_BYTES);
-    n = snprintf(line, sizeof line, PREFIX AG_TIME_LINE_FMT, W, W, W, W, W, W, W, W, W, W);
+    n = snprintf(line, sizeof line, PREFIX AG_TIME_LINE_FMT, W, W, W, W, W, W, W, W, W, W, ID);
     assert(n > 0 && n < LOG_LINE_MAX_BYTES);
-    printf("log lines: anim %d, animt %d of %d bytes\n", snprintf(line, sizeof line, PREFIX AG_LINE_FMT, AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W), n, LOG_LINE_MAX_BYTES);
+    printf("log lines: anim %d, animt %d of %d bytes\n", snprintf(line, sizeof line, PREFIX AG_LINE_FMT, AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W, ID), n, LOG_LINE_MAX_BYTES);
     /* Red proof: the same fields on one line are cut. */
     n = snprintf(line, sizeof line, PREFIX "anim: pack=%d skin=%d clip=%d frames=%u dec_us=%u/%u work_us=%u/%u late=%u cuts=%u cut_ms=%u/%u seek=%u verify_ms=%u iheap=%u/%u ilarge=%u",
                  AP_VERIFYING, 1, APLAY_NOTHING, W, W, W, W, W, W, W, W, W, W, W, W, W, W);
