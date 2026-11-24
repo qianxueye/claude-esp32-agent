@@ -726,6 +726,10 @@ def anim_report(a, b, sa, sb):
     lines, failed = [], False
     secs = (b["ms"] - a["ms"]) / 1000 if a.get("ms") is not None and b.get("ms") is not None else 0
     frames = u32_delta(a["frames"], b["frames"])
+    played = frames > 0 and all(s["skin"] == 1 and s["clip"] >= 0 for s in (a, b))
+    failed |= not played
+    lines.append("G0 %s sticker clip %d (skin=%d) frames +%d%s" % ("PASS" if played else "FAIL", b["clip"], b["skin"], frames,
+                                                                "" if played else "; no sticker played, so this clip cannot be used for the gate"))
     late = u32_delta(a["late"], b["late"])
     failed |= late != 0
     lines.append("G1 %s late +%d; frames +%d in %.1f s (%.2f/s)" % ("PASS" if late == 0 else "FAIL", late, frames, secs, frames / secs if secs else 0))

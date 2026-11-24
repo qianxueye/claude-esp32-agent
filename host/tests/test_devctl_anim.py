@@ -14,9 +14,9 @@ SPEC.loader.exec_module(devctl)
 FIRMWARE = Path(__file__).parents[2] / "firmware" / "main"
 
 
-def anim_lines(ms, frames=100, late=0, cuts=2, pack=1, verify=640, free=101000, large=40000, work=(150000, 9000), dec=(30000, 2100), boot=82, patch=(4200, 6100), defer=3):
-    a = b"I (%d) app: anim: pack=%d skin=1 clip=0 frames=%d late=%d cuts=%d seek=0 verify_ms=%d iheap=%d/%d ilarge=%d id=%d" % (
-        ms, pack, frames, late, cuts, verify, free, free - 900, large, ms // 2000)
+def anim_lines(ms, frames=100, late=0, cuts=2, pack=1, skin=1, clip=0, verify=640, free=101000, large=40000, work=(150000, 9000), dec=(30000, 2100), boot=82, patch=(4200, 6100), defer=3):
+    a = b"I (%d) app: anim: pack=%d skin=%d clip=%d frames=%d late=%d cuts=%d seek=0 verify_ms=%d iheap=%d/%d ilarge=%d id=%d" % (
+        ms, pack, skin, clip, frames, late, cuts, verify, free, free - 900, large, ms // 2000)
     t = b"I (%d) app: animt: dec_us=%d/%d work_us=%d/%d cut_ms=40/71 boot_ms=%d patch_us=%d/%d ring_defer=%d id=%d" % (
         ms, dec[0], dec[1], work[0], work[1], boot, patch[0], patch[1], defer, ms // 2000)
     return [a, t]
@@ -116,9 +116,12 @@ def test_report_computes_deltas_across_a_wrap():
     ({"large": 31743}, 1, "G5 FAIL"),
     ({"pack": 4}, 1, "G7 FAIL"),
     ({"verify": 1001}, 1, "G7 FAIL"),
+    ({"frames": 100}, 1, "G0 FAIL"),
+    ({"clip": -1}, 1, "G0 FAIL"),
+    ({"skin": 0, "clip": -1}, 1, "G0 FAIL"),
 ])
 def test_report_fails_each_judged_rule(kw, stats_b, rule):
-    a, b = sample(2000), sample(62000, **kw)
+    a, b = sample(2000), sample(62000, **{"frames": 200, **kw})
     lines, failed = devctl.anim_report(a, b, devctl.parse_stats(stats_line(2000)), devctl.parse_stats(stats_line(62000, under=stats_b)))
     assert failed and any(line.startswith(rule) for line in lines)
 
