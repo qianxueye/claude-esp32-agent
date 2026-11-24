@@ -1,4 +1,4 @@
-"""Runs cloudflared as its child and stops it when stdin reaches EOF, so it never outlives the relay."""
+"""Runs cloudflared as its child and stops it when stdin reaches EOF, which is when the relay exits."""
 
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ def stop(child: subprocess.Popen, grace_s: float) -> int:
 
 def main(argv: list[str]) -> int:
     grace_s, cmd = float(argv[0]), argv[1:]
+    stopping: list[int] = []
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda s, _f: stopping.append(s))
     try:
         child = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
     except OSError as e:
         print(f"cannot start {cmd[0]}: {e}", file=sys.stderr, flush=True)
         return 127
-    stopping: list[int] = []
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(sig, lambda s, _f: stopping.append(s))
     while not stopping and child.poll() is None:
         ready, _, _ = select.select([0], [], [], POLL_S)
         if ready and not os.read(0, 4096):

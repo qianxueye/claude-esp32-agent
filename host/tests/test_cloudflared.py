@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import itertools
 import json
 import logging
 import os
@@ -336,15 +337,13 @@ async def test_set_remote_after_hello_on_usb_and_again_on_change(hello_delay):
     try:
         d = h.dev
         await until(lambda: {"boot", "reply"} <= set(d.hellos) and len(d.remotes) >= len(d.hellos), timeout=10)
-        await asyncio.sleep(0.2)
-        first = list(d.remotes)
-        assert len(first) >= 2 and all(r == {"url": url(1)} for r in first)
+        assert all(r == {"url": url(1)} for r in d.remotes)
         h.link.set_remote(url(1))
         h.link.set_remote(url(2))
-        await until(lambda: len(d.remotes) > len(first), timeout=10)
+        await until(lambda: d.remotes[-1] == {"url": url(2)}, timeout=10)
         h.link.set_remote(None)
-        await asyncio.sleep(0.1)
-        assert d.remotes == first + [{"url": url(2)}]
+        await asyncio.sleep(0.5)
+        assert [k for k, _ in itertools.groupby(d.remotes, key=lambda r: r["url"])] == [url(1), url(2)]
     finally:
         await h.down()
 

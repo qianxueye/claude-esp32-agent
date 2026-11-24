@@ -73,7 +73,7 @@ class FakeDevice:
         self.link = link
         self.proto = proto
         self.boot_delay = boot_delay
-        self.hello_delay = hello_delay  # the `boot` HELLO leaves this late, so the host's retries get replies
+        self.hello_delay = hello_delay  # every HELLO is recorded when issued but sent this late, as on a loaded runner
         self.consumed0 = consumed0
         self.relay_connector = relay_connector
         self.leaky_log = False
@@ -146,7 +146,11 @@ class FakeDevice:
                 "paired": self.paired is not None, "vol": self.vol, "vol_set": self.vol_set}
         if self.store is not None:
             info["store"] = self.store
-        self.send(T.HELLO, json.dumps(info).encode())
+        frame = json.dumps(info).encode()
+        if self.hello_delay:
+            asyncio.get_running_loop().call_later(self.hello_delay, self.send, T.HELLO, frame)
+        else:
+            self.send(T.HELLO, frame)
 
     def reset(self) -> None:
         """Reboot: ROM text, then HELLO `boot`; the counters restart."""
@@ -159,10 +163,7 @@ class FakeDevice:
         self.ended = False
         if self.link == "usb":
             self.t.write(ROM_TEXT)
-        if self.hello_delay:
-            asyncio.get_running_loop().call_later(self.hello_delay, self.hello, "boot")
-        else:
-            self.hello("boot")
+        self.hello("boot")
 
     def inject(self, code: Input) -> None:
         self.send(T.INPUT, bytes([int(code)]))
