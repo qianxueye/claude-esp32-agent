@@ -16,7 +16,7 @@ typedef enum { BATT_HIDDEN, BATT_NORMAL, BATT_LOW, BATT_CHARGING, BATT_DONE, BAT
 #define BATT_LINE_FMT "batt pct=%d present=%d vbus=%d dir=%d chg=%d mv=%d bars=%d look=%s"
 
 typedef struct {
-    bool ok;
+    bool ok, reg00_ok;
     uint8_t reg00, reg01, pct;
     uint32_t now_ms;
 } batt_in_t;
@@ -24,7 +24,7 @@ typedef struct {
 typedef struct {
     batt_look_t look;
     int bars;
-    bool wake, log, log_fail;
+    bool wake, log, log_fail, log_stale;
 } batt_out_t;
 
 typedef struct {
@@ -35,7 +35,7 @@ typedef struct {
 } batt_state_t;
 
 void batt_init(batt_state_t *s);
-/* One poll: feed the registers of a good read or ok=false after a failed one. */
+/* One poll: ok means all registers read; reg00_ok alone still tracks VBUS for the plug-in edge. */
 batt_out_t batt_step(batt_state_t *s, const batt_in_t *in);
 const char *batt_look_name(batt_look_t look);
 /* Decoded fields for the log line. */

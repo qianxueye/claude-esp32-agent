@@ -43,10 +43,18 @@ static int bars_of(int pct)
 batt_out_t batt_step(batt_state_t *s, const batt_in_t *in)
 {
     batt_out_t o = {.look = s->look, .bars = s->bars};
+    if (in->ok || in->reg00_ok) {
+        const bool vbus = batt_vbus(in->reg00);
+        o.wake = s->vbus_seen && !s->vbus && vbus;
+        s->vbus_seen = true;
+        s->vbus = vbus;
+    }
     if (!in->ok) {
         o.log_fail = !s->failing;
         s->failing = true;
+        s->logged = false;
         if (!s->seen || in->now_ms - s->last_ok_ms >= BATT_STALE_MS) {
+            o.log_stale = s->look != BATT_HIDDEN;
             s->look = o.look = BATT_HIDDEN;
             s->bars = o.bars = 0;
         }
@@ -58,17 +66,12 @@ batt_out_t batt_step(batt_state_t *s, const batt_in_t *in)
     const bool known = pct < BATT_UNKNOWN_PCT;
     const bool done = vbus && chg == CHG_DONE;
     const bool charging = !done && vbus && (dir == DIR_CHARGE || chg <= CHG_CV);
-    o.wake = s->vbus_seen && !s->vbus && vbus;
-    s->vbus_seen = true;
-    s->vbus = vbus;
     s->seen = true;
     s->last_ok_ms = in->now_ms;
-    if (known) {
-        if (charging || done || pct >= BATT_LOW_EXIT_PCT) {
-            s->low = false;
-        } else if (pct <= BATT_LOW_ENTER_PCT) {
-            s->low = true;
-        }
+    if (!present || charging || done || (known && pct >= BATT_LOW_EXIT_PCT)) {
+        s->low = false;
+    } else if (known && pct <= BATT_LOW_ENTER_PCT) {
+        s->low = true;
     }
     if (!present) {
         o.look = BATT_HIDDEN;
@@ -111,7 +114,7 @@ int batt_layout(batt_look_t look, int bars, batt_rect_t out[BATT_RECTS_MAX], int
         *w = *h = 0;
         return 0;
     }
-    const bool bolt = look == BATT_CHARGING || look == BATT_DONE;
+    const bool bolt = look == BATT_CHARGING;
     const int ox = bolt ? 28 : 0, oy = bolt ? 4 : 0;
     *w = bolt ? BATT_BOLT_W : BATT_PLAIN_W;
     *h = bolt ? BATT_BOLT_H : BATT_PLAIN_H;
@@ -129,7 +132,7 @@ int batt_layout(batt_look_t look, int bars, batt_rect_t out[BATT_RECTS_MAX], int
     put(out, &n, ox + 28, oy + 4, 4, 16, BATT_C_GREY);
     put(out, &n, ox, oy + 20, 32, 4, BATT_C_GREY);
     put(out, &n, ox + 32, oy + 8, 4, 8, BATT_C_GREY);
-    const uint8_t bar_color = look == BATT_LOW ? BATT_C_RED : bolt ? BATT_C_CREAM : BATT_C_GREY;
+    const uint8_t bar_color = look == BATT_LOW ? BATT_C_RED : look == BATT_NORMAL ? BATT_C_GREY : BATT_C_CREAM;
     for (int i = 0; i < bars && i < BATT_BARS_MAX; i++) {
         put(out, &n, ox + 8 + 4 * i, oy + 8, 4, 8, bar_color);
     }

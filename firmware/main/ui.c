@@ -290,22 +290,19 @@ static void draw_bubble(const scene_t *s)
     grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
 }
 
-enum { BATT_AT_NONE, BATT_AT_BELOW, BATT_AT_BESIDE };
-/* Where the icon goes while a bubble of this state is fully up. */
-static const uint8_t BATT_AT_BUBBLE[ST_COUNT] = {
-    [ST_IDLE] = BATT_AT_NONE, [ST_LISTENING] = BATT_AT_NONE, [ST_THINKING] = BATT_AT_NONE, [ST_SPEAKING] = BATT_AT_NONE, [ST_ERROR] = BATT_AT_BESIDE, [ST_OFFLINE] = BATT_AT_BESIDE,
-};
+/* Whether the icon sits beside the bubble of this state; the other bubbles hide it. */
+static const bool BATT_BESIDE_BUBBLE[ST_COUNT] = {[ST_ERROR] = true, [ST_OFFLINE] = true};
 
 static void draw_battery(const scene_t *s)
 {
     batt_rect_t r[BATT_RECTS_MAX];
     int w, h, n = batt_layout((batt_look_t)BATT_LOOK(s->batt), BATT_BARS(s->batt), r, &w, &h);
-    int where = s->pop == 0 ? BATT_AT_BELOW : s->pop == 3 ? BATT_AT_BUBBLE[s->bub] : BATT_AT_NONE;
+    const bool below = s->pop == 0, beside = s->pop == 3 && BATT_BESIDE_BUBBLE[s->bub];
     int bx, by;
-    if (n == 0 || where == BATT_AT_NONE) {
+    if (n == 0 || (!below && !beside)) {
         return;
     }
-    if (where == BATT_AT_BELOW) {
+    if (below) {
         bx = SCENE / 2 + BATT_CENTER_DX_PX + s->gx - w / 2;
         by = SCENE / 2 + 5 * C + BATT_GAP_UNITS * U + s->gy - (h - BATT_PLAIN_H);
     } else {

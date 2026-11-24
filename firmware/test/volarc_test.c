@@ -193,9 +193,9 @@ static double worst_corner(void)
                         int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * u) / u - below;
                         x0 = x0 < (cx - w / 2) * u ? x0 : (cx - w / 2) * u;
                         x1 = x1 > (cx - w / 2 + w) * u ? x1 : (cx - w / 2 + w) * u;
-                        y0 = y0 < (bottom_u - 18) * u ? y0 : (bottom_u - 18) * u;
+                        y0 = y0 < (bottom_u - BUBBLE_HEIGHT_UNITS) * u ? y0 : (bottom_u - BUBBLE_HEIGHT_UNITS) * u;
                         if (s->beside) {
-                            int ix = (cx - w / 2 + w) * u + 2 * u, iy = (bottom_u - 18 + 9) * u - BATT_BOLT_H / 2;
+                            int ix = (cx - w / 2 + w) * u + 2 * u, iy = (bottom_u - BUBBLE_HEIGHT_UNITS + BUBBLE_HEIGHT_UNITS / 2) * u - BATT_BOLT_H / 2;
                             ix = ix < SCENE_SIZE_PX - BATT_BOLT_W ? ix : SCENE_SIZE_PX - BATT_BOLT_W;
                             x1 = x1 > ix + BATT_BOLT_W ? x1 : ix + BATT_BOLT_W;
                             y0 = y0 < iy ? y0 : iy;

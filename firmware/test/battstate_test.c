@@ -10,13 +10,19 @@ enum { STANDBY, CHARGE, DISCHARGE };
 
 static batt_out_t read_at(batt_state_t *s, uint32_t t, uint8_t r00, uint8_t r01, int pct)
 {
-    batt_in_t in = {.ok = true, .reg00 = r00, .reg01 = r01, .pct = (uint8_t)pct, .now_ms = t};
+    batt_in_t in = {.ok = true, .reg00_ok = true, .reg00 = r00, .reg01 = r01, .pct = (uint8_t)pct, .now_ms = t};
     return batt_step(s, &in);
 }
 
 static batt_out_t fail_at(batt_state_t *s, uint32_t t)
 {
     batt_in_t in = {.ok = false, .now_ms = t};
+    return batt_step(s, &in);
+}
+
+static batt_out_t reg00_only_at(batt_state_t *s, uint32_t t, uint8_t r00)
+{
+    batt_in_t in = {.ok = false, .reg00_ok = true, .reg00 = r00, .now_ms = t};
     return batt_step(s, &in);
 }
 
@@ -91,6 +97,48 @@ static void test_done_shows_four_bars(void)
     assert(o.look == BATT_DONE && o.bars == 4);
 }
 
+static void test_plug_in_wakes_from_reg00_alone(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    read_at(&s, 0, PRESENT | VBUS, DIR(CHARGE) | 2, 50);
+    batt_out_t o = reg00_only_at(&s, 2000, PRESENT);
+    assert(!o.wake && o.look == BATT_CHARGING);
+    o = reg00_only_at(&s, 4000, PRESENT | VBUS);
+    assert(o.wake && o.look == BATT_CHARGING && o.bars == 2);
+}
+
+static void test_absent_battery_resets_the_low_latch(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    assert(read_at(&s, 0, 0, DIR(DISCHARGE), 0).look == BATT_HIDDEN);
+    assert(read_at(&s, 2000, PRESENT, DIR(DISCHARGE), 22).look == BATT_NORMAL);
+}
+
+static void test_charging_with_unknown_percentage_resets_the_low_latch(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    read_at(&s, 0, PRESENT, DIR(DISCHARGE), 10);
+    assert(read_at(&s, 2000, PRESENT | VBUS, DIR(CHARGE) | 2, 255).look == BATT_CHARGING);
+    assert(read_at(&s, 4000, PRESENT, DIR(DISCHARGE), 22).look == BATT_NORMAL);
+}
+
+static void test_stale_logs_once_and_recovery_forces_a_fresh_line(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    read_at(&s, 0, PRESENT, DIR(DISCHARGE), 60);
+    assert(!fail_at(&s, BATT_STALE_MS - 1).log_stale);
+    assert(fail_at(&s, BATT_STALE_MS).log_stale);
+    assert(!fail_at(&s, BATT_STALE_MS + 2000).log_stale);
+    assert(read_at(&s, BATT_STALE_MS + 4000, PRESENT, DIR(DISCHARGE), 60).log);
+    assert(!read_at(&s, BATT_STALE_MS + 6000, PRESENT, DIR(DISCHARGE), 60).log);
+    fail_at(&s, BATT_STALE_MS + 8000);
+    assert(read_at(&s, BATT_STALE_MS + 10000, PRESENT, DIR(DISCHARGE), 60).log);
+}
+
 static void test_vbus_not_charging_is_normal(void)
 {
     batt_state_t s;
@@ -145,6 +193,20 @@ static void test_failure_logs_once_per_run(void)
     assert(fail_at(&s, 6000).log_fail);
 }
 
+static void test_done_look_is_outline_and_cream_bars_without_a_bolt(void)
+{
+    batt_rect_t d[BATT_RECTS_MAX], c[BATT_RECTS_MAX];
+    int dw, dh, cw, ch;
+    int nd = batt_layout(BATT_DONE, BATT_BARS_MAX, d, &dw, &dh);
+    int nc = batt_layout(BATT_CHARGING, BATT_BARS_MAX, c, &cw, &ch);
+    int cream = 0;
+    for (int i = 0; i < nd; i++) {
+        cream += d[i].color == BATT_C_CREAM;
+    }
+    assert(nd != nc && dw == BATT_PLAIN_W && dh == BATT_PLAIN_H && cw == BATT_BOLT_W && cream == BATT_BARS_MAX);
+    assert(batt_layout(BATT_DONE, 0, d, &dw, &dh) == 5);
+}
+
 static void test_layout_fits_its_box(void)
 {
     for (int look = BATT_NORMAL; look < BATT_LOOK_N; look++) {
@@ -167,6 +229,11 @@ int main(void)
     test_low_leaves_at_25_not_24();
     test_charging_overrides_low();
     test_done_shows_four_bars();
+    test_plug_in_wakes_from_reg00_alone();
+    test_absent_battery_resets_the_low_latch();
+    test_charging_with_unknown_percentage_resets_the_low_latch();
+    test_stale_logs_once_and_recovery_forces_a_fresh_line();
+    test_done_look_is_outline_and_cream_bars_without_a_bolt();
     test_vbus_not_charging_is_normal();
     test_stale_after_ten_seconds_of_failures();
     test_never_read_is_hidden();

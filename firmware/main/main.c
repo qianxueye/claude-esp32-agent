@@ -373,6 +373,7 @@ static void batt_poll(uint32_t t)
 {
     uint8_t r00 = 0, r01 = 0, pct = 0, vh = 0, vl = 0;
     esp_err_t err = pmu_read(0x00, &r00, 1);
+    const bool r00_ok = err == ESP_OK;
     if (err == ESP_OK) {
         err = pmu_read(0x01, &r01, 1);
     }
@@ -383,11 +384,14 @@ static void batt_poll(uint32_t t)
     if (err == ESP_OK && batt_present(r00) && pmu_read(0x34, &vh, 1) == ESP_OK && pmu_read(0x35, &vl, 1) == ESP_OK) {
         mv = ((vh & 0x1F) << 8) | vl;
     }
-    batt_in_t in = {.ok = err == ESP_OK, .reg00 = r00, .reg01 = r01, .pct = pct, .now_ms = t};
+    batt_in_t in = {.ok = err == ESP_OK, .reg00_ok = r00_ok, .reg00 = r00, .reg01 = r01, .pct = pct, .now_ms = t};
     batt_out_t o = batt_step(&s_batt, &in);
     ui_set_battery(BATT_PACK(o.look, o.bars));
     if (o.wake) {
         ui_wake(DP_CAUSE_POWER);
+    }
+    if (o.log_stale) {
+        ESP_LOGW(TAG, "batt: stale");
     }
     if (o.log_fail) {
         ESP_LOGW(TAG, "batt: read failed err=%d", (int)err);
