@@ -11,6 +11,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -303,7 +304,7 @@ def test_guard_stops_when_its_stdout_is_gone(tmp_path, guards):
 
 
 FAKE_SSH = r'''
-import json, os, socket, subprocess, sys, threading, time
+import json, os, select, socket, subprocess, sys, threading, time
 here = os.path.dirname(os.path.abspath(__file__))
 mode = json.load(open(os.path.join(here, "mode.json")))
 if "-G" in sys.argv:
@@ -361,8 +362,15 @@ guard = subprocess.Popen(["/bin/zsh", "-f", "-c", remote], stdin=subprocess.PIPE
 record["guard_pid"] = guard.pid
 save()
 frozen = threading.Event()
+stalled = threading.Event()
 def stdin_relay():
     while True:
+        if os.path.exists(os.path.join(here, "stall")):  # stops reading for good, as a wedged ssh would
+            stalled.set()
+            open(os.path.join(here, "stalled"), "w").close()
+            return
+        if not select.select([0], [], [], 0.01)[0]:
+            continue
         data = os.read(0, 4096)
         if not data:
             break
@@ -393,6 +401,8 @@ while guard.poll() is None:
             frozen.set()
     time.sleep(0.01)
 out.join(2)
+if stalled.is_set():
+    threading.Event().wait()
 sys.exit(255 if frozen.is_set() else guard.returncode)
 '''
 
@@ -474,7 +484,8 @@ async def engine(tmp_path, remotes, say=None, **over):
     remote = Remote(tmp_path, plan=over.pop("plan", []), ssh_config=over.pop("ssh_config", ""))
     if over.pop("hold", False):
         (remote.srv / "hold").touch()
-    q = QwenTts(remote.cfg(tmp_path, **over), say or FakeSay(), grace_s=0.3, stop_margin_s=10.0)
+    margin = over.pop("stop_margin_s", 10.0)
+    q = QwenTts(remote.cfg(tmp_path, **over), say or FakeSay(), grace_s=0.3, stop_margin_s=margin)
     remotes.append((remote, [q]))
     return q, remote
 
@@ -588,6 +599,40 @@ async def test_close_stops_server_guard_and_ssh(tmp_path, remotes):
     assert not any(alive(pid) for pid in remote.pids())
     await until(lambda: not any(t.is_alive() for t in threads))
     assert q._ssh is None and q._http is None
+
+
+def fill(fd):
+    """Fill a pipe to its last byte, leaving the fd's blocking mode as it was."""
+    was = os.get_blocking(fd)
+    os.set_blocking(fd, False)
+    try:
+        for size in (65536, 512, 1):
+            with contextlib.suppress(BlockingIOError):
+                while True:
+                    os.write(fd, b"." * size)
+    finally:
+        os.set_blocking(fd, was)
+
+
+@needs_afconvert
+async def test_close_ends_when_ssh_stops_reading_stdin(tmp_path, remotes):
+    q, remote = await engine(tmp_path, remotes, qwen_link_timeout_s=2.0, stop_margin_s=1.0)
+    await q.start()
+    await ready(q, remote)
+    ssh = q._ssh
+    (remote.dir / "stall").touch()
+    await until(lambda: (remote.dir / "stalled").exists(), timeout=30)
+    fill(ssh.stdin.fileno())
+    # the guard's deadline spans BEATS heartbeats, so beats have met the full pipe by then
+    await until(lambda: "clawd-speech stop heartbeat" in remote.guard_out(), timeout=30)
+    rescued = []
+    rescue = threading.Timer(60, lambda: (rescued.append(True), os.kill(ssh.pid, signal.SIGKILL)))
+    rescue.start()
+    try:
+        await q.close()
+    finally:
+        rescue.cancel()
+    assert rescued == [] and ssh.poll() is not None
 
 
 RELAY_STUB = r'''

@@ -48,13 +48,20 @@ class Outage(TtsError):
 
 
 def heartbeat(pipe, interval_s: float, stop: threading.Event) -> None:
-    """Write one byte per interval until stopped; a closed or broken pipe also ends it."""
-    while not stop.wait(interval_s):
-        try:
-            pipe.write(b".")
-            pipe.flush()
-        except (OSError, ValueError):
-            return
+    """Write one byte per interval until stopped, then close `pipe`; owns it, so only this thread closes it.
+    Writes never block: a full pipe skips the beat, so a stop is never held up by ssh."""
+    fd = pipe.fileno()
+    os.set_blocking(fd, False)
+    try:
+        while not stop.wait(interval_s):
+            try:
+                os.write(fd, b".")
+            except BlockingIOError:
+                pass
+            except OSError:
+                return
+    finally:
+        pipe.close()
 
 
 def read_lines(pipe, loop: asyncio.AbstractEventLoop, on_line: Callable, stop: threading.Event) -> None:
@@ -323,11 +330,8 @@ class QwenTts:
         return f"ssh exited with {proc.poll()} (see qwen-tts-server.log)"
 
     def _send_eof(self) -> None:
-        """Stop the heartbeat and close ssh's stdin; from here the guard stops the server by itself."""
+        """Stop the heartbeat, which then closes ssh's stdin; from here the guard stops the server by itself."""
         self._beat_stop.set()
-        if self._ssh is not None and self._ssh.stdin is not None:
-            with contextlib.suppress(OSError, ValueError):
-                self._ssh.stdin.close()
 
     async def _stop_ssh(self) -> None:
         """Stop and reap ssh; the handle is cleared only once reaped, so `close()` repeats a cut-off stop."""
