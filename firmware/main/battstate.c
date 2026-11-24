@@ -1,7 +1,7 @@
 #include "battstate.h"
 #include "app_config.h"
 
-enum { ST_NOT_CHARGING = 5, ST_DONE = 4, ST_CV = 3, DIR_CHARGE = 1 };
+enum { CHG_DONE = 4, CHG_CV = 3, DIR_CHARGE = 1 };
 
 bool batt_present(uint8_t reg00)
 {
@@ -56,8 +56,8 @@ batt_out_t batt_step(batt_state_t *s, const batt_in_t *in)
     const bool vbus = batt_vbus(in->reg00), present = batt_present(in->reg00);
     const int dir = batt_dir(in->reg01), chg = batt_chg(in->reg01), pct = in->pct;
     const bool known = pct < BATT_UNKNOWN_PCT;
-    const bool done = vbus && chg == ST_DONE;
-    const bool charging = !done && vbus && (dir == DIR_CHARGE || chg <= ST_CV);
+    const bool done = vbus && chg == CHG_DONE;
+    const bool charging = !done && vbus && (dir == DIR_CHARGE || chg <= CHG_CV);
     o.wake = s->vbus_seen && !s->vbus && vbus;
     s->vbus_seen = true;
     s->vbus = vbus;

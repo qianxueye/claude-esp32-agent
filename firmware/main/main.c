@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "imu.h"
 #include "keydebounce.h"
+#include "battstate.h"
 #include "bright.h"
 #include "nvstore.h"
 #include "volknob.h"
@@ -349,9 +350,53 @@ static void on_frame(const proto_frame_t *f, bool live)
     }
 }
 
+static i2c_master_dev_handle_t s_pmu;
+static batt_state_t s_batt;
+
+static void pmu_open(void)
+{
+    i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
+    i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = PMU_I2C_ADDR, .scl_speed_hz = PMU_I2C_HZ};
+    if (bus == NULL || i2c_master_bus_add_device(bus, &cfg, &s_pmu) != ESP_OK) {
+        s_pmu = NULL;
+        ESP_LOGW(TAG, "pmu: no device");
+    }
+}
+
+/* Read-only: the firmware never writes a PMU register. */
+static esp_err_t pmu_read(uint8_t reg, uint8_t *buf, size_t n)
+{
+    return s_pmu == NULL ? ESP_ERR_INVALID_STATE : i2c_master_transmit_receive(s_pmu, &reg, 1, buf, n, PMU_I2C_TIMEOUT_MS);
+}
+
+static void batt_poll(uint32_t t)
+{
+    uint8_t st[2] = {0, 0}, pct = 0, v[2] = {0, 0};
+    esp_err_t err = pmu_read(0x00, st, 2);
+    if (err == ESP_OK) {
+        err = pmu_read(0xA4, &pct, 1);
+    }
+    int mv = -1;
+    if (err == ESP_OK && batt_present(st[0]) && pmu_read(0x34, v, 2) == ESP_OK) {
+        mv = ((v[0] & 0x1F) << 8) | v[1];
+    }
+    batt_in_t in = {.ok = err == ESP_OK, .reg00 = st[0], .reg01 = st[1], .pct = pct, .now_ms = t};
+    batt_out_t o = batt_step(&s_batt, &in);
+    ui_set_battery(BATT_PACK(o.look, o.bars));
+    if (o.wake) {
+        ui_wake(DP_CAUSE_POWER);
+    }
+    if (o.log_fail) {
+        ESP_LOGW(TAG, "batt: read failed err=%d", (int)err);
+    }
+    if (o.log) {
+        ESP_LOGI(TAG, BATT_LINE_FMT, (int)pct, (int)batt_present(st[0]), (int)batt_vbus(st[0]), batt_dir(st[1]), batt_chg(st[1]), mv, o.bars, batt_look_name(o.look));
+    }
+}
+
 static void life_task(void *arg)
 {
-    uint32_t last_stats = now_ms();
+    uint32_t last_stats = now_ms(), last_batt = last_stats - BATT_POLL_MS;
     bool saved_logged = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(LIFE_PERIOD_MS));
@@ -370,6 +415,10 @@ static void life_task(void *arg)
             saved_logged = true;
             ESP_LOGI(TAG, "volume saved; life stack high-water %u words", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
+        if (t - last_batt >= BATT_POLL_MS) {
+            last_batt = t;
+            batt_poll(t);
+        }
         if (t - last_stats >= STATS_LOG_PERIOD_MS) {
             last_stats = t;
             transport_stats_t st;
@@ -385,8 +434,8 @@ static void life_task(void *arg)
             ESP_LOGI(TAG, "stack free B: rx=%u net=%u sys_evt=%u wifi=%u tiT=%u; net drop=%u", (unsigned)transport_rx_stack_hwm(),
                      (unsigned)net_stack_hwm(), task_free_bytes("sys_evt"), task_free_bytes("wifi"), task_free_bytes("tiT"),
                      (unsigned)net_tx_dropped());
-            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u pwr_err=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
-                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)s_pwr_read_errors);
+            ESP_LOGI(TAG, "wakes touch=%u button=%u state=%u motion=%u power=%u pwr_err=%u", (unsigned)wk[DP_CAUSE_TOUCH], (unsigned)wk[DP_CAUSE_BUTTON],
+                     (unsigned)wk[DP_CAUSE_STATE], (unsigned)wk[DP_CAUSE_MOTION], (unsigned)wk[DP_CAUSE_POWER], (unsigned)s_pwr_read_errors);
             volume_stats_t vs;
             volume_stats(&vs);
             ESP_LOGI(TAG, VOLUME_LINE_FMT, vs.user, vs.effective, (int)vs.set, (unsigned)vs.arms, (unsigned)vs.cancels, (unsigned)vs.edge, (unsigned)vs.saves,
@@ -407,18 +456,11 @@ static void key_press(const char *name)
     transport_send(T_INPUT, &code, 1);
 }
 
-static void log_pmu_regs(i2c_master_bus_handle_t bus)
+static void log_pmu_regs(void)
 {
-    i2c_master_dev_handle_t dev;
-    i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = PMU_I2C_ADDR, .scl_speed_hz = PMU_I2C_HZ};
-    if (bus == NULL || i2c_master_bus_add_device(bus, &cfg, &dev) != ESP_OK) {
-        ESP_LOGW(TAG, "pmu: no device");
-        return;
-    }
-    uint8_t r22 = 0, r27 = 0, a22 = 0x22, a27 = 0x27;
-    esp_err_t e1 = i2c_master_transmit_receive(dev, &a22, 1, &r22, 1, PMU_I2C_TIMEOUT_MS);
-    esp_err_t e2 = i2c_master_transmit_receive(dev, &a27, 1, &r27, 1, PMU_I2C_TIMEOUT_MS);
-    i2c_master_bus_rm_device(dev);
+    uint8_t r22 = 0, r27 = 0;
+    esp_err_t e1 = pmu_read(0x22, &r22, 1);
+    esp_err_t e2 = pmu_read(0x27, &r27, 1);
     if (e1 != ESP_OK || e2 != ESP_OK) {
         ESP_LOGW(TAG, "pmu: read failed %d %d", (int)e1, (int)e2);
         return;
@@ -434,7 +476,7 @@ static void button_task(void *arg)
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     gpio_config(&io);
-    log_pmu_regs(bsp_i2c_get_handle());
+    log_pmu_regs();
     esp_io_expander_handle_t exp = bsp_io_expander_init();
     keydeb_t boot, pwr;
     keydeb_init(&boot);
@@ -485,6 +527,7 @@ void app_main(void)
     imu_start();
     ESP_LOGI(TAG, "audio up");
     net_init();
+    pmu_open();
     xTaskCreate(button_task, "button", STACK_BUTTON, NULL, PRIO_BUTTON, NULL);
     s_last_host_ms = now_ms();
     s_ready = true;

@@ -34,6 +34,8 @@ SWIPE_FINAL_GUARD_S = 0.5  # plain configuration: the final bright line must sta
 BRIGHT_KEYS = ("lvl", "eff", "panel", "set", "arms", "rim", "cancels", "slides", "stops", "saves")
 BRIGHT_COUNTERS = ("arms", "rim", "cancels", "slides", "stops", "saves")
 BRIGHT_LINE = re.compile(rb"bright " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in BRIGHT_KEYS))
+BATT_KEYS = ("pct", "present", "vbus", "dir", "chg", "mv", "bars")
+BATT_LINE = re.compile(rb"batt " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in BATT_KEYS) + rb" look=(\w+)")
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 BOARD_MS = re.compile(rb"\((\d+)\) ")
 
@@ -582,6 +584,12 @@ def parse_bright(p):
     """Return the counters of a 'bright lvl=' LOG line as a dict, or None."""
     m = BRIGHT_LINE.search(p)
     return dict(zip(BRIGHT_KEYS, (int(v) for v in m.groups()))) if m else None
+
+
+def parse_batt(p):
+    """Return the fields of a 'batt pct=' LOG line as a dict (look as str), or None."""
+    m = BATT_LINE.search(p)
+    return dict(zip(BATT_KEYS, (int(v) for v in m.groups()[:-1])), look=m.group(len(BATT_KEYS) + 1).decode()) if m else None
 
 
 def board_ms(p):
