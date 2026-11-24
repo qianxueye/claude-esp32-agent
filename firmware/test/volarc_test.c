@@ -229,9 +229,16 @@ static double worst_corner(void)
 static void test_a2_scene_clear_of_arc(void)
 {
     double w = worst_corner();
-    printf("scene worst corner %.1f\n", w);
+    const double err = case_corner(&CLAWD_CASES[CASE_ERROR]);
+    scene_case_t thinking_beside = CLAWD_CASES[CASE_THINKING];
+    thinking_beside.beside = 1;
+    const double thinking = case_corner(&thinking_beside);
+    printf("scene worst corner %.1f, ERROR %.2f, THINKING with the icon %.2f\n", w, err, thinking);
     assert(w + 2 < VOL_ARC_R_IN_PX && w <= SCENE_MAX_RADIUS_PX);
     assert(!(w + 2 < 211));
+    /* The ERROR row keeps its icon (the bubble alone is 205.06); the icon beside THINKING would not fit, so the beside table cannot gain it. */
+    assert(err > 216);
+    assert(!(thinking + 2 < VOL_ARC_R_IN_PX));
 }
 
 static double rect_corner(ag_rect_t r)
@@ -247,7 +254,7 @@ static void test_a2s_sticker_scene_clear_of_arc(void)
         ag_content_t content;
         bool thought;
     } W[4] = {{{2, false, true}, false}, {{3, false, false}, false}, {{2, false, false}, false}, {{2, true, false}, true}};
-    double worst = 0;
+    double worst = 0, with_icon = 0, below = 0;
     long n = 0;
     for (int k = 0; k < 4; k++) {
         for (int left = 0; left < 2; left++) {
@@ -264,14 +271,29 @@ static void test_a2s_sticker_scene_clear_of_arc(void)
                         for (int c = 0; c < b.n_frame; c++) {
                             worst = fmax(worst, rect_corner(b.frame[c].r));
                         }
+                        if (pop == 3 && (k == 1 || k == 2)) { /* ERROR and OFFLINE: the icon and its plate join the one cleared box */
+                            const irect_t box = ag_bubble_bbox(&b);
+                            const ag_rect_t p = ag_batt_plate(ag_batt_beside_side(&b, left, BATT_BOLT_W, BATT_BOLT_H));
+                            const int x0 = box.x0 < p.x ? box.x0 : p.x, x1 = box.x1 > p.x + p.w ? box.x1 : p.x + p.w;
+                            const int y0 = box.y0 < p.y ? box.y0 : p.y, y1 = box.y1 > p.y + p.h ? box.y1 : p.y + p.h;
+                            const double joined = rect_corner((ag_rect_t){x0, y0, x1 - x0, y1 - y0});
+                            assert(joined == rect_corner((ag_rect_t){box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0}));
+                            with_icon = fmax(with_icon, joined);
+                        }
                         n++;
                     }
                 }
             }
         }
     }
-    printf("A2s: %ld sticker scenes, worst corner %.2f\n", n, worst);
+    for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+        int gx, gy;
+        dp_orbit(i, &gx, &gy);
+        below = fmax(below, rect_corner(ag_batt_plate(ag_batt_below(BATT_BOLT_W, BATT_BOLT_H, gx, gy, SCENE_SIZE_PX))));
+    }
+    printf("A2s: %ld sticker scenes, worst corner %.2f, with the icon beside %.2f, icon alone below %.2f\n", n, worst, with_icon, below);
     assert(worst + 2 < SCENE_RING_CLEAR_PX && worst + 2 < VOL_ARC_R_IN_PX);
+    assert(with_icon + 2 < SCENE_RING_CLEAR_PX && below + 2 < SCENE_RING_CLEAR_PX);
     /* Red proofs: outer edge 192 at bub_y 0 gives 211.3; the raw lattice on the left, without the recentre, 212.05. */
     double edge192 = 0, raw_left = 0;
     for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
@@ -302,8 +324,10 @@ static void test_a2r_listening_clear_of_arc(void)
         }
     }
     const double thinking = case_corner(&CLAWD_CASES[CASE_THINKING]);
-    printf("A2r: LISTENING Clawd %.1f sticker %.1f; THINKING Clawd %.1f\n", clawd, sticker, thinking);
-    assert(clawd + 2 < 211 && sticker + 2 < 211);
+    const scene_case_t pop0 = {0, 0, 0, 0, 0, 0, 0}; /* the LISTENING pose before its bubble pops, icon below the legs */
+    const double clawd_pop0 = case_corner(&pop0);
+    printf("A2r: LISTENING Clawd %.1f sticker %.1f, pop 0 with the icon %.2f; THINKING Clawd %.1f\n", clawd, sticker, clawd_pop0, thinking);
+    assert(clawd + 2 < 211 && sticker + 2 < 211 && clawd_pop0 + 2 < 211);
     /* Red proof: the THINKING scene, with its spinner and thought dots, is the one that does not fit. */
     assert(!(thinking + 2 < 211));
 }

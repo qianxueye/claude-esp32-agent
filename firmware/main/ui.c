@@ -253,11 +253,17 @@ static void draw_mask(const bubble_def_t *b, int st, int ox, int oy)
     grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
 }
 
+static ag_bubble_t side_bubble(const scene_t *s, const ap_clip_t *clip)
+{
+    const bubble_def_t *b = &BUBBLES[s->bub];
+    return ag_side_bubble(bubble_content(b), b->thought, clip->bubble_left, clip->bubble_y, s->gx, s->gy, s->pop, s->dot_phase, SCENE);
+}
+
 /* The sticker skin's bubble beside the art, every cell from ag_side_bubble placed to the pixel. */
 static void draw_side_bubble(const scene_t *s, const ap_clip_t *clip)
 {
     const bubble_def_t *b = &BUBBLES[s->bub];
-    const ag_bubble_t g = ag_side_bubble(bubble_content(b), b->thought, clip->bubble_left, clip->bubble_y, s->gx, s->gy, s->pop, s->dot_phase, SCENE);
+    const ag_bubble_t g = side_bubble(s, clip);
     const irect_t box = ag_bubble_bbox(&g);
     grow_bb(box.x0, box.y0, box.x1, box.y1);
     for (int i = 0; i < g.n_frame; i++) {
@@ -334,16 +340,24 @@ static void draw_battery(const scene_t *s)
     batt_rect_t r[BATT_RECTS_MAX];
     int w, h, n = batt_layout((batt_look_t)BATT_LOOK(s->batt), BATT_BARS(s->batt), r, &w, &h);
     const bool below = s->pop == 0, beside = s->pop == 3 && BATT_BESIDE_BUBBLE[s->bub];
-    if (n == 0 || s_art_ready || (!below && !beside)) {
+    if (n == 0 || (!below && !beside)) {
         return;
     }
     ag_rect_t at;
     if (below) {
         at = ag_batt_below(w, h, s->gx, s->gy, SCENE);
+    } else if (s_art_ready) {
+        const ap_clip_t *clip = &s_ap.pack->clip[s->anim_clip];
+        const ag_bubble_t g = side_bubble(s, clip);
+        at = ag_batt_beside_side(&g, clip->bubble_left, w, h);
     } else {
         const bubble_def_t *b = &BUBBLES[s->bub];
         const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(ag_content_units(bubble_content(b))), b->thought, s->pop, s->gx, s->gy, SCENE);
         at = ag_batt_beside_top(&t, w, h, SCENE);
+    }
+    if (s_art_ready) {
+        const ag_rect_t p = ag_batt_plate(at);
+        fill(p.x, p.y, p.w, p.h, PAL_INK);
     }
     static const uint8_t COL[] = {[BATT_C_GREY] = PAL_OFFLINE_FILL, [BATT_C_CREAM] = PAL_FILL, [BATT_C_RED] = PAL_ERROR};
     for (int i = 0; i < n; i++) {

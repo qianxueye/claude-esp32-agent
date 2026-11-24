@@ -6,6 +6,7 @@
 #include "aglue.h"
 #include "apack_golden.h"
 #include "app_config.h"
+#include "battstate.h"
 #include "motion.h"
 #include "volarc.h"
 
@@ -15,13 +16,13 @@
 #define U BUBBLE_UNIT_PX
 #define C MASCOT_CELL_PX
 
-/* Bubble states by content in units and shape, as ui.c's BUBBLES table sizes them; IDLE has none. */
+/* Bubble states by content in units and shape, as ui.c's BUBBLES table sizes them; IDLE has none. beside: the battery icon sits by the bubble. */
 typedef struct {
     int content_u;
-    bool thought;
+    bool thought, beside;
 } state_t;
 
-static const state_t STATES[] = {{0, false}, {34, false}, {33, true}, {34, false}, {36, false}, {24, false}};
+static const state_t STATES[] = {{0, false, false}, {34, false, false}, {33, true, false}, {34, false, false}, {36, false, true}, {24, false, true}};
 #define N_STATES ((int)(sizeof STATES / sizeof STATES[0]))
 
 static irect_t grown(irect_t b, int x0, int y0, int x1, int y1)
@@ -49,7 +50,14 @@ static int count(const xspan_t *sp)
     return acomp_bands(sp, OUT, DIRTY_BAND_ROWS, r, ACOMP_MAX_BANDS);
 }
 
-/* The bounding rectangle ui.c grows for the static mascot at pop 3 (pop 0 for IDLE): body, claws and legs, and the top bubble. */
+static irect_t with_icon(irect_t b, ag_rect_t icon)
+{
+    const ag_rect_t p = ag_batt_plate(icon);
+    return grown(b, p.x, p.y, p.x + p.w, p.y + p.h);
+}
+
+/* The bounding rectangle ui.c grows for the static mascot at pop 3 (pop 0 for IDLE): body, claws and legs, the top bubble and the battery icon.
+   The icon box includes the sticker skin's plate, a bound for this skin. */
 static irect_t clawd_bb(const state_t *s, int gx, int gy)
 {
     const int shift = s->content_u ? BUBBLE_SHIFT_UNITS * U : 0;
@@ -59,6 +67,11 @@ static irect_t clawd_bb(const state_t *s, int gx, int gy)
     if (s->content_u) {
         const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(s->content_u), s->thought, 3, gx, gy, SCENE);
         b = grown(b, t.body.x, t.body.y, t.body.x + t.body.w, t.body.y + t.body.h);
+        if (s->beside) {
+            b = with_icon(b, ag_batt_beside_top(&t, BATT_BOLT_W, BATT_BOLT_H, SCENE));
+        }
+    } else {
+        b = with_icon(b, ag_batt_below(BATT_BOLT_W, BATT_BOLT_H, gx, gy, SCENE));
     }
     return b;
 }
@@ -162,16 +175,22 @@ static void sticker_sweep(void)
     for (int i = 0; i < POINTS; i++) {
         int gx, gy;
         dp_orbit(i, &gx, &gy);
-        irect_t bbs[4 * 2 * 3];
+        irect_t bbs[4 * 2 * 3 + 1];
         int nb = 0;
         for (int wi = 0; wi < 4; wi++) {
             for (int side = 0; side < 2; side++) {
                 for (size_t yi = 0; yi < sizeof ys / sizeof ys[0]; yi++) {
                     const bub_t b = {contents[wi], wi == 3, side == 1, ys[yi]};
-                    bbs[nb++] = bubble_bb(&b, gx, gy);
+                    bbs[nb] = bubble_bb(&b, gx, gy);
+                    if (wi == 1 || wi == 2) { /* the ERROR and OFFLINE contents carry the icon beside them */
+                        const ag_bubble_t g = ag_side_bubble(b.content, b.thought, b.left, b.bub_y, gx, gy, 3, 0, SCENE);
+                        bbs[nb] = with_icon(bbs[nb], ag_batt_beside_side(&g, b.left, BATT_BOLT_W, BATT_BOLT_H));
+                    }
+                    nb++;
                 }
             }
         }
+        bbs[nb++] = with_icon((irect_t){SCENE, SCENE, 0, 0}, ag_batt_below(BATT_BOLT_W, BATT_BOLT_H, gx, gy, SCENE)); /* pop 0: the icon alone */
         for (int t = 0; t < 3600; t++) {
             for (int k = 0; k < 4; k++) {
                 const ap_clip_t *c = k == 0 ? &g.clip[1] : &packs[k]->clip[0];

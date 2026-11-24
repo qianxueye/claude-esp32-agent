@@ -100,6 +100,10 @@ ag_top_bubble_t ag_top_bubble(int w_units, bool thought, int pop, int gx, int gy
 ag_rect_t ag_batt_below(int w, int h, int gx, int gy, int scene);
 /* The icon right of Clawd's full top bubble, centred on its body; its right edge at most BATT_BESIDE_MAX_DX_PX from the scene centre. */
 ag_rect_t ag_batt_beside_top(const ag_top_bubble_t *t, int w, int h, int scene);
+/* The icon on the inner side of a full side bubble, BATT_BESIDE_GAP_UNITS from its box with the tail, centred on its body. */
+ag_rect_t ag_batt_beside_side(const ag_bubble_t *g, bool left, int w, int h);
+/* The ink plate the sticker skin draws behind the icon, so the art does not show through it. */
+ag_rect_t ag_batt_plate(ag_rect_t icon);
 
 /* A running count, sum and maximum of per-frame times in microseconds. */
 typedef struct {

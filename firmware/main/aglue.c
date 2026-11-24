@@ -202,6 +202,19 @@ ag_rect_t ag_batt_beside_top(const ag_top_bubble_t *t, int w, int h, int scene)
     return (ag_rect_t){x < x_max ? x : x_max, t->body.y + BUBBLE_HEIGHT_UNITS / 2 * U - h / 2, w, h};
 }
 
+ag_rect_t ag_batt_beside_side(const ag_bubble_t *g, bool left, int w, int h)
+{
+    const irect_t box = ag_bubble_bbox(g);
+    const int gap = BATT_BESIDE_GAP_UNITS * U;
+    return (ag_rect_t){left ? box.x1 + gap : box.x0 - gap - w, g->body.y + g->body.h / 2 - h / 2, w, h};
+}
+
+ag_rect_t ag_batt_plate(ag_rect_t icon)
+{
+    const int m = BATT_PLATE_UNITS * U;
+    return (ag_rect_t){icon.x - m, icon.y - m, icon.w + 2 * m, icon.h + 2 * m};
+}
+
 void ag_acc_add(ag_acc_t *a, uint32_t us)
 {
     a->n++;

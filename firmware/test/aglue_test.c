@@ -292,6 +292,44 @@ static void test_b5_battery_pins(void)
     printf("B5: %zu battery pins\n", sizeof PINS / sizeof PINS[0]);
 }
 
+static bool rects_meet(ag_rect_t a, ag_rect_t b)
+{
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/* B6: beside an ERROR or OFFLINE side bubble the icon's plate meets no bubble cell, the icon keeps 8 px to the box on the inner side and shares the body's centre row. */
+static void test_b6_battery_beside_side_bubble(void)
+{
+    static const int SIZE[2][2] = {{BATT_PLAIN_W, BATT_PLAIN_H}, {BATT_BOLT_W, BATT_BOLT_H}};
+    int n = 0;
+    for (int c = 1; c <= 2; c++) {
+        for (int left = 0; left < 2; left++) {
+            for (int y = -AG_BUBBLE_Y_MAX_PX; y <= AG_BUBBLE_Y_MAX_PX; y += 4) {
+                for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+                    int gx, gy;
+                    dp_orbit(i, &gx, &gy);
+                    const ag_bubble_t b = side(&BUB_CASES[c], left, y, gx, gy, 3, 0);
+                    const irect_t box = ag_bubble_bbox(&b);
+                    for (int k = 0; k < 2; k++) {
+                        const ag_rect_t icon = ag_batt_beside_side(&b, left, SIZE[k][0], SIZE[k][1]), p = ag_batt_plate(icon);
+                        assert(left ? icon.x - box.x1 == 8 : box.x0 - (icon.x + icon.w) == 8);
+                        assert(2 * icon.y + icon.h == 2 * b.body.y + b.body.h && icon.w == SIZE[k][0] && icon.h == SIZE[k][1]);
+                        assert(!rects_meet(p, b.body));
+                        for (int f = 0; f < b.n_frame; f++) {
+                            assert(!rects_meet(p, b.frame[f].r));
+                        }
+                        for (int f = 0; f < b.n_cells; f++) {
+                            assert(!rects_meet(p, b.cells[f].r));
+                        }
+                        n++;
+                    }
+                }
+            }
+        }
+    }
+    printf("B6: %d icons beside side bubbles\n", n);
+}
+
 static void test_bring_follows_the_decode_rules(void)
 {
     const ap_pack_t g = golden();
@@ -599,6 +637,7 @@ int main(void)
     test_b3_bub_y_snap_and_edge();
     test_b4_top_bubble_unchanged();
     test_b5_battery_pins();
+    test_b6_battery_beside_side_bubble();
     test_bring_follows_the_decode_rules();
     test_g1_bring_not_ready();
     test_stage_map();
