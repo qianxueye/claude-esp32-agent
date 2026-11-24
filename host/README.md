@@ -63,13 +63,27 @@ uv run claude-voice [--config config.toml]
 
 默认用 macOS `say`。把 `tts_engine` 设为 `"qwen3"`，改用 mlx-audio 语音服务上的 Qwen3-TTS（默认模型 0.6B，声音 `ono_anna`）：
 
-- `qwen_server_cmd`：服务的启动命令（参数列表）。设置后，中继在启动时选一个本机空闲端口启动服务，用一句短话预热，退出时停止服务。
+- `qwen_server_cmd`：服务的启动命令（参数列表）。设置后，中继在启动时选一个本机空闲端口启动服务，用一句短话预热，退出时停止服务。同时设置了 `qwen_ssh_host` 时，服务改在另一台 Mac 上运行，见下文。
 - `qwen_url`：没有设置 `qwen_server_cmd` 时，连接这个地址的服务，例如经 SSH 端口转发的另一台 Mac。
 - `qwen_lang_code`（`chinese` 或 `japanese`）和 `qwen_voice` 由配置决定，不自动识别语言；`qwen_voices` 可按语言指定不同的声音。
 - 服务返回 24 kHz 音频，中继用 `afconvert` 转成 16 kHz。
 - 服务启动失败或没有就绪时，中继在日志里记一条错误，并继续使用 `say`。某一句合成失败时，这一句改用 `say`，日志记一条警告，之后 `qwen_skip_s` 秒内的句子直接用 `say`，不再等待超时。
-- 用 `qwen_url` 连接的服务失败后，中继在 `qwen_skip_s` 秒后再次尝试连接；由中继自己启动的服务一旦失败，不会重启，中继保持使用 `say`，直到重新启动中继。
+- 用 `qwen_url` 连接的服务失败后，中继在 `qwen_skip_s` 秒后再次尝试连接；中继在本机启动的服务一旦失败，不会重启，中继保持使用 `say`，直到重新启动中继。
 - 服务日志写在日志目录的 `qwen-tts-server.log`。
+
+在另一台 Mac 上合成：把 `qwen_ssh_host` 设为那台 Mac 在 `~/.ssh/config` 里的别名（例如 `speech-mac`），`qwen_server_cmd` 里写那台 Mac 上的路径。中继通过 SSH 在那台 Mac 上启动服务，并把服务端口转发到本机。
+
+- 那台 Mac 需要事先准备好：
+  - 已打开「远程登录」。别名里已配置密钥，可以不输密码登录；那台 Mac 的主机密钥已在本机的 `known_hosts` 里。中继不会询问密码，也不会确认新的主机密钥。
+  - 允许 SSH 端口转发（`AllowTcpForwarding`，默认允许）。别名里不要写 `LocalForward`。
+  - 有 `/usr/bin/python3`（随命令行工具安装）；没有时用 `qwen_remote_python` 指定那台 Mac 上 Python 的绝对路径。
+  - 服务的虚拟环境已经装好。
+- 中继不在那台 Mac 上安装或写入文件。服务在那台 Mac 上使用端口 `qwen_remote_port`（默认 47803）。
+- 中继启动时不等服务就绪。服务就绪之前，每句话都用 `say`。
+- 连接断开或服务退出后，下一句起改用 `say`，日志记一条警告。中继随后自动重连：间隔从 `qwen_restart_min_s` 秒开始，每次加倍，最长 `qwen_restart_max_s` 秒。重连成功后恢复使用 Qwen3。
+- 中继退出、被强制结束或网络中断后，那台 Mac 上的服务最多再运行 `qwen_link_timeout_s` 秒（默认 10 秒）。
+- 例外：中继在那台 Mac 上用一个小的 Python 进程看管服务。如果这个进程被单独结束，服务会继续运行并占用端口，之后的每次重连都会在日志里报告端口被占用，需要在那台 Mac 上手动结束服务。
+- SSH 和那台 Mac 上服务的输出也写在 `qwen-tts-server.log`。
 
 ## 操作
 
