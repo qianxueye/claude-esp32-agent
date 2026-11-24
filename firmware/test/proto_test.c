@@ -51,16 +51,21 @@ int main(void)
     assert(!proto_parser_next(&p, 2300, &f));
     assert(p.fill < 5);
     char js[24];
-    /* The truncation is deliberate; a size gcc cannot fold keeps -Wformat-truncation from rejecting it. */
-    const volatile size_t js_cap_v = sizeof js;
-    const size_t js_cap = js_cap_v;
-    int jn = snprintf(js, js_cap, "{\"reason\":\"%s\"}", "a-reason-longer-than-the-buffer");
-    assert(jn > (int)js_cap && proto_json_len(jn, js_cap) == strlen(js));
-    jn = snprintf(js, js_cap, "{\"proto\":%d}", 3);
-    assert(proto_json_len(jn, js_cap) == strlen(js) && strlen(js) == 11);
-    assert(proto_json_len(-1, js_cap) == 0 && proto_json_len(5, 0) == 0 && proto_json_len(24, 24) == 23);
+/* The truncation in these checks is deliberate; gcc's -Wformat-truncation would reject it under -Werror. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
+    int jn = snprintf(js, sizeof js, "{\"reason\":\"%s\"}", "a-reason-longer-than-the-buffer");
+    assert(jn > (int)sizeof js && proto_json_len(jn, sizeof js) == strlen(js));
+    jn = snprintf(js, sizeof js, "{\"proto\":%d}", 3);
+    assert(proto_json_len(jn, sizeof js) == strlen(js) && strlen(js) == 11);
+    assert(proto_json_len(-1, sizeof js) == 0 && proto_json_len(5, 0) == 0 && proto_json_len(24, 24) == 23);
     /* Red proof: passing the snprintf result as is would send bytes past the buffer. */
-    assert((size_t)snprintf(js, js_cap, "%040d", 0) > js_cap);
+    assert((size_t)snprintf(js, sizeof js, "%040d", 0) > sizeof js);
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     /* stream mode: a partial frame waits for its bytes however long they take */
     proto_parser_init(&p, store, sizeof store);
     proto_parser_set_stream(&p, true);
