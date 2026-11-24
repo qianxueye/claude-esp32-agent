@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import re
 import sys
 import wave
@@ -26,8 +27,8 @@ def stats_line(ms, under=1):
     return b"I (%d) app: stats rx=10/100B crc=0 skip=0 tx=5/50B drop=0 spkq=0 spkovf=0 pa=0 under=%d slow=0 micgap=0 micdrop=0" % (ms, under)
 
 
-def knob(ms, vol, saves):
-    return b"I (%d) app: knob vol=%d eff=%d set=1 arms=0 cancels=0 edge=0 saves=%d ov=0/0/0" % (ms, vol, vol, saves)
+def knob(ms, vol, eff):
+    return b"I (%d) app: knob vol=%d eff=%d set=1 arms=0 cancels=0 edge=0 saves=4 ov=0/0/0" % (ms, vol, eff)
 
 
 def sample(ms, **kw):
@@ -151,13 +152,13 @@ def test_disp_anim_clip_pins_and_releases():
 
 
 class FakeBoard:
-    """A board behind one link: one 2 s log period per poll; a persist set is confirmed and saved once 5 s passed since the last save."""
+    """A board behind one link: one 2 s log period per poll; a transient set changes eff until HOST_HELLO, a persist set the user volume."""
 
     opens = 0
 
     def __init__(self, port=None, serial_number=None):
         FakeBoard.opens += 1
-        self.sent, self.ms, self.vol, self.stored, self.saves, self.last_save = [], 1000, 55, 55, 4, 0
+        self.sent, self.ms, self.vol, self.eff = [], 1000, 55, 55
         self.hellos = [{"vol": self.vol, "vol_set": True}]
         self.pushback = []
         self.ser = SimpleNamespace(close=lambda: None)
@@ -167,16 +168,21 @@ class FakeBoard:
 
     def send(self, ftype, payload=b""):
         self.sent.append((ftype, payload))
-        if ftype == devctl.T_SET_VOLUME and len(payload) == 2 and payload[1] == 1:
-            self.vol = payload[0]
-            self.pushback.append((devctl.T_VOLUME, bytes([self.vol])))
+        if ftype == devctl.T_SET_VOLUME:
+            self.eff = payload[0]
+            if payload[1:] == b"\x01":
+                self.vol = payload[0]
+        elif ftype == devctl.T_HOST_HELLO:
+            self.eff = self.vol
+            self.pushback.append((devctl.T_HELLO, b'{"vol":%d,"vol_set":true,"reason":"reply"}' % self.vol))
+        elif ftype == devctl.T_SPK_FLUSH:
+            self.pushback.append((devctl.T_SPK_STATUS, bytes(9)))
 
     def poll(self):
         self.ms += 2000
-        if self.vol != self.stored and self.ms - self.last_save >= 5000:
-            self.stored, self.saves, self.last_save = self.vol, self.saves + 1, self.ms
         out, self.pushback = self.pushback, []
-        lines = [stats_line(self.ms), knob(self.ms, self.vol, self.saves)] + anim_lines(self.ms, frames=self.ms // 66)
+        self.hellos += [json.loads(p) for t, p in out if t == devctl.T_HELLO]
+        lines = [stats_line(self.ms), knob(self.ms, self.vol, self.eff)] + anim_lines(self.ms, frames=self.ms // 66)
         return out + [(devctl.T_LOG, p) for p in lines]
 
     def wait_for(self, ftype, timeout, show=True, pred=None):
@@ -187,6 +193,9 @@ class FakeBoard:
 
     def volume_sets(self):
         return [p for t, p in self.sent if t == devctl.T_SET_VOLUME]
+
+    def types(self):
+        return [t for t, _ in self.sent]
 
 
 @pytest.fixture
@@ -205,7 +214,7 @@ def board(monkeypatch):
     FakeBoard.opens = 0
     monkeypatch.setattr(devctl, "Link", FakeBoard)
     monkeypatch.setattr(devctl, "KEEPALIVE_S", 0.0)
-    monkeypatch.setattr(devctl, "VOLUME_SAVE_WAIT_S", 1.0)
+    monkeypatch.setattr(devctl, "EFF_WAIT_S", 0.5)
     return FakeBoard
 
 
@@ -233,66 +242,48 @@ def test_gate_rejects_a_wav_of_the_wrong_rate_before_opening_the_port(monkeypatc
     assert e.value.code != 0 and board.opens == 0
 
 
-def test_gate_run_opens_one_link_streams_and_restores_the_volume(monkeypatch, board, wav, capsys):
+def ends_override(link, after):
+    """True when SPK_FLUSH, then HOST_HELLO, follow the frame type 'after' and nothing persisted a volume."""
+    t = link.types()
+    k = len(t) - 1 - t[::-1].index(after)
+    tail = t[k:]
+    return devctl.T_SPK_FLUSH in tail and devctl.T_HOST_HELLO in tail[tail.index(devctl.T_SPK_FLUSH):] and link.vol == 55
+
+
+def test_gate_sets_a_transient_volume_and_ends_it_with_host_hello(monkeypatch, board, wav, capsys):
     streams = []
-    monkeypatch.setattr(devctl, "stream_pcm", lambda link, pcm, **kw: streams.append((link, pcm)))
+    monkeypatch.setattr(devctl, "stream_pcm", lambda link, pcm, **kw: (streams.append((link, pcm)), link.sent.append(("stream", b"")))[0] or True)
     links = []
     real = devctl.cmd_gate_anim
     monkeypatch.setattr(devctl, "cmd_gate_anim", lambda link, args: (links.append(link), real(link, args)))
     run_main(monkeypatch, "gate-anim", "--wav", str(wav), "--volume", "30")
     out = capsys.readouterr().out
     assert board.opens == 1 and len(streams) == 1 and streams[0] == (links[0], bytes(3200))
-    assert links[0].volume_sets() == [bytes([30, 1]), bytes([55, 1])]
-    assert "G1 PASS" in out and "G3 PASS" in out and "volume 55 restored and stored" in out
+    assert links[0].volume_sets() == [bytes([30, 0])]
+    assert ends_override(links[0], "stream") and links[0].eff == 55
+    assert "G1 PASS" in out and "G3 PASS" in out and "effective volume 55" in out
     assert (devctl.T_SET_STATE, bytes([devctl.STATES["speaking"]])) in links[0].sent
 
 
-def test_volume_is_restored_when_streaming_raises(monkeypatch, board, wav):
+def test_override_ends_when_streaming_raises(monkeypatch, board, wav):
     def broken(link, pcm, **kw):
+        link.sent.append(("stream", b""))
         raise OSError("port gone")
 
     monkeypatch.setattr(devctl, "stream_pcm", broken)
     link = FakeBoard()
     with pytest.raises(OSError):
         devctl.cmd_gate_anim(link, SimpleNamespace(wav=bytes(3200), volume=25))
-    assert link.volume_sets() == [bytes([25, 1]), bytes([55, 1])]
+    assert link.volume_sets() == [bytes([25, 0])] and ends_override(link, "stream")
 
 
-def test_volume_is_restored_when_the_board_never_confirms(monkeypatch, board, capsys):
+def test_gate_does_not_stream_when_the_board_never_shows_the_volume(monkeypatch, board, capsys):
     link = FakeBoard()
-    monkeypatch.setattr(link, "wait_for", lambda *a, **kw: None)
+    streams = []
+    monkeypatch.setattr(devctl, "stream_pcm", lambda *a, **kw: streams.append(a))
+    real_send = link.send
+    monkeypatch.setattr(link, "send", lambda ftype, payload=b"": link.sent.append((ftype, payload)) if ftype == devctl.T_SET_VOLUME else real_send(ftype, payload))
     with pytest.raises(SystemExit) as e:
         devctl.cmd_gate_anim(link, SimpleNamespace(wav=bytes(3200), volume=25))
-    assert e.value.code == 1 and link.volume_sets() == [bytes([25, 1]), bytes([55, 1])]
+    assert e.value.code == 1 and not streams and ends_override(link, devctl.T_SET_VOLUME)
     assert "did not confirm volume 25" in capsys.readouterr().out
-
-
-def first_line_confirms(seq):
-    """A wrong rule: the first knob line at the restored volume counts as stored, though a save may still be due."""
-    return any(vol == 55 for _, vol, _ in seq)
-
-
-def restore_with(capsys, seq, extra=()):
-    link = StubLink()
-    polls = iter([[(devctl.T_LOG, knob(ms, vol, saves))] for ms, vol, saves in seq] + [[(devctl.T_LOG, p)] for p in extra])
-    link.poll = lambda: next(polls, [])
-    return devctl.restore_volume(link, 55, True), capsys.readouterr().out
-
-
-@pytest.mark.parametrize("seq, stored", [
-    ([(9000, 30, 8), (11000, 55, 8), (13000, 55, 8), (15000, 55, 8), (17000, 55, 8), (19000, 55, 8)], True),
-    ([(9000, 55, 8), (11000, 55, 9), (13000, 55, 9), (15000, 55, 9), (17000, 55, 9)], False),
-    ([(9000, 55, 8), (11000, 55, 9), (13000, 55, 9), (15000, 55, 9), (17000, 55, 9), (19000, 55, 9)], True),
-    ([(9000, 55, 8), (11000, 30, 8), (13000, 55, 8), (15000, 55, 8), (17000, 55, 8)], False),
-])
-def test_restore_waits_for_a_quiet_settle_span(board, capsys, seq, stored):
-    """Stored only after 7 s of board time at the restored volume without a save; a save or another volume restarts the span."""
-    got, out = restore_with(capsys, seq)
-    assert got == stored and ("restored and stored" in out) == stored
-    # Red proof: taking the first line at the restored volume would call every case stored.
-    assert first_line_confirms(seq)
-
-
-def test_restore_fails_on_a_write_failure(board, capsys):
-    got, out = restore_with(capsys, [(9000, 55, 8)], extra=[b"W (10000) volume: nvs write failed (ESP_FAIL): retrying every 5000 ms"])
-    assert not got and "storage failed" in out
