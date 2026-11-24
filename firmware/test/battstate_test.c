@@ -52,12 +52,9 @@ static void test_bar_steps(void)
     static const int PCT[] = {0, 1, 25, 26, 50, 75, 76, 100};
     static const int BARS[] = {1, 1, 1, 2, 2, 3, 4, 4};
     for (int i = 0; i < 8; i++) {
-        batt_out_t o = on_battery(PCT[i]);
-        if (PCT[i] <= BATT_LOW_ENTER_PCT) {
-            assert(o.look == BATT_LOW && o.bars == 1);
-        } else {
-            assert(o.look == BATT_NORMAL && o.bars == BARS[i]);
-        }
+        batt_state_t s;
+        batt_init(&s);
+        assert(read_at(&s, 0, PRESENT | VBUS, DIR(CHARGE) | 2, PCT[i]).bars == BARS[i]);
     }
 }
 

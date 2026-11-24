@@ -371,16 +371,19 @@ static esp_err_t pmu_read(uint8_t reg, uint8_t *buf, size_t n)
 
 static void batt_poll(uint32_t t)
 {
-    uint8_t st[2] = {0, 0}, pct = 0, v[2] = {0, 0};
-    esp_err_t err = pmu_read(0x00, st, 2);
+    uint8_t r00 = 0, r01 = 0, pct = 0, vh = 0, vl = 0;
+    esp_err_t err = pmu_read(0x00, &r00, 1);
+    if (err == ESP_OK) {
+        err = pmu_read(0x01, &r01, 1);
+    }
     if (err == ESP_OK) {
         err = pmu_read(0xA4, &pct, 1);
     }
     int mv = -1;
-    if (err == ESP_OK && batt_present(st[0]) && pmu_read(0x34, v, 2) == ESP_OK) {
-        mv = ((v[0] & 0x1F) << 8) | v[1];
+    if (err == ESP_OK && batt_present(r00) && pmu_read(0x34, &vh, 1) == ESP_OK && pmu_read(0x35, &vl, 1) == ESP_OK) {
+        mv = ((vh & 0x1F) << 8) | vl;
     }
-    batt_in_t in = {.ok = err == ESP_OK, .reg00 = st[0], .reg01 = st[1], .pct = pct, .now_ms = t};
+    batt_in_t in = {.ok = err == ESP_OK, .reg00 = r00, .reg01 = r01, .pct = pct, .now_ms = t};
     batt_out_t o = batt_step(&s_batt, &in);
     ui_set_battery(BATT_PACK(o.look, o.bars));
     if (o.wake) {
@@ -390,7 +393,7 @@ static void batt_poll(uint32_t t)
         ESP_LOGW(TAG, "batt: read failed err=%d", (int)err);
     }
     if (o.log) {
-        ESP_LOGI(TAG, BATT_LINE_FMT, (int)pct, (int)batt_present(st[0]), (int)batt_vbus(st[0]), batt_dir(st[1]), batt_chg(st[1]), mv, o.bars, batt_look_name(o.look));
+        ESP_LOGI(TAG, BATT_LINE_FMT, (int)pct, (int)batt_present(r00), (int)batt_vbus(r00), batt_dir(r01), batt_chg(r01), mv, o.bars, batt_look_name(o.look));
     }
 }
 
