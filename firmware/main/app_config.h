@@ -166,6 +166,9 @@
 #define BUBBLE_OFFLINE_FILL_COLOR 0x8A877F
 #define BUBBLE_SHIFT_UNITS 10 /* mascot moves down this many units while a bubble is shown */
 #define BUBBLE_GAP_UNITS 3
+#define BUBBLE_HEIGHT_UNITS 18 /* bubble body height */
+#define BATT_GAP_UNITS 6 /* plain configuration: space between the legs and the battery outline */
+#define BATT_CENTER_DX_PX -2 /* plain configuration: icon centre relative to the scene centre */
 #define BUBBLE_PAD_UNITS 2
 #define BUBBLE_POP_STEP_MS 60
 #define BUBBLE_DOT_PULSE_MS 300

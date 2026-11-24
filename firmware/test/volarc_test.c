@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "arcvis.h"
+#include "battstate.h"
 #include "dpower.h"
 #include "volarc.h"
 
@@ -160,18 +161,18 @@ static void test_a1_band_and_order(void)
     assert(4 * VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX > 4 * (LISTEN_RING_DIAMETER / 2) * (LISTEN_RING_DIAMETER / 2));
 }
 
-typedef struct { int content_u, thought, dx_min, dx_max, dy_min, dy_max; } scene_case_t;
+typedef struct { int content_u, thought, dx_min, dx_max, dy_min, dy_max, beside; } scene_case_t;
 
-/* Corner radius of the one bounding rectangle ui.c clears and rotates, per state and orbit position, with its 1 px margin. */
+/* Corner radius of the one bounding rectangle ui.c clears and rotates, per state and orbit position, with its 1 px margin; the battery icon is below the legs or beside an ERROR or OFFLINE bubble. */
 static double worst_corner(void)
 {
     static const scene_case_t CASES[] = {
-        {0, 0, -4 * SCUTTLE_DISTANCE_UNITS, 4 * SCUTTLE_DISTANCE_UNITS, 0, 4},  /* IDLE */
-        {34, 0, 0, 0, 0, 0},                                                      /* LISTENING */
-        {33, 1, 0, 0, 0, 0},                                                      /* THINKING */
-        {34, 0, 0, 0, -2 * BUBBLE_UNIT_PX, 0},                                    /* SPEAKING */
-        {36, 0, -BUBBLE_UNIT_PX, BUBBLE_UNIT_PX, 0, 0},                           /* ERROR */
-        {24, 0, 0, 0, 0, BUBBLE_UNIT_PX},                                         /* OFFLINE */
+        {0, 0, -4 * SCUTTLE_DISTANCE_UNITS, 4 * SCUTTLE_DISTANCE_UNITS, 0, 4, 0},  /* IDLE */
+        {34, 0, 0, 0, 0, 0, 0},                                                      /* LISTENING */
+        {33, 1, 0, 0, 0, 0, 0},                                                      /* THINKING */
+        {34, 0, 0, 0, -2 * BUBBLE_UNIT_PX, 0, 0},                                    /* SPEAKING */
+        {36, 0, -BUBBLE_UNIT_PX, BUBBLE_UNIT_PX, 0, 0, 1},                        /* ERROR */
+        {24, 0, 0, 0, 0, BUBBLE_UNIT_PX, 1},                                      /* OFFLINE */
     };
     const int u = BUBBLE_UNIT_PX, c = MASCOT_CELL_PX, half = SCENE_SIZE_PX / 2;
     double worst = 0;
@@ -193,6 +194,18 @@ static double worst_corner(void)
                         x0 = x0 < (cx - w / 2) * u ? x0 : (cx - w / 2) * u;
                         x1 = x1 > (cx - w / 2 + w) * u ? x1 : (cx - w / 2 + w) * u;
                         y0 = y0 < (bottom_u - 18) * u ? y0 : (bottom_u - 18) * u;
+                        if (s->beside) {
+                            int ix = (cx - w / 2 + w) * u + 2 * u, iy = (bottom_u - 18 + 9) * u - BATT_BOLT_H / 2;
+                            ix = ix < SCENE_SIZE_PX - BATT_BOLT_W ? ix : SCENE_SIZE_PX - BATT_BOLT_W;
+                            x1 = x1 > ix + BATT_BOLT_W ? x1 : ix + BATT_BOLT_W;
+                            y0 = y0 < iy ? y0 : iy;
+                            y1 = y1 > iy + BATT_BOLT_H ? y1 : iy + BATT_BOLT_H;
+                        }
+                    } else {
+                        int ix = half + BATT_CENTER_DX_PX + gx - BATT_BOLT_W / 2, iy = half + 5 * c + BATT_GAP_UNITS * u + gy - (BATT_BOLT_H - BATT_PLAIN_H);
+                        x0 = x0 < ix ? x0 : ix;
+                        x1 = x1 > ix + BATT_BOLT_W ? x1 : ix + BATT_BOLT_W;
+                        y1 = y1 > iy + BATT_BOLT_H ? y1 : iy + BATT_BOLT_H;
                     }
                     double ax = fmax(abs(x0 - 1 - half), abs(x1 + 1 - half)), ay = fmax(abs(y0 - 1 - half), abs(y1 + 1 - half));
                     worst = fmax(worst, hypot(ax, ay));
