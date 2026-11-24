@@ -56,6 +56,11 @@ def test_config_defaults_leave_ssh_off(tmp_path):
         (SSH_ON + "qwen_ssh_connect_timeout_s = -1.0\n", "qwen_ssh_connect_timeout_s"),
         (SSH_ON + "qwen_restart_min_s = 0.0\n", "qwen_restart_min_s"),
         (SSH_ON + "qwen_restart_min_s = 10.0\nqwen_restart_max_s = 5.0\n", "qwen_restart_max_s"),
+        (SSH_ON + "qwen_link_timeout_s = inf\n", "qwen_link_timeout_s"),
+        (SSH_ON + "qwen_ssh_connect_timeout_s = nan\n", "qwen_ssh_connect_timeout_s"),
+        (SSH_ON + "qwen_restart_max_s = inf\n", "qwen_restart_max_s"),
+        (SSH_ON + "qwen_remote_port = 47803.0\n", "qwen_remote_port"),
+        (SSH_ON + "qwen_remote_port = true\n", "qwen_remote_port"),
     ],
 )
 def test_config_ssh_validation(tmp_path, text, key):

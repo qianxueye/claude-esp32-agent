@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import re
 import shutil
 import tomllib
@@ -156,6 +157,7 @@ POSITIVE_KEYS = (
     "key_reload_interval_s", "qwen_ssh_connect_timeout_s", "qwen_link_timeout_s", "qwen_restart_min_s",
     "qwen_restart_max_s",
 )
+SSH_TIMING_KEYS = ("qwen_ssh_connect_timeout_s", "qwen_link_timeout_s", "qwen_restart_min_s", "qwen_restart_max_s")
 # the remote python is pasted into the remote shell's command line, so it is limited to inert characters
 REMOTE_PYTHON = re.compile(r"/[A-Za-z0-9._/+-]+")
 
@@ -178,12 +180,15 @@ def load(path: Path | str | None = None) -> Config:
     for key in POSITIVE_KEYS:
         if not getattr(cfg, key) > 0:
             raise ValueError(f"{key} must be positive, got {getattr(cfg, key)} in {p}")
+    for key in SSH_TIMING_KEYS:
+        if not math.isfinite(getattr(cfg, key)):
+            raise ValueError(f"{key} must be finite, got {getattr(cfg, key)} in {p}")
     if cfg.cloudflared_restart_max_s < cfg.cloudflared_restart_min_s:
         raise ValueError(f"cloudflared_restart_max_s must not be below cloudflared_restart_min_s in {p}")
     if cfg.qwen_restart_max_s < cfg.qwen_restart_min_s:
         raise ValueError(f"qwen_restart_max_s must not be below qwen_restart_min_s in {p}")
-    if not 1 <= cfg.qwen_remote_port <= 65535:
-        raise ValueError(f"qwen_remote_port must be 1-65535, got {cfg.qwen_remote_port} in {p}")
+    if type(cfg.qwen_remote_port) is not int or not 1 <= cfg.qwen_remote_port <= 65535:
+        raise ValueError(f"qwen_remote_port must be an integer 1-65535, got {cfg.qwen_remote_port!r} in {p}")
     if cfg.qwen_ssh_host:
         if cfg.qwen_ssh_host.startswith("-") or any(c.isspace() or not c.isprintable() for c in cfg.qwen_ssh_host):
             raise ValueError(f"qwen_ssh_host must be an ssh alias without spaces or a leading '-' in {p}")
