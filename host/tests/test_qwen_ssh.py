@@ -241,6 +241,41 @@ def test_guard_kills_server_process_group(tmp_path, guards, end):
     assert wait_dead(worker)
 
 
+SLOW_WORKER = r'''
+import os, signal, subprocess, sys, time
+here = os.path.dirname(os.path.abspath(__file__))
+WORKER = """
+import os, signal, sys, time
+here = sys.argv[1]
+def done(*_):
+    while not os.path.exists(os.path.join(here, "leader-gone")):
+        time.sleep(0.01)
+    open(os.path.join(here, "cleaned"), "w").close()
+    os._exit(0)
+signal.signal(signal.SIGTERM, done)
+open(os.path.join(here, "worker.pid"), "w").write(str(os.getpid()))
+time.sleep(60)
+"""
+subprocess.Popen([sys.executable, "-c", WORKER, here])
+open(os.path.join(here, "server.pid"), "w").write(str(os.getpid()))
+time.sleep(60)
+'''
+
+
+def test_guard_gives_workers_the_grace_after_the_leader_exits(tmp_path, guards):
+    srv = tmp_path / "slow"
+    srv.mkdir()
+    (srv / "slow.py").write_text(SLOW_WORKER)
+    g = Guard(tmp_path, free_port(), grace_s=30.0, cmd=[remote_python(tmp_path), "-I", str(srv / "slow.py")])
+    guards.append(g)
+    leader, worker = pid_in(srv / "server.pid"), pid_in(srv / "worker.pid")
+    g.proc.stdin.close()
+    assert wait_dead(leader)
+    (srv / "leader-gone").touch()
+    g.until_line("clawd-speech stop eof")
+    assert (srv / "cleaned").exists() and wait_dead(worker)
+
+
 def test_guard_reports_busy_port(tmp_path, guards):
     holder = socket.socket()
     holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

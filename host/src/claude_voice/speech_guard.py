@@ -54,14 +54,24 @@ def kill_group(pgid, sig):
         pass
 
 
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except OSError:  # EPERM here means only zombies are left, or nothing this user may signal
+        return False
+
+
 def stop(child, grace_s):
     """SIGTERM the server's group, SIGKILL it after `grace_s`; returns the shell-style exit status."""
     if child.poll() is None:
         kill_group(child.pid, signal.SIGTERM)
-        try:
-            child.wait(grace_s)
-        except subprocess.TimeoutExpired:
-            pass
+        deadline = time.monotonic() + grace_s
+        while time.monotonic() < deadline:
+            child.poll()  # a zombie leader would keep the group alive
+            if not group_alive(child.pid):
+                break
+            time.sleep(POLL_S / 5)
     kill_group(child.pid, signal.SIGKILL)  # workers left by a server that exited still hold the port
     child.wait()
     code = child.returncode
