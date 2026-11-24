@@ -576,36 +576,39 @@ async def test_guard_is_the_installed_file_not_a_same_named_module(tmp_path, mon
         await sup.close()
 
 
-@pytest.mark.parametrize("recancel", [False, True], ids=["once", "close-cancelled"])
-async def test_close_during_the_guard_spawn_still_stops_cloudflared(tmp_path, monkeypatch, recancel):
-    real, release, guards = asyncio.create_subprocess_exec, asyncio.Event(), []
-
-    async def held(*args, **kwargs):
-        proc = await real(*args, **kwargs)
-        guards.append(proc)
-        await until(lambda: runs(tmp_path), timeout=10)
-        await release.wait()
-        return proc
-
-    monkeypatch.setattr(cloudflared_mod.asyncio, "create_subprocess_exec", held)
+async def test_shutdown_right_after_the_guard_starts_still_stops_cloudflared(tmp_path):
     sup = await supervised(tmp_path)
-    pid = None
     try:
-        await until(lambda: runs(tmp_path), timeout=10)
+        for _ in range(2):
+            await asyncio.sleep(0)
+        deadline = time.monotonic() + 10
+        while not runs(tmp_path) and time.monotonic() < deadline:
+            time.sleep(0.01)  # blocks the loop, so nothing the guard start awaits can finish
         pid = runs(tmp_path)[0]["pid"]
-        closing = asyncio.create_task(sup.close())
-        await asyncio.sleep(0.1)
-        if recancel:
-            closing.cancel()
-            await asyncio.sleep(0.1)
-        release.set()
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         async with asyncio.timeout(10):
-            await closing
+            await sup.close()
         assert not alive(pid), cf_log(tmp_path)
     finally:
-        for proc in guards:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
-        if pid is not None and alive(pid):
-            os.kill(pid, signal.SIGKILL)
+        await sup.close()
+
+
+async def test_close_cancelled_twice_still_stops_cloudflared(tmp_path):
+    urls = Urls()
+    sup = await supervised(tmp_path, urls, ignore_term=True)
+    try:
+        await until(lambda: urls.seen, timeout=10)
+        pid = runs(tmp_path)[0]["pid"]
+        closing = asyncio.create_task(sup.close())
+        await asyncio.sleep(0.05)
+        closing.cancel()
+        await asyncio.sleep(0.05)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        await until(lambda: not alive(pid), timeout=sup._grace + cloudflared_mod.STOP_MARGIN_S)
+    finally:
+        await sup.close()
