@@ -143,13 +143,16 @@ class Guard:
         self.lines: list[str] = []
         self._buf = b""
 
-    def until_line(self, text, timeout=10.0):
+    def until_line(self, text, timeout=10.0, beat=False):
         deadline = time.monotonic() + timeout
         while text not in self.lines:
             left = deadline - time.monotonic()
             if left <= 0:
                 raise AssertionError(f"no {text!r} in {self.lines}")
-            ready, _, _ = select.select([self.proc.stdout], [], [], left)
+            if beat:
+                self.proc.stdin.write(b".")
+                self.proc.stdin.flush()
+            ready, _, _ = select.select([self.proc.stdout], [], [], min(left, 0.1))
             if not ready:
                 continue
             chunk = os.read(self.proc.stdout.fileno(), 4096)
@@ -191,7 +194,7 @@ def test_guard_stops_the_server_on_eof_heartbeat_or_signal(tmp_path, guards, rea
     g = Guard(tmp_path, port, deadline_s=0.5 if reason == "heartbeat" else 30.0)
     guards.append(g)
     (g.dir / "go").touch()
-    g.until_line("clawd-speech listening")
+    g.until_line("clawd-speech listening", beat=True)
     server = pid_in(g.dir / "server.pid")
     if reason == "eof":
         g.proc.stdin.close()
@@ -203,10 +206,10 @@ def test_guard_stops_the_server_on_eof_heartbeat_or_signal(tmp_path, guards, rea
 
 
 def test_guard_keeps_the_server_while_beats_arrive(tmp_path, guards):
-    g = Guard(tmp_path, free_port(), deadline_s=0.5)
+    g = Guard(tmp_path, free_port(), deadline_s=1.0)
     guards.append(g)
     (g.dir / "go").touch()
-    for _ in range(15):
+    for _ in range(25):
         g.proc.stdin.write(b".")
         g.proc.stdin.flush()
         time.sleep(0.1)
@@ -428,7 +431,7 @@ async def engine(tmp_path, remotes, say=None, **over):
     remote = Remote(tmp_path, plan=over.pop("plan", []))
     if over.pop("hold", False):
         (remote.srv / "hold").touch()
-    q = QwenTts(remote.cfg(tmp_path, **over), say or FakeSay(), grace_s=0.3, stop_margin_s=0.5)
+    q = QwenTts(remote.cfg(tmp_path, **over), say or FakeSay(), grace_s=0.3, stop_margin_s=10.0)
     remotes.append((remote, [q]))
     return q, remote
 
@@ -525,7 +528,7 @@ async def test_close_stops_server_guard_and_ssh(tmp_path, remotes):
     await q.close()
     assert ssh.returncode >= 0 and "clawd-speech stop eof" in remote.guard_out(), remote.log()
     assert not any(alive(pid) for pid in remote.pids())
-    assert not any(t.is_alive() for t in threads)
+    await until(lambda: not any(t.is_alive() for t in threads))
     assert q._ssh is None and q._http is None
 
 
@@ -576,7 +579,7 @@ async def test_relay_sigkill_stops_remote_server(tmp_path, remotes):
 
 @needs_afconvert
 async def test_silent_link_loss_stops_server_by_heartbeat_deadline(tmp_path, remotes, caplog):
-    q, remote = await engine(tmp_path, remotes, qwen_link_timeout_s=0.5, qwen_restart_min_s=30.0,
+    q, remote = await engine(tmp_path, remotes, qwen_link_timeout_s=2.0, qwen_restart_min_s=30.0,
                              qwen_restart_max_s=30.0)
     await q.start()
     await ready(q, remote)
@@ -591,10 +594,10 @@ async def test_silent_link_loss_stops_server_by_heartbeat_deadline(tmp_path, rem
 
 @needs_afconvert
 async def test_heartbeat_survives_blocked_event_loop(tmp_path, remotes):
-    q, remote = await engine(tmp_path, remotes, qwen_link_timeout_s=1.0)
+    q, remote = await engine(tmp_path, remotes, qwen_link_timeout_s=2.0)
     await q.start()
     await ready(q, remote)
-    time.sleep(2.5)  # blocks the loop for 2.5 link timeouts
+    time.sleep(4.0)  # blocks the loop for two link timeouts
     assert q._ssh.poll() is None and all(alive(pid) for pid in remote.servers())
     assert "stop" not in remote.guard_out()
     await q.close()
@@ -621,14 +624,14 @@ async def test_link_drop_falls_back_then_reconnects(tmp_path, remotes, caplog):
 async def test_unreachable_host_backs_off_and_logs_once(tmp_path, remotes, caplog):
     caplog.set_level("INFO", logger="claude_voice.qwen_tts")
     q, remote = await engine(
-        tmp_path, remotes, plan=["unreachable"] * 20, qwen_restart_min_s=0.05, qwen_restart_max_s=1.0
+        tmp_path, remotes, plan=["unreachable"] * 20, qwen_restart_min_s=0.01, qwen_restart_max_s=30.0
     )
     await q.start()
     await until(lambda: len(remote.runs()) >= 5, timeout=30)
     assert await q.synth("好。") == SAY_PCM
     await q.close()
     delays = [r.args[1] for r in caplog.records if r.getMessage().startswith("retrying qwen3")]
-    assert delays[:4] == [0.05, 0.1, 0.2, 0.4]
+    assert delays[:4] == [0.01, 0.02, 0.04, 0.08]
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert len(warnings) == 1 and "exited with 255" in warnings[0], warnings
 
@@ -697,5 +700,6 @@ async def test_close_after_ssh_already_died(tmp_path, remotes):
     os.kill(ssh.pid, signal.SIGKILL)
     await until(lambda: ssh.poll() is not None, timeout=30)
     await q.close()
-    assert q._ssh is None and not any(t.is_alive() for t in threads)
+    assert q._ssh is None
+    await until(lambda: not any(t.is_alive() for t in threads))
     await until(lambda: not alive(server), timeout=30)

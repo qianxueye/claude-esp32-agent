@@ -81,7 +81,7 @@ uv run claude-voice [--config config.toml]
 - 中继不在那台 Mac 上安装或写入文件。服务在那台 Mac 上使用端口 `qwen_remote_port`（默认 47803）。
 - 中继启动时不等服务就绪。服务就绪之前，每句话都用 `say`。
 - 连接断开或服务退出后，下一句起改用 `say`，日志记一条警告。中继随后自动重连：间隔从 `qwen_restart_min_s` 秒开始，每次加倍，最长 `qwen_restart_max_s` 秒。重连成功后恢复使用 Qwen3。
-- 中继退出、被强制结束或网络中断后，那台 Mac 上的服务最多再运行 `qwen_link_timeout_s` 秒（默认 10 秒）。
+- 中继退出、被强制结束或网络中断后，那台 Mac 最迟在 `qwen_link_timeout_s` 秒（默认 10 秒）后开始停止服务；服务 5 秒内没有退出时被强制结束。
 - 例外：中继在那台 Mac 上用一个小的 Python 进程看管服务。如果这个进程被单独结束，服务会继续运行并占用端口，之后的每次重连都会在日志里报告端口被占用，需要在那台 Mac 上手动结束服务。
 - SSH 和那台 Mac 上服务的输出也写在 `qwen-tts-server.log`。
 
