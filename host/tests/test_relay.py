@@ -146,6 +146,13 @@ async def test_happy_path_states_and_audio(h):
     assert h.relay.turn_log and h.relay.turn_log[0]["t_first_spk"] >= h.relay.turn_log[0]["t_transcript"]
 
 
+async def test_turn_log_records_first_tts_chunk_between_token_and_speech(h):
+    h.dev.inject(Input.BOOT_BUTTON)
+    await until(lambda: h.dev.states[-1:] == [State.IDLE] and State.SPEAKING in h.dev.states)
+    rec = h.relay.turn_log[0]
+    assert rec["t_first_token"] <= rec["t_first_tts_chunk"] <= rec["t_first_spk"]
+
+
 async def test_boot_button_starts_listening(h):
     h.dev.inject(Input.BOOT_BUTTON)
     await settle(h.dev, State.LISTENING)

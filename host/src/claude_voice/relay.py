@@ -231,6 +231,7 @@ class Relay:
             q.put_nowait(e)
 
     async def _speak(self, sentence: str, q: asyncio.Queue) -> None:
+        self.metrics.setdefault("t_first_tts_chunk", time.monotonic())
         log.info("speak: %s", sentence)
         q.put_nowait(await self.tts.synth(sentence))
 
