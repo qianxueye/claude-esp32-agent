@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+# started by file path under `python -I`, so it imports only the standard library
 import os
 import select
 import signal

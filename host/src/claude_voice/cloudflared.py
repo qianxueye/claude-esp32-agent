@@ -28,7 +28,7 @@ STOP_MARGIN_S = 2.0  # the relay waits GRACE_S + this for the guard, so it never
 BANNER_READ_MAX = 256 * 1024  # bytes of one run's log searched for the banner
 HOST_CHARS = 80  # longest refused hostname kept for logs
 EMPTY_CONFIG = "{}\n"  # content of the file passed as `--config`
-GUARD = "claude_voice.cloudflared_guard"  # holds cloudflared; stops it when the relay's pipe closes
+GUARD = str(Path(__file__).with_name("cloudflared_guard.py"))  # holds cloudflared; stops it when the relay's pipe closes
 ENV_PREFIX = "TUNNEL_"  # cloudflared reads its flags from these variables
 
 
@@ -107,7 +107,7 @@ class Cloudflared:
         offset = self._log_file.seek(0, 2)
         config = self._write_config()
         args = [
-            sys.executable, "-m", GUARD, f"{self._grace:g}", cfg.cloudflared_bin,
+            sys.executable, "-I", GUARD, f"{self._grace:g}", cfg.cloudflared_bin,
             "tunnel", "--no-autoupdate", "--config", config, "--url", f"http://127.0.0.1:{self._port}",
         ]
         self._proc = await asyncio.create_subprocess_exec(

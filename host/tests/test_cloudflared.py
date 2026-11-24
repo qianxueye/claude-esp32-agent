@@ -541,3 +541,25 @@ async def test_cloudflared_stops_when_the_relay_is_killed(tmp_path):
         if relay.returncode is None:
             relay.kill()
             await relay.wait()
+
+
+DECOY_GUARD = "open({marker!r}, 'w').write('decoy')\n"
+
+
+async def test_guard_is_the_installed_file_not_a_same_named_module(tmp_path, monkeypatch):
+    marker = tmp_path / "decoy-ran"
+    for name in ("cwd", "pythonpath"):
+        pkg = tmp_path / name / "claude_voice"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        (pkg / "cloudflared_guard.py").write_text(DECOY_GUARD.format(marker=str(marker)))
+    monkeypatch.chdir(tmp_path / "cwd")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "pythonpath"))
+    urls = Urls()
+    sup = await supervised(tmp_path, urls)
+    try:
+        await until(lambda: marker.exists() or runs(tmp_path), timeout=10)
+        assert not marker.exists()
+        await until(lambda: urls.seen, timeout=10)
+    finally:
+        await sup.close()
