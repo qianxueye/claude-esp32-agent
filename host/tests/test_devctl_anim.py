@@ -62,6 +62,23 @@ def test_sampler_pairs_the_two_lines_of_one_period():
     assert merged["frames"] == 40 and merged["dec_us"] == (30000, 2100) and "ms" not in merged
 
 
+def colour(line, code=b"0;32"):
+    return b"\x1b[" + code + b"m" + line + b"\x1b[0m"
+
+
+def test_coloured_lines_parse_like_plain_ones():
+    plain_stats = stats_line(2000)
+    assert devctl.parse_stats(colour(plain_stats)) == devctl.parse_stats(plain_stats) is not None
+    s = devctl.AnimSampler()
+    a, t = anim_lines(2000)
+    assert s.feed(colour(a)) is None
+    assert s.feed(colour(t)) == sample(2000)
+    # A field that is not a number drops the sample instead of reaching the report.
+    s = devctl.AnimSampler()
+    s.feed(a.replace(b"frames=100", b"frames=1x"))
+    assert s.feed(t) is None
+
+
 def test_report_computes_deltas_across_a_wrap():
     a = sample(2000, frames=0xFFFFFFF0, late=3, work=(0xFFFFFF00, 9000))
     b = sample(62000, frames=0x384 - 0x10, late=3, work=(0x384 * 10000 - 0x100, 9500))

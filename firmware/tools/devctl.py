@@ -39,6 +39,7 @@ BATT_LINE = re.compile(rb"batt " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in
 BATT_STALE = re.compile(rb"\(\d+\) \w+: batt: stale(?:\x1b\[0m)?$")
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 BOARD_MS = re.compile(rb"\((\d+)\) ")
+ANSI_CODE = re.compile(r"\x1b\[[0-9;]*m")
 ANIM_KEYS = ("pack", "skin", "clip", "frames", "late", "cuts", "seek", "verify_ms", "iheap", "ilarge")  # AG_LINE_FMT in firmware/main/aglue.h
 ANIMT_KEYS = ("dec_us", "work_us", "cut_ms", "boot_ms", "patch_us", "ring_defer")  # AG_TIME_LINE_FMT
 AUDIO_KEYS = ("spkovf", "under", "slow", "micgap", "micdrop")  # stats line counters that gate G3 needs unchanged
@@ -657,15 +658,20 @@ class Keepalive:
 
 
 def parse_kv(text):
-    """Return key=value pairs as a dict: 'a/b' values as tuples of ints, other numbers as int."""
+    """Return key=value pairs as a dict: 'a/b' values as tuples of ints, other numbers as int; terminal colour codes are dropped."""
     out = {}
-    for kv in text.split():
+    for kv in ANSI_CODE.sub("", text).split():
         k, _, v = kv.partition("=")
         try:
             out[k] = tuple(int(x) for x in v.split("/")) if "/" in v else int(v)
         except ValueError:
             out[k] = v
     return out
+
+
+def numeric(v):
+    """True for an int or a tuple of ints, as parse_kv returns numbers."""
+    return isinstance(v, int) or (isinstance(v, tuple) and len(v) > 0)
 
 
 class AnimSampler:
@@ -678,7 +684,7 @@ class AnimSampler:
         m = re.search(rb"\banim: (pack=.*)", p)
         if m:
             d = parse_kv(m.group(1).decode("utf-8", "replace"))
-            self.pending = d if all(k in d for k in ANIM_KEYS) else None
+            self.pending = d if all(numeric(d.get(k)) for k in ANIM_KEYS) else None
             if self.pending is not None:
                 self.pending["ms"] = board_ms(p)
             return None
@@ -687,7 +693,7 @@ class AnimSampler:
             return None
         d = parse_kv(m.group(1).decode("utf-8", "replace"))
         sample, self.pending = self.pending, None
-        if not all(k in d for k in ANIMT_KEYS):
+        if not all(numeric(d.get(k)) for k in ANIMT_KEYS):
             return None
         sample.update(d)
         return sample
