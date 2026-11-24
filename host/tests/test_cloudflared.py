@@ -1,6 +1,5 @@
 import asyncio
 import dataclasses
-import itertools
 import json
 import logging
 import os
@@ -329,21 +328,33 @@ async def test_cloudflared_starts_only_with_a_binary_and_a_listening_tunnel(tmp_
             await sup.close()
 
 
+async def quiet(d, window):
+    """Wait until no SET_REMOTE arrives for `window` seconds and return how many arrived."""
+    async with asyncio.timeout(10):
+        while True:
+            n = len(d.remotes)
+            await asyncio.sleep(window)
+            if len(d.remotes) == n:
+                return n
+
+
 @pytest.mark.parametrize("hello_delay", [0.0, 0.3], ids=["fast-board", "slow-board"])
 async def test_set_remote_after_hello_on_usb_and_again_on_change(hello_delay):
     h = make(hello_delay=hello_delay)
+    window = hello_delay + 2 * h.cfg.ping_interval_s + 0.1
     h.link.set_remote(url(1))
     await h.up()
     try:
         d = h.dev
         await until(lambda: {"boot", "reply"} <= set(d.hellos) and len(d.remotes) >= len(d.hellos), timeout=10)
+        before = await quiet(d, window)
         assert all(r == {"url": url(1)} for r in d.remotes)
         h.link.set_remote(url(1))
+        assert await quiet(d, window) == before
         h.link.set_remote(url(2))
-        await until(lambda: d.remotes[-1] == {"url": url(2)}, timeout=10)
+        assert await quiet(d, window) == before + 1 and d.remotes[-1] == {"url": url(2)}
         h.link.set_remote(None)
-        await asyncio.sleep(0.5)
-        assert [k for k, _ in itertools.groupby(d.remotes, key=lambda r: r["url"])] == [url(1), url(2)]
+        assert await quiet(d, window) == before + 1
     finally:
         await h.down()
 
