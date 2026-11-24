@@ -576,7 +576,8 @@ async def test_guard_is_the_installed_file_not_a_same_named_module(tmp_path, mon
         await sup.close()
 
 
-async def test_close_during_the_guard_spawn_still_stops_cloudflared(tmp_path, monkeypatch):
+@pytest.mark.parametrize("recancel", [False, True], ids=["once", "close-cancelled"])
+async def test_close_during_the_guard_spawn_still_stops_cloudflared(tmp_path, monkeypatch, recancel):
     real, release, guards = asyncio.create_subprocess_exec, asyncio.Event(), []
 
     async def held(*args, **kwargs):
@@ -594,6 +595,9 @@ async def test_close_during_the_guard_spawn_still_stops_cloudflared(tmp_path, mo
         pid = runs(tmp_path)[0]["pid"]
         closing = asyncio.create_task(sup.close())
         await asyncio.sleep(0.1)
+        if recancel:
+            closing.cancel()
+            await asyncio.sleep(0.1)
         release.set()
         async with asyncio.timeout(10):
             await closing
