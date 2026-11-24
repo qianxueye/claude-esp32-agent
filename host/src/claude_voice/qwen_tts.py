@@ -35,6 +35,7 @@ GRACE_S = 5.0  # the guard's SIGTERM-to-SIGKILL wait for the server group
 STOP_MARGIN_S = 2.0  # the relay waits GRACE_S + this for ssh, so it never cuts the guard's stop short
 BEATS = 5  # heartbeats per qwen_link_timeout_s; ssh's ServerAliveCountMax uses the same count
 STATUS_POLL_S = 0.2
+DRAIN_S = 1.0  # after ssh exits its output is already in the pipe; this only bounds a stuck reader
 FORWARDS = ("localforward", "remoteforward", "dynamicforward")  # keywords of `ssh -G` output
 
 
@@ -267,7 +268,7 @@ class QwenTts:
         await self._check_forwards(log_file)
         lport = free_port()
         statuses: list[str] = []
-        changed = asyncio.Event()
+        changed, eof = asyncio.Event(), asyncio.Event()
 
         def on_line(line: bytes | None) -> None:
             if line is not None and line.startswith(TAG.encode() + b" "):
@@ -275,6 +276,8 @@ class QwenTts:
             elif line is not None and self._log_file is not None:
                 self._log_file.write(line if line.endswith(b"\n") else line + b"\n")
                 self._log_file.flush()
+            if line is None:
+                eof.set()
             changed.set()
 
         self._beat_stop = stop = threading.Event()
@@ -296,6 +299,7 @@ class QwenTts:
                 if s.startswith(("busy", "exit", "nolsof")):
                     raise TtsError(self._ended(proc, statuses))
             if proc.poll() is not None:
+                await self._drain(eof)
                 raise TtsError(self._ended(proc, statuses))
             if time.monotonic() > deadline:
                 raise TtsError("speech server did not listen in time (see qwen-tts-server.log)")
@@ -317,7 +321,14 @@ class QwenTts:
         self._warned = False
         log.info("qwen3 speech server on %s ready, warm-up %.1f s", cfg.qwen_ssh_host, time.monotonic() - t0)
         await reaped(proc)
+        await self._drain(eof)
         raise TtsError(self._ended(proc, statuses))
+
+    @staticmethod
+    async def _drain(eof: asyncio.Event) -> None:
+        """Wait for the status lines ssh wrote before it exited, so the error names the guard's reason."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(eof.wait(), DRAIN_S)
 
     def _ended(self, proc: subprocess.Popen, statuses: list[str]) -> str:
         for s in reversed(statuses):

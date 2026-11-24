@@ -3,6 +3,7 @@ import asyncio
 import base64
 import contextlib
 import dataclasses
+import io
 import json
 import os
 import re
@@ -319,11 +320,16 @@ def save():
     with open(os.path.join(here, "runs.jsonl"), "a") as f:
         f.write(json.dumps(record) + "\n")
 plan = mode.get("plan", [])
-if (plan[n - 1] if n <= len(plan) else "ok") == "unreachable":
+step = plan[n - 1] if n <= len(plan) else "ok"
+if step == "unreachable":
     save()
     print("ssh: connect to host speech-mac port 22: Operation timed out", file=sys.stderr, flush=True)
     sys.exit(255)
 _, lport, _, rport = argv[argv.index("-L") + 1].split(":")
+if step == "busy":
+    save()
+    print(f"clawd-speech busy {rport}", flush=True)
+    sys.exit(1)
 listener = socket.socket()
 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 try:
@@ -815,6 +821,24 @@ async def test_alias_with_its_own_forward_is_refused(tmp_path, remotes, caplog):
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert "speech-mac" in errors[0] and "remoteforward" in errors[0], errors
     assert remote.runs() == []
+    await q.close()
+
+
+async def test_status_read_after_ssh_exit_still_names_the_busy_port(tmp_path, remotes, caplog, monkeypatch):
+    original = qwen_mod.read_lines
+
+    def late(pipe, loop, on_line, stop):
+        proc, data = q._ssh, pipe.read()
+        pipe.close()
+        while proc.returncode is None:  # hand the lines over only once the attempt has seen ssh exit
+            time.sleep(0.01)
+        original(io.BytesIO(data), loop, on_line, stop)
+
+    monkeypatch.setattr(qwen_mod, "read_lines", late)
+    q, remote = await engine(tmp_path, remotes, plan=["busy"], qwen_restart_min_s=30.0, qwen_restart_max_s=30.0)
+    await q.start()
+    await until(lambda: any(r.levelname == "WARNING" for r in caplog.records), timeout=30)
+    assert "is in use" in caplog.text
     await q.close()
 
 
