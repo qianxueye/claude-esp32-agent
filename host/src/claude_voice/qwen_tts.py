@@ -338,7 +338,8 @@ class QwenTts:
             )
             await self._stop_server()
             await self._drop_client()
-        if self._http is None or time.monotonic() < self._skip_until:
+        ssh = self._ssh  # the supervisor notices an exit only at its next poll, and it owns the cleanup
+        if self._http is None or time.monotonic() < self._skip_until or (ssh is not None and ssh.poll() is not None):
             return await self._fallback.synth(text)
         t0 = time.monotonic()
         try:

@@ -641,6 +641,20 @@ async def test_link_drop_falls_back_then_reconnects(tmp_path, remotes, caplog):
     await q.close()
 
 
+@needs_afconvert
+async def test_synth_uses_say_once_ssh_has_exited(tmp_path, remotes, monkeypatch):
+    q, remote = await engine(tmp_path, remotes)
+    await q.start()
+    await ready(q, remote)
+    requests = []
+    monkeypatch.setattr(q, "_request", lambda *a, **k: requests.append(a))
+    q._ssh.kill()
+    q._ssh.wait()
+    assert await q.synth("好。") == SAY_PCM
+    assert requests == []
+    await q.close()
+
+
 async def test_unreachable_host_backs_off_and_logs_once(tmp_path, remotes, caplog):
     caplog.set_level("INFO", logger="claude_voice.qwen_tts")
     q, remote = await engine(
