@@ -596,19 +596,33 @@ async def test_shutdown_right_after_the_guard_starts_still_stops_cloudflared(tmp
         await sup.close()
 
 
-async def test_close_cancelled_twice_still_stops_cloudflared(tmp_path):
+async def test_close_cancelled_twice_still_stops_cloudflared(tmp_path, monkeypatch):
     urls = Urls()
     sup = await supervised(tmp_path, urls, ignore_term=True)
     try:
         await until(lambda: urls.seen, timeout=10)
         pid = runs(tmp_path)[0]["pid"]
+        original = cloudflared_mod.reaped
+        entered = [asyncio.Event(), asyncio.Event()]
+        never = asyncio.Event()
+
+        async def blocking_reaped(proc, timeout_s=None):
+            # blocks the first two timed stop waits (supervise task, then close()) until cancelled
+            if timeout_s is not None and entered:
+                entered.pop(0).set()
+                await never.wait()
+            return await original(proc, timeout_s)
+
+        first, second = entered
+        monkeypatch.setattr(cloudflared_mod, "reaped", blocking_reaped)
         closing = asyncio.create_task(sup.close())
-        await asyncio.sleep(0.05)
-        closing.cancel()
-        await asyncio.sleep(0.05)
-        closing.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await closing
+        async with asyncio.timeout(5):
+            await first.wait()  # close() is awaiting the supervise task
+            closing.cancel()  # swallowed there
+            await second.wait()  # close() is inside its own timed stop wait
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
         await until(lambda: not alive(pid), timeout=sup._grace + cloudflared_mod.STOP_MARGIN_S)
     finally:
         await sup.close()
