@@ -119,7 +119,7 @@ The orbit spreads edges only. The interior of the body is lit as long as the sta
 
 ## Counters
 
-The `wakes touch= button= state= motion= pwr_err=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative. A brightening with no activity behind it (OFF to DIM in an attention state) is attributed to the state. `pwr_err` counts failed reads of the PWR key input (cumulative; a failed read counts as not pressed).
+The `wakes touch= button= state= motion= power= pwr_err=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative. `power` counts brightenings caused by a USB plug-in (see `mascot.md`, Battery icon). A brightening with no activity behind it (OFF to DIM in an attention state) is attributed to the state. `pwr_err` counts failed reads of the PWR key input (cumulative; a failed read counts as not pressed).
 
 ## Refresh while OFF
 

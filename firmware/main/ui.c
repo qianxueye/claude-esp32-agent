@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "core/lv_refr_private.h"
 #include "arcvis.h"
+#include "battstate.h"
 #include "bright.h"
 #include "brtmap.h"
 #include "orient.h"
@@ -41,7 +42,7 @@ typedef struct {
     int state, dx, dy, gx, gy, shift;
     int eye_mode, eye_dx, eye_row, eye_h;
     int claw_l, claw_r, legs_up, dim;
-    int pop, bub, dot_phase, spin;
+    int pop, bub, dot_phase, spin, batt;
 } scene_t;
 
 enum { EYES_OPEN, EYES_CLOSED, EYES_CROSS };
@@ -92,6 +93,7 @@ static dev_state_t s_state = ST_IDLE;
 static uint32_t s_state_since, s_last_tick, s_pop_at;
 static int s_pop, s_pop_target, s_bub_state;
 static scene_t s_drawn;
+static volatile int s_batt;
 static volknob_t s_vk;
 static arcvis_t s_av;
 static volarc_t s_arc, s_barc, s_over[2];
@@ -111,7 +113,7 @@ static dp_stage_t s_logged_stage = DP_ACTIVE;
 static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
-static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown"};
+static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown", "power"};
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -221,6 +223,23 @@ static void draw_bubble_frame(int x0, int y0, int w, int h, uint8_t ink, uint8_t
     fill_u(x0 + 1, y0 + 2, w - 2, h - 4, fill_c);
 }
 
+typedef struct {
+    int x0, y0, ws, hs, cx, bottom_u;
+} bubble_box_t;
+
+static bubble_box_t bubble_box(const scene_t *s, const bubble_def_t *b)
+{
+    int w, content;
+    bubble_size_units(b, &w, &content);
+    const int h = BUBBLE_HEIGHT_UNITS;
+    int ws = s->pop == 3 ? w : even_up(w * s->pop / 3), hs = s->pop == 3 ? h : even_up(h * s->pop / 3);
+    int below = b->thought ? 8 : 2;
+    int anchor_top = SCENE / 2 - 5 * C + BUBBLE_SHIFT_UNITS * U + s->gy;
+    int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * U) / U - below;
+    int cx = (SCENE / 2 + s->gx) / U;
+    return (bubble_box_t){cx - ws / 2, bottom_u - hs, ws, hs, cx, bottom_u};
+}
+
 static void draw_bubble(const scene_t *s)
 {
     const bubble_def_t *b = &BUBBLES[s->bub];
@@ -229,13 +248,8 @@ static void draw_bubble(const scene_t *s)
     }
     int w, content;
     bubble_size_units(b, &w, &content);
-    const int h = 18;
-    int ws = s->pop == 3 ? w : even_up(w * s->pop / 3), hs = s->pop == 3 ? h : even_up(h * s->pop / 3);
-    int below = b->thought ? 8 : 2;
-    int anchor_top = SCENE / 2 - 5 * C + BUBBLE_SHIFT_UNITS * U + s->gy;
-    int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * U) / U - below;
-    int cx = (SCENE / 2 + s->gx) / U;
-    int x0 = cx - ws / 2, y0 = bottom_u - hs;
+    const bubble_box_t bb = bubble_box(s, b);
+    const int x0 = bb.x0, y0 = bb.y0, ws = bb.ws, hs = bb.hs, cx = bb.cx, bottom_u = bb.bottom_u;
     const uint8_t ink = PAL_INK, fillc = b->fill;
     draw_bubble_frame(x0, y0, ws, hs, ink, fillc);
     if (s->pop < 3) {
@@ -274,6 +288,33 @@ static void draw_bubble(const scene_t *s)
         }
     }
     grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
+}
+
+/* Whether the icon sits beside the bubble of this state; the other bubbles hide it. */
+static const bool BATT_BESIDE_BUBBLE[ST_COUNT] = {[ST_ERROR] = true, [ST_OFFLINE] = true};
+
+static void draw_battery(const scene_t *s)
+{
+    batt_rect_t r[BATT_RECTS_MAX];
+    int w, h, n = batt_layout((batt_look_t)BATT_LOOK(s->batt), BATT_BARS(s->batt), r, &w, &h);
+    const bool below = s->pop == 0, beside = s->pop == 3 && BATT_BESIDE_BUBBLE[s->bub];
+    int bx, by;
+    if (n == 0 || (!below && !beside)) {
+        return;
+    }
+    if (below) {
+        bx = SCENE / 2 + BATT_CENTER_DX_PX + s->gx - w / 2;
+        by = SCENE / 2 + 5 * C + BATT_GAP_UNITS * U + s->gy - (h - BATT_PLAIN_H);
+    } else {
+        const bubble_box_t bb = bubble_box(s, &BUBBLES[s->bub]);
+        bx = (bb.x0 + bb.ws) * U + 2 * U;
+        bx = bx < SCENE - w ? bx : SCENE - w;
+        by = (bb.y0 + BUBBLE_HEIGHT_UNITS / 2) * U - h / 2;
+    }
+    static const uint8_t COL[] = {[BATT_C_GREY] = PAL_OFFLINE_FILL, [BATT_C_CREAM] = PAL_FILL, [BATT_C_RED] = PAL_ERROR};
+    for (int i = 0; i < n; i++) {
+        fill(bx + r[i].x, by + r[i].y, r[i].w, r[i].h, COL[r[i].color]);
+    }
 }
 
 static void render_masks(lv_obj_t *scr)
@@ -323,6 +364,7 @@ static void compute_scene(scene_t *s, uint32_t now)
     s->dim = 100;
     s->bub = s_bub_state;
     s->pop = s_pop;
+    s->batt = __atomic_load_n(&s_batt, __ATOMIC_RELAXED);
     s->shift = (BUBBLE_SHIFT_UNITS * s_pop / 3) * U;
     if (s_pop == 3 && BUBBLES[s_bub_state].dots) {
         s->dot_phase = (int)((t / BUBBLE_DOT_PULSE_MS) % 3);
@@ -409,6 +451,7 @@ static void redraw(const scene_t *s)
     s_bb = (irect_t){SCENE, SCENE, 0, 0};
     draw_mascot(s);
     draw_bubble(s);
+    draw_battery(s);
     s_prev_bb = s_bb;
     s_model_dirty = true;
     s_redraw_us += (uint32_t)(esp_timer_get_time() - t0);
@@ -1210,4 +1253,9 @@ void ui_wake_counts(uint32_t out[DP_CAUSE_N])
     for (int i = 0; i < DP_CAUSE_N; i++) {
         out[i] = s_wakes[i];
     }
+}
+
+void ui_set_battery(int packed)
+{
+    __atomic_store_n(&s_batt, packed, __ATOMIC_RELAXED);
 }
