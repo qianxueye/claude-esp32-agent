@@ -12,9 +12,11 @@
 #include "esp_log.h"
 #include "imu.h"
 #include "keydebounce.h"
+#include "aglue.h"
 #include "battstate.h"
 #include "bright.h"
 #include "nvstore.h"
+#include "skin.h"
 #include "volknob.h"
 #include "volstate.h"
 #include "linkstate.h"
@@ -52,7 +54,7 @@ static void send_hello(const char *reason)
                      "\"vol_set\":%s}",
                      PROTO_VERSION, FW_VERSION, AUDIO_SAMPLE_RATE, reason, link_name(route), net_paired() ? "true" : "false",
                      net_store_known() ? "ok" : "error", vol, vol_set ? "true" : "false");
-    transport_send_to(route, T_HELLO, json, n);
+    transport_send_to(route, T_HELLO, json, proto_json_len(n, sizeof(json)));
 }
 
 /* Finds "key": in a small JSON payload; returns the position after the colon or NULL. */
@@ -150,6 +152,14 @@ static void handle_debug(const proto_frame_t *f)
     v = json_value(json, "brt_set");
     if (v) {
         ui_set_brightness(atoi(v));
+    }
+    v = json_value(json, "skin");
+    if (v) {
+        ui_set_skin(atoi(v) != 0);
+    }
+    v = json_value(json, "anim_clip");
+    if (v) {
+        ui_set_anim_pin(strncmp(v, "null", 4) == 0 ? -1 : atoi(v));
     }
 }
 
@@ -451,6 +461,21 @@ static void life_task(void *arg)
             bright_stats(&bs);
             ESP_LOGI(TAG, BRIGHT_LINE_FMT, bs.user, bs.effective, ui_panel_level(), (int)bs.set, (unsigned)bs.arms, (unsigned)bs.rim, (unsigned)bs.cancels,
                      (unsigned)bs.slides, (unsigned)bs.stops, (unsigned)bs.saves, vk_ov_log(bs.over[0]), vk_ov_log(bs.over[1]), vk_ov_log(bs.over[2]));
+            static ag_line_id_t anim_id;
+            anim_id++;
+            ui_anim_stats_t an;
+            ui_anim_stats(&an);
+            ESP_LOGI(TAG, AG_LINE_FMT, an.pack, an.skin, an.clip, (unsigned)an.frames, (unsigned)an.late, (unsigned)an.cuts, (unsigned)an.seeks, (unsigned)an.verify_ms,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)anim_id);
+            static uint32_t prev_patch_sum, prev_patch_n, prev_defer;
+            const uint32_t patch_mean = ag_window_mean(prev_patch_sum, prev_patch_n, an.patch_sum, an.patch_n);
+            const uint32_t defer = an.ring_defer - prev_defer;
+            prev_patch_sum = an.patch_sum;
+            prev_patch_n = an.patch_n;
+            prev_defer = an.ring_defer;
+            ESP_LOGI(TAG, AG_TIME_LINE_FMT, (unsigned)an.dec_sum, (unsigned)an.dec_max, (unsigned)an.work_sum, (unsigned)an.work_max, (unsigned)an.cut_last, (unsigned)an.cut_max,
+                     (unsigned)an.boot_ms, (unsigned)patch_mean, (unsigned)an.patch_max, (unsigned)defer, (unsigned)anim_id);
         }
     }
 }
@@ -527,6 +552,7 @@ void app_main(void)
     nvstore_init();
     volume_init();
     bright_init();
+    skin_init();
     ui_start();
     ESP_LOGI(TAG, "display up; free internal %u largest %u psram %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

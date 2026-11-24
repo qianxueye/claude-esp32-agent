@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "aglue.h"
 #include "arcvis.h"
 #include "battstate.h"
 #include "dpower.h"
@@ -163,55 +164,64 @@ static void test_a1_band_and_order(void)
 
 typedef struct { int content_u, thought, dx_min, dx_max, dy_min, dy_max, beside; } scene_case_t;
 
-/* Corner radius of the one bounding rectangle ui.c clears and rotates, per state and orbit position, with its 1 px margin; the battery icon is below the legs or beside an ERROR or OFFLINE bubble. */
-static double worst_corner(void)
+static const scene_case_t CLAWD_CASES[] = {
+    {0, 0, -4 * SCUTTLE_DISTANCE_UNITS, 4 * SCUTTLE_DISTANCE_UNITS, 0, 4, 0},  /* IDLE */
+    {34, 0, 0, 0, 0, 0, 0},                                                      /* LISTENING */
+    {33, 1, 0, 0, 0, 0, 0},                                                      /* THINKING */
+    {34, 0, 0, 0, -2 * BUBBLE_UNIT_PX, 0, 0},                                    /* SPEAKING */
+    {36, 0, -BUBBLE_UNIT_PX, BUBBLE_UNIT_PX, 0, 0, 1},                           /* ERROR */
+    {24, 0, 0, 0, 0, BUBBLE_UNIT_PX, 1},                                         /* OFFLINE */
+};
+enum { CASE_LISTENING = 1, CASE_THINKING = 2, CASE_ERROR = 4 };
+
+/* Corner radius of the one bounding rectangle ui.c clears and rotates, for one state over the orbit, with its 1 px margin.
+   The battery icon is below the legs with no bubble, or beside an ERROR or OFFLINE bubble. */
+static double case_corner(const scene_case_t *s)
 {
-    static const scene_case_t CASES[] = {
-        {0, 0, -4 * SCUTTLE_DISTANCE_UNITS, 4 * SCUTTLE_DISTANCE_UNITS, 0, 4, 0},  /* IDLE */
-        {34, 0, 0, 0, 0, 0, 0},                                                      /* LISTENING */
-        {33, 1, 0, 0, 0, 0, 0},                                                      /* THINKING */
-        {34, 0, 0, 0, -2 * BUBBLE_UNIT_PX, 0, 0},                                    /* SPEAKING */
-        {36, 0, -BUBBLE_UNIT_PX, BUBBLE_UNIT_PX, 0, 0, 1},                        /* ERROR */
-        {24, 0, 0, 0, 0, BUBBLE_UNIT_PX, 1},                                      /* OFFLINE */
-    };
     const int u = BUBBLE_UNIT_PX, c = MASCOT_CELL_PX, half = SCENE_SIZE_PX / 2;
     double worst = 0;
-    for (size_t k = 0; k < sizeof(CASES) / sizeof(CASES[0]); k++) {
-        const scene_case_t *s = &CASES[k];
-        int shift = s->content_u ? BUBBLE_SHIFT_UNITS * u : 0;
-        for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
-            int gx, gy;
-            dp_orbit(i, &gx, &gy);
-            for (int dxi = 0; dxi < 2; dxi++) {
-                for (int dyi = 0; dyi < 2; dyi++) {
-                    int dx = dxi ? s->dx_max : s->dx_min, dy = dyi ? s->dy_max : s->dy_min;
-                    int ox = half - 8 * c + gx + dx, oy = half - 5 * c + gy + shift + dy;
-                    int x0 = ox, x1 = ox + 16 * c, y0 = oy, y1 = oy + 10 * c;
-                    if (s->content_u) {
-                        int w = (s->content_u + 2 * BUBBLE_PAD_UNITS + 2 + 1) & ~1, cx = (half + gx) / u;
-                        int anchor_top = half - 5 * c + shift + gy, below = s->thought ? 8 : 2;
-                        int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * u) / u - below;
-                        x0 = x0 < (cx - w / 2) * u ? x0 : (cx - w / 2) * u;
-                        x1 = x1 > (cx - w / 2 + w) * u ? x1 : (cx - w / 2 + w) * u;
-                        y0 = y0 < (bottom_u - BUBBLE_HEIGHT_UNITS) * u ? y0 : (bottom_u - BUBBLE_HEIGHT_UNITS) * u;
-                        if (s->beside) {
-                            int ix = (cx - w / 2 + w) * u + 2 * u, iy = (bottom_u - BUBBLE_HEIGHT_UNITS + BUBBLE_HEIGHT_UNITS / 2) * u - BATT_BOLT_H / 2;
-                            ix = ix < SCENE_SIZE_PX - BATT_BOLT_W ? ix : SCENE_SIZE_PX - BATT_BOLT_W;
-                            x1 = x1 > ix + BATT_BOLT_W ? x1 : ix + BATT_BOLT_W;
-                            y0 = y0 < iy ? y0 : iy;
-                            y1 = y1 > iy + BATT_BOLT_H ? y1 : iy + BATT_BOLT_H;
-                        }
-                    } else {
-                        int ix = half + BATT_CENTER_DX_PX + gx - BATT_BOLT_W / 2, iy = half + 5 * c + BATT_GAP_UNITS * u + gy - (BATT_BOLT_H - BATT_PLAIN_H);
-                        x0 = x0 < ix ? x0 : ix;
-                        x1 = x1 > ix + BATT_BOLT_W ? x1 : ix + BATT_BOLT_W;
-                        y1 = y1 > iy + BATT_BOLT_H ? y1 : iy + BATT_BOLT_H;
+    int shift = s->content_u ? BUBBLE_SHIFT_UNITS * u : 0;
+    for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+        int gx, gy;
+        dp_orbit(i, &gx, &gy);
+        for (int dxi = 0; dxi < 2; dxi++) {
+            for (int dyi = 0; dyi < 2; dyi++) {
+                int dx = dxi ? s->dx_max : s->dx_min, dy = dyi ? s->dy_max : s->dy_min;
+                int ox = half - 8 * c + gx + dx, oy = half - 5 * c + gy + shift + dy;
+                int x0 = ox, x1 = ox + 16 * c, y0 = oy, y1 = oy + 10 * c;
+                if (s->content_u) {
+                    int w = (s->content_u + 2 * BUBBLE_PAD_UNITS + 2 + 1) & ~1, cx = (half + gx) / u;
+                    int anchor_top = half - 5 * c + shift + gy, below = s->thought ? 8 : 2;
+                    int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * u) / u - below;
+                    x0 = x0 < (cx - w / 2) * u ? x0 : (cx - w / 2) * u;
+                    x1 = x1 > (cx - w / 2 + w) * u ? x1 : (cx - w / 2 + w) * u;
+                    y0 = y0 < (bottom_u - BUBBLE_HEIGHT_UNITS) * u ? y0 : (bottom_u - BUBBLE_HEIGHT_UNITS) * u;
+                    if (s->beside) {
+                        const ag_top_bubble_t t = ag_top_bubble(w, s->thought, 3, gx, gy, SCENE_SIZE_PX);
+                        const ag_rect_t r = ag_batt_beside_top(&t, BATT_BOLT_W, BATT_BOLT_H, SCENE_SIZE_PX);
+                        x1 = x1 > r.x + r.w ? x1 : r.x + r.w;
+                        y0 = y0 < r.y ? y0 : r.y;
+                        y1 = y1 > r.y + r.h ? y1 : r.y + r.h;
                     }
-                    double ax = fmax(abs(x0 - 1 - half), abs(x1 + 1 - half)), ay = fmax(abs(y0 - 1 - half), abs(y1 + 1 - half));
-                    worst = fmax(worst, hypot(ax, ay));
+                } else {
+                    const ag_rect_t r = ag_batt_below(BATT_BOLT_W, BATT_BOLT_H, gx, gy, SCENE_SIZE_PX);
+                    x0 = x0 < r.x ? x0 : r.x;
+                    x1 = x1 > r.x + r.w ? x1 : r.x + r.w;
+                    y1 = y1 > r.y + r.h ? y1 : r.y + r.h;
                 }
+                double ax = fmax(abs(x0 - 1 - half), abs(x1 + 1 - half)), ay = fmax(abs(y0 - 1 - half), abs(y1 + 1 - half));
+                worst = fmax(worst, hypot(ax, ay));
             }
         }
+    }
+    return worst;
+}
+
+static double worst_corner(void)
+{
+    double worst = 0;
+    for (size_t k = 0; k < sizeof(CLAWD_CASES) / sizeof(CLAWD_CASES[0]); k++) {
+        worst = fmax(worst, case_corner(&CLAWD_CASES[k]));
     }
     return worst;
 }
@@ -219,9 +229,107 @@ static double worst_corner(void)
 static void test_a2_scene_clear_of_arc(void)
 {
     double w = worst_corner();
-    printf("scene worst corner %.1f\n", w);
+    const double err = case_corner(&CLAWD_CASES[CASE_ERROR]);
+    scene_case_t thinking_beside = CLAWD_CASES[CASE_THINKING];
+    thinking_beside.beside = 1;
+    const double thinking = case_corner(&thinking_beside);
+    printf("scene worst corner %.1f, ERROR %.2f, THINKING with the icon %.2f\n", w, err, thinking);
     assert(w + 2 < VOL_ARC_R_IN_PX && w <= SCENE_MAX_RADIUS_PX);
     assert(!(w + 2 < 211));
+    /* The ERROR row keeps its icon (the bubble alone is 205.06); the icon beside THINKING would not fit, so the beside table cannot gain it. */
+    assert(err > 216);
+    assert(!(thinking + 2 < VOL_ARC_R_IN_PX));
+}
+
+static double rect_corner(ag_rect_t r)
+{
+    const int half = SCENE_SIZE_PX / 2;
+    return hypot(fmax(abs(r.x - 1 - half), abs(r.x + r.w + 1 - half)), fmax(abs(r.y - 1 - half), abs(r.y + r.h + 1 - half)));
+}
+
+/* A2s: the sticker skin's bubble, tail and dots, over every width, side, bub_y, pop and orbit point. */
+static void test_a2s_sticker_scene_clear_of_arc(void)
+{
+    static const struct {
+        ag_content_t content;
+        bool thought;
+    } W[4] = {{{2, false, true}, false}, {{3, false, false}, false}, {{2, false, false}, false}, {{2, true, false}, true}};
+    double worst = 0, with_icon = 0, below = 0;
+    long n = 0;
+    for (int k = 0; k < 4; k++) {
+        for (int left = 0; left < 2; left++) {
+            for (int y = -AG_BUBBLE_Y_MAX_PX; y <= AG_BUBBLE_Y_MAX_PX; y += 4) {
+                for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+                    int gx, gy;
+                    dp_orbit(i, &gx, &gy);
+                    for (int pop = 1; pop <= 3; pop++) {
+                        const ag_bubble_t b = ag_side_bubble(W[k].content, W[k].thought, left, y, gx, gy, pop, 0, SCENE_SIZE_PX);
+                        worst = fmax(worst, rect_corner(b.body));
+                        for (int c = 0; c < b.n_cells; c++) {
+                            worst = fmax(worst, rect_corner(b.cells[c].r));
+                        }
+                        for (int c = 0; c < b.n_frame; c++) {
+                            worst = fmax(worst, rect_corner(b.frame[c].r));
+                        }
+                        if (pop == 3 && (k == 1 || k == 2)) { /* ERROR and OFFLINE: the icon and its plate join the one cleared box */
+                            const irect_t box = ag_bubble_bbox(&b);
+                            const ag_rect_t p = ag_batt_plate(ag_batt_beside_side(&b, left, BATT_BOLT_W, BATT_BOLT_H));
+                            const int x0 = box.x0 < p.x ? box.x0 : p.x, x1 = box.x1 > p.x + p.w ? box.x1 : p.x + p.w;
+                            const int y0 = box.y0 < p.y ? box.y0 : p.y, y1 = box.y1 > p.y + p.h ? box.y1 : p.y + p.h;
+                            const double joined = rect_corner((ag_rect_t){x0, y0, x1 - x0, y1 - y0});
+                            assert(joined == rect_corner((ag_rect_t){box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0}));
+                            with_icon = fmax(with_icon, joined);
+                        }
+                        n++;
+                    }
+                }
+            }
+        }
+    }
+    for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+        int gx, gy;
+        dp_orbit(i, &gx, &gy);
+        below = fmax(below, rect_corner(ag_batt_plate(ag_batt_below(BATT_BOLT_W, BATT_BOLT_H, gx, gy, SCENE_SIZE_PX))));
+    }
+    printf("A2s: %ld sticker scenes, worst corner %.2f, with the icon beside %.2f, icon alone below %.2f\n", n, worst, with_icon, below);
+    assert(worst + 2 < SCENE_RING_CLEAR_PX && worst + 2 < VOL_ARC_R_IN_PX);
+    assert(with_icon + 2 < SCENE_RING_CLEAR_PX && below + 2 < SCENE_RING_CLEAR_PX);
+    /* Red proofs: outer edge 192 at bub_y 0 gives 211.3; the raw lattice on the left, without the recentre, 212.05. */
+    double edge192 = 0, raw_left = 0;
+    for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+        int gx, gy;
+        dp_orbit(i, &gx, &gy);
+        const int half = SCENE_SIZE_PX / 2, w = 160;
+        edge192 = fmax(edge192, rect_corner((ag_rect_t){half + gx + ORBIT_RECENTRE_X_PX + 192 - w, half + gy + ORBIT_RECENTRE_Y_PX - 36, w, 72}));
+        raw_left = fmax(raw_left, rect_corner((ag_rect_t){half + gx - 188, half + gy - 36, w, 72}));
+    }
+    printf("A2s red: edge 192 %.2f, raw lattice left %.2f\n", edge192 + 2, raw_left + 2);
+    assert(!(edge192 + 2 < 211) && fabs(edge192 + 2 - 211.3) < 0.05);
+    assert(!(raw_left + 2 < 211) && fabs(raw_left + 2 - 212.05) < 0.05);
+}
+
+/* A2r: the LISTENING scene in both skins; the sticker side sweeps every bub_y. */
+static void test_a2r_listening_clear_of_arc(void)
+{
+    const double clawd = case_corner(&CLAWD_CASES[CASE_LISTENING]);
+    double sticker = 0;
+    for (int left = 0; left < 2; left++) {
+        for (int i = 0; i < ORBIT_COLS * ORBIT_ROWS; i++) {
+            int gx, gy;
+            dp_orbit(i, &gx, &gy);
+            for (int y = -AG_BUBBLE_Y_MAX_PX; y <= AG_BUBBLE_Y_MAX_PX; y += 4) {
+                const ag_bubble_t b = ag_side_bubble((ag_content_t){2, false, true}, false, left, y, gx, gy, 3, 0, SCENE_SIZE_PX);
+                sticker = fmax(sticker, rect_corner(b.body));
+            }
+        }
+    }
+    const double thinking = case_corner(&CLAWD_CASES[CASE_THINKING]);
+    const scene_case_t pop0 = {0, 0, 0, 0, 0, 0, 0}; /* the LISTENING pose before its bubble pops, icon below the legs */
+    const double clawd_pop0 = case_corner(&pop0);
+    printf("A2r: LISTENING Clawd %.1f sticker %.1f, pop 0 with the icon %.2f; THINKING Clawd %.1f\n", clawd, sticker, clawd_pop0, thinking);
+    assert(clawd + 2 < 211 && sticker + 2 < 211 && clawd_pop0 + 2 < 211);
+    /* Red proof: the THINKING scene, with its spinner and thought dots, is the one that does not fit. */
+    assert(!(thinking + 2 < 211));
 }
 
 static int rounded_px(const volarc_rect_t *r, int n)
@@ -462,10 +570,28 @@ static int seg_areas(const volarc_t *a, int quad, int lo, int hi, int chunk, int
     return n;
 }
 
-/* Areas of one frame as ui.c spends them: the arc, the scene's 10, and the ring's 21 only when the arc has at most VOLARC_RING_MAX_AREAS. */
-static int frame_total(int arc)
+/* Areas of one frame as ui.c spends them: the arc, the scene's bands, and the ring's 21 only when volarc_ring_ok. */
+static int frame_total(int arc, int bands)
 {
-    return arc + 10 + (arc <= VOLARC_RING_MAX_AREAS ? 21 : 0);
+    return arc + bands + (volarc_ring_ok(arc, bands) ? VOLARC_RING_AREAS : 0);
+}
+
+/* A6 and A12: arc + bands + ring stays within LVGL's 32 areas for every band count and arc area count; the band condition is what keeps it so. */
+static void test_ring_band_budget(void)
+{
+    int worst = 0, wrong = 0;
+    for (int bands = 0; bands <= 12; bands++) {
+        for (int arc = 0; arc <= 20; arc++) {
+            const int t = frame_total(arc, bands);
+            worst = t > worst ? t : worst;
+            const int no_band = arc + bands + (arc <= VOLARC_RING_MAX_AREAS ? VOLARC_RING_AREAS : 0);
+            wrong = no_band > wrong ? no_band : wrong;
+        }
+    }
+    printf("ring budget: bands 0..12, arc 0..20: at most %d of 32; without the band condition %d\n", worst, wrong);
+    assert(worst <= 32 && VOLARC_RING_MAX_BANDS == 10);
+    assert(wrong == 34);
+    assert(volarc_ring_ok(1, 10) && !volarc_ring_ok(1, 11) && !volarc_ring_ok(2, 10) && volarc_ring_ok(0, 0));
 }
 
 static void test_a6_segment_budget(void)
@@ -475,7 +601,7 @@ static void test_a6_segment_budget(void)
     int px, step_px = 0, worst = 0;
     int whole = seg_areas(&g_seg, 0, 0, BRT_STEPS + 1, BRT_ARC_CHUNK_CELLS, &px);
     printf("brightness arc: whole %d areas %d px", whole, px);
-    assert(whole <= 4 && frame_total(whole) <= 32);
+    assert(whole <= 4 && frame_total(whole, 10) <= 32);
     for (int q = 0; q < 4; q++) {
         assert(seg_areas(&g_seg, q, 0, BRT_STEPS + 1, BRT_ARC_CHUNK_CELLS, &px) == whole);
         for (int bi = 0; bi < BRT_STEPS; bi++) {
@@ -488,7 +614,7 @@ static void test_a6_segment_budget(void)
             for (int b = 0; b <= BRT_STEPS; b++) {
                 int lo, hi;
                 volarc_seg_change_range(a, b, &lo, &hi);
-                int t = frame_total(seg_areas(&g_seg, q, lo, hi, BRT_ARC_CHUNK_CELLS, &px));
+                int t = frame_total(seg_areas(&g_seg, q, lo, hi, BRT_ARC_CHUNK_CELLS, &px), 10);
                 worst = t > worst ? t : worst;
             }
         }
@@ -496,7 +622,7 @@ static void test_a6_segment_budget(void)
     int vol_whole = frame_areas(0, 0, 100, &px);
     int takeover = vol_whole + whole;
     printf("; 1 step 1 area, at most %d px; any step at most %d of 32; takeover %d (+10 scene = %d of 32)\n", step_px, worst, takeover, takeover + 10);
-    assert(worst <= 32 && frame_total(takeover) <= 32 && takeover <= 22);
+    assert(worst <= 32 && frame_total(takeover, 10) <= 32 && takeover <= 22);
     /* One area per cell breaks the takeover sum: the red proof. */
     assert(vol_whole + seg_areas(&g_seg, 0, 0, BRT_STEPS + 1, 1, &px) > 22);
 }
@@ -511,7 +637,7 @@ static void test_volume_multi_step_budget(void)
             for (int b = a + 1; b <= 100; b++) {
                 int lo, hi;
                 volarc_change_range(a, b, &lo, &hi);
-                int t = frame_total(frame_areas(q, lo, hi, &px));
+                int t = frame_total(frame_areas(q, lo, hi, &px), 10);
                 worst = t > worst ? t : worst;
             }
         }
@@ -1062,8 +1188,8 @@ static int g_worst_skip, g_worst_ring, g_worst_total, g_worst_wrong, g_frames;
 static void check_frame(const frame_t *f)
 {
     g_frames++;
-    bool ring = f->arc <= VOLARC_RING_MAX_AREAS;
-    int total = f->arc + 10 + (ring ? 21 : 0);
+    bool ring = volarc_ring_ok(f->arc, 10);
+    int total = frame_total(f->arc, 10);
     if (ring) {
         g_worst_ring = f->arc > g_worst_ring ? f->arc : g_worst_ring;
     } else {
@@ -1491,6 +1617,9 @@ int main(void)
 {
     test_a1_band_and_order();
     test_a2_scene_clear_of_arc();
+    test_a2s_sticker_scene_clear_of_arc();
+    test_a2r_listening_clear_of_arc();
+    test_ring_band_budget();
     test_area_budget();
     test_class();
     test_linger();

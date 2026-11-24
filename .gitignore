@@ -12,3 +12,5 @@ host/logs/
 host/.venv/
 host/**/__pycache__/
 host/.pytest_cache/
+*.clawdpack
+ANIMPACK.BIN

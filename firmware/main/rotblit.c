@@ -3,6 +3,10 @@
 #include <stdbool.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define MASK565 0x07E0F81Fu
 
 static void sincos_tenths(int tenths, float *s, float *c)
@@ -53,6 +57,10 @@ static void limits(const irect_t *r, int S, bool exact, float *ulo, float *uhi, 
 
 void rotblit_spans(const irect_t *rect, int S, int OUT, int tenths, xspan_t *spans)
 {
+    if (rect->x1 <= rect->x0 || rect->y1 <= rect->y0) {
+        memset(spans, 0, sizeof(xspan_t) * (size_t)OUT);
+        return;
+    }
     float s, c;
     sincos_tenths(tenths, &s, &c);
     const bool exact = is_exact(tenths);
@@ -128,5 +136,29 @@ void rotblit(const uint8_t *src, int S, const uint16_t *pal, uint16_t *dst, int 
             uint32_t m = mix(top, bot, fy);
             *out++ = (uint16_t)(m | (m >> 16));
         }
+    }
+}
+
+void rotblit_cos_sin(int tenths, float *c, float *s)
+{
+    sincos_tenths(tenths, s, c);
+}
+
+void rotblit_spans_nearest(const irect_t *rect, int S, int OUT, int tenths, xspan_t *spans)
+{
+    float s, c;
+    sincos_tenths(tenths, &s, &c);
+    const float hs = S / 2.0f, hd = OUT / 2.0f;
+    const float ulo = (float)rect->x0 + ROTBLIT_NEAREST_INSET, uhi = (float)rect->x1 - ROTBLIT_NEAREST_INSET;
+    const float vlo = (float)rect->y0 + ROTBLIT_NEAREST_INSET, vhi = (float)rect->y1 - ROTBLIT_NEAREST_INSET;
+    for (int y = 0; y < OUT; y++) {
+        const float dy = y + 0.5f - hd;
+        float d0 = -1e9f, d1 = 1e9f;
+        bool ok = span(dy * s + hs, c, ulo, uhi, &d0, &d1) && span(dy * c + hs, -s, vlo, vhi, &d0, &d1);
+        int xa = ok ? (int)ceilf(d0 + hd - 0.5f) : 0, xb = ok ? (int)floorf(d1 + hd - 0.5f) + 1 : 0;
+        xa = xa < 0 ? 0 : xa;
+        xb = xb > OUT ? OUT : xb;
+        spans[y].x0 = xa < xb ? (int16_t)xa : 0;
+        spans[y].x1 = xa < xb ? (int16_t)xb : 0;
     }
 }

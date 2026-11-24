@@ -39,6 +39,20 @@ BATT_LINE = re.compile(rb"batt " + rb" ".join(k.encode() + rb"=(-?\d+)" for k in
 BATT_STALE = re.compile(rb"\(\d+\) \w+: batt: stale(?:\x1b\[0m)?$")
 SWIPE_LINE = re.compile(rb"swipe: end (.*)")
 BOARD_MS = re.compile(rb"\((\d+)\) ")
+ANSI_CODE = re.compile(r"\x1b\[[0-9;]*m")
+ANIM_KEYS = ("pack", "skin", "clip", "frames", "late", "cuts", "seek", "verify_ms", "iheap", "ilarge", "id")  # AG_LINE_FMT in firmware/main/aglue.h
+ANIMT_KEYS = ("dec_us", "work_us", "cut_ms", "boot_ms", "patch_us", "ring_defer", "id")  # AG_TIME_LINE_FMT
+AUDIO_KEYS = ("spkovf", "under", "slow", "micgap", "micdrop")  # stats line counters that gate G3 needs unchanged
+STATS_PAIR_MS = 1000  # mathematical model: half the 2 s log period; one period's stats and anim lines share a tick
+STREAM_STALL_S = 5.0  # plain configuration: no speaker progress for this long ends a stream as stalled
+STREAM_DRAIN_S = 30.0  # plain configuration: longest wait for the drained flag after SPK_END
+KEEPALIVE_S = 1.0  # plain configuration: below the board's 5 s host-silence timeout
+GATE_VOLUME_MAX = 30  # Owner rule: speech volume during a gate run
+GATE_VERIFY_MS_MAX = 1000  # gate G7, plain configuration, placeholder
+GATE_HEAP_DROP_MAX = 2048  # gate G5, plain configuration, placeholder until the TLS budget is known
+GATE_HEAP_LARGEST_MIN = 31744  # gate G5, plain configuration, placeholder
+EFF_WAIT_S = 5.0  # plain configuration: two 2 s knob log periods plus 1 s
+GATE_SAMPLE_WAIT_S = 6.0  # plain configuration: three 2 s log periods for one anim sample
 
 
 def crc16(data, crc=0xFFFF):
@@ -348,11 +362,15 @@ def cmd_play(link, args):
 
 
 def stream_pcm(link, pcm, record=None, tail=1.0):
-    """Stream PCM with the 64000-byte outstanding limit; optionally collect MIC_AUDIO into record (list)."""
+    """Stream PCM with the 64000-byte outstanding limit; optionally collect MIC_AUDIO into record (list).
+
+    Pings while waiting so the board stays online; returns True once it reports the queue drained, False on a stall or a drain timeout."""
     sent = 0
     t0 = time.monotonic()
     drain_at = None
+    progress, ping = (link.spk_consumed, t0), Keepalive(link)
     while True:
+        ping.tick()
         frames = link.poll()
         if record is not None:
             for t, p in frames:
@@ -366,17 +384,28 @@ def stream_pcm(link, pcm, record=None, tail=1.0):
             link.send(T_SPK_END)
             drain_at = time.monotonic()
         if drain_at is not None and (link.spk_flags & 2):
+            ok = True
             break
-        if drain_at is not None and time.monotonic() - drain_at > 30:
+        now = time.monotonic()
+        if link.spk_consumed != progress[0]:
+            progress = (link.spk_consumed, now)
+        elif now - progress[1] > STREAM_STALL_S:
+            print("stream stalled: no speaker progress for %.0f s" % STREAM_STALL_S)
+            ok = False
+            break
+        if drain_at is not None and now - drain_at > STREAM_DRAIN_S:
             print("drain timeout")
+            ok = False
             break
     t_play = time.monotonic() - t0
     end = time.monotonic() + tail
     while time.monotonic() < end:
+        ping.tick()
         for t, p in link.poll():
             if record is not None and t == T_MIC:
                 record.append(p)
     print("played %d bytes in %.2fs (audio %.2fs)" % (len(pcm), t_play, len(pcm) / 32000))
+    return ok
 
 
 def save_wav(path, pcm):
@@ -570,15 +599,24 @@ def cmd_disp(link, args):
     """Display power test aids: speed up the timeline, pin a stage, the ACTIVE brightness or an orbit index, fill the screen with a grey."""
     fields = []
     for key, val in (("disp_scale", args.scale), ("disp_force", args.force), ("orbit", args.orbit), ("fill", args.fill), ("arc", args.arc), ("bench", args.bench),
-                     ("brt", args.brt), ("brt_arc", args.brt_arc), ("arc_over", args.arc_over)):
+                     ("brt", args.brt), ("brt_arc", args.brt_arc), ("arc_over", args.arc_over), ("anim_clip", args.anim_clip)):
         if val is not None:
             fields.append('"%s":%s' % (key, val if val == "null" else int(val)))
     link.send(T_DEBUG, ("{%s}" % ",".join(fields)).encode())
     end = time.monotonic() + args.seconds
+    sampler, samples, ping = AnimSampler(), [], Keepalive(link)
     while time.monotonic() < end:
+        ping.tick()
         for t, p in link.poll():
-            if t == T_LOG and (b"disp:" in p or b"fps=" in p or b"bright " in p or b"swipe:" in p):
+            if t == T_LOG and (b"disp:" in p or b"fps=" in p or b"bright " in p or b"swipe:" in p or b"anim" in p):
                 print(p.decode())
+            s = sampler.feed(p) if t == T_LOG else None
+            if s:
+                samples.append(s)
+    if len(samples) >= 2:
+        a, b = samples[0], samples[-1]
+        print("anim over %.1f s: frames +%d late +%d cuts +%d" % ((b["ms"] - a["ms"]) / 1000, u32_delta(a["frames"], b["frames"]),
+                                                                  u32_delta(a["late"], b["late"]), u32_delta(a["cuts"], b["cuts"])))
 
 
 def parse_bright(p):
@@ -622,6 +660,220 @@ def parse_swipe(p):
             except ValueError:
                 out[k] = v
     return out
+
+
+class Keepalive:
+    """Sends a PING every KEEPALIVE_S so the board does not go OFFLINE during a long wait."""
+
+    def __init__(self, link):
+        self.link, self.last = link, time.monotonic()
+
+    def tick(self):
+        if time.monotonic() - self.last >= KEEPALIVE_S:
+            self.link.send(T_PING, b"\0\0\0\0")
+            self.last = time.monotonic()
+
+
+def parse_kv(text):
+    """Return key=value pairs as a dict: 'a/b' values as tuples of ints, other numbers as int; terminal colour codes are dropped."""
+    out = {}
+    for kv in ANSI_CODE.sub("", text).split():
+        k, _, v = kv.partition("=")
+        try:
+            out[k] = tuple(int(x) for x in v.split("/")) if "/" in v else int(v)
+        except ValueError:
+            out[k] = v
+    return out
+
+
+def numeric(v):
+    """True for an int or a tuple of ints, as parse_kv returns numbers."""
+    return isinstance(v, int) or (isinstance(v, tuple) and len(v) > 0)
+
+
+class AnimSampler:
+    """Groups the stats, 'anim:' and 'animt:' lines of one log period; a group missing a line is dropped.
+
+    anim and animt match by id; stats belongs to the anim line within STATS_PAIR_MS of board time after it."""
+
+    def __init__(self):
+        self.pending = None
+        self.stats = None
+
+    def feed(self, p):
+        st = parse_stats(p)
+        if st is not None:
+            self.stats = (board_ms(p), st)
+            return None
+        m = re.search(rb"\banim: (pack=.*)", p)
+        if m:
+            d = parse_kv(m.group(1).decode("utf-8", "replace"))
+            d["ms"], (st_ms, st), self.stats = board_ms(p), self.stats or (None, None), None
+            ok = all(numeric(d.get(k)) for k in ANIM_KEYS) and d["ms"] is not None and st_ms is not None
+            self.pending = dict(d, stats=st) if ok and 0 <= d["ms"] - st_ms < STATS_PAIR_MS else None
+            return None
+        m = re.search(rb"\banimt: (dec_us=.*)", p)
+        if not m or self.pending is None:
+            return None
+        d = parse_kv(m.group(1).decode("utf-8", "replace"))
+        sample, self.pending = self.pending, None
+        if not all(numeric(d.get(k)) for k in ANIMT_KEYS) or d["id"] != sample["id"]:
+            return None
+        sample.update(d)
+        return sample
+
+
+def parse_stats(p):
+    """Return the audio counters of a 'stats rx=' LOG line as a dict, or None."""
+    m = re.search(rb"\bstats (rx=.*)", p)
+    if not m:
+        return None
+    d = parse_kv(m.group(1).decode("utf-8", "replace"))
+    return {k: d[k] for k in AUDIO_KEYS} if all(isinstance(d.get(k), int) for k in AUDIO_KEYS) else None
+
+
+def u32_delta(a, b):
+    """Difference of two cumulative u32 counters, safe across one wrap."""
+    return (b - a) & 0xFFFFFFFF
+
+
+def anim_report(a, b, sa, sb):
+    """Return (lines, failed) for two anim samples and two stats dicts; rules without a fixed limit print raw values only."""
+    lines, failed = [], False
+    secs = (b["ms"] - a["ms"]) / 1000 if a.get("ms") is not None and b.get("ms") is not None else 0
+    frames = u32_delta(a["frames"], b["frames"])
+    played = frames > 0 and all(s["skin"] == 1 and s["clip"] >= 0 for s in (a, b))
+    failed |= not played
+    lines.append("G0 %s sticker clip %d (skin=%d) frames +%d%s" % ("PASS" if played else "FAIL", b["clip"], b["skin"], frames,
+                                                                "" if played else "; no sticker played, so this clip cannot be used for the gate"))
+    late = u32_delta(a["late"], b["late"])
+    failed |= late != 0
+    lines.append("G1 %s late +%d; frames +%d in %.1f s (%.2f/s)" % ("PASS" if late == 0 else "FAIL", late, frames, secs, frames / secs if secs else 0))
+    work = u32_delta(a["work_us"][0], b["work_us"][0])
+    dec = u32_delta(a["dec_us"][0], b["dec_us"][0])
+    lines.append("G2 work mean %d us, worst so far %d us; decode mean %d us, worst so far %d us; limits come from the pack's frame durations"
+                 % (work // frames if frames else 0, b["work_us"][1], dec // frames if frames else 0, b["dec_us"][1]))
+    lines.append("G2 boot frame %d ms; patch_us over the last window: mean %d, worst so far %d; ring updates deferred in it: %d"
+                 % (b["boot_ms"], b["patch_us"][0], b["patch_us"][1], b["ring_defer"]))
+    if sa is None or sb is None:
+        failed = True
+        lines.append("G3 FAIL no stats line before or after")
+    else:
+        d = {k: u32_delta(sa[k], sb[k]) for k in AUDIO_KEYS}
+        bad = any(d.values())
+        failed |= bad
+        lines.append("G3 %s %s" % ("FAIL" if bad else "PASS", " ".join("%s +%d" % (k, d[k]) for k in AUDIO_KEYS)))
+    lines.append("G4 cut_ms last %d worst %d; cuts +%d" % (b["cut_ms"][0], b["cut_ms"][1], u32_delta(a["cuts"], b["cuts"])))
+    dfree = b["iheap"][0] - a["iheap"][0]
+    heap_ok = dfree >= -GATE_HEAP_DROP_MAX and b["ilarge"] >= GATE_HEAP_LARGEST_MIN
+    failed |= not heap_ok
+    lines.append("G5 %s over this run: internal free %d -> %d (%+d), lowest %d, largest block %d"
+                 % ("PASS" if heap_ok else "FAIL", a["iheap"][0], b["iheap"][0], dfree, b["iheap"][1], b["ilarge"]))
+    lines.append("G6 not measured here; run 'bench 1' and read fps=")
+    verify_ok = b["pack"] == 1 and b["verify_ms"] <= GATE_VERIFY_MS_MAX
+    failed |= not verify_ok
+    lines.append("G7 %s pack=%d verify_ms=%d" % ("PASS" if verify_ok else "FAIL", b["pack"], b["verify_ms"]))
+    lines.append("G8 not measured here; run 'disp --force 2' and 'disp --force 1', each prints its frames delta")
+    return lines, failed
+
+
+def wait_sample(link, timeout, after=None):
+    """Return (anim sample, its period's stats dict) for the first complete group arriving after the host time 'after', or (None, None)."""
+    end = time.monotonic() + timeout
+    sampler, ping = AnimSampler(), Keepalive(link)
+    while time.monotonic() < end:
+        ping.tick()
+        for t, p in link.poll():
+            s = sampler.feed(p) if t == T_LOG else None
+            if s and (after is None or time.monotonic() > after):
+                return s, s.pop("stats")
+    return None, None
+
+
+def gate_volume(text):
+    """argparse type: a speech volume no louder than the gate rule allows."""
+    v = int(text)
+    if not 0 <= v <= GATE_VOLUME_MAX:
+        raise argparse.ArgumentTypeError("volume must be 0-%d for a gate run" % GATE_VOLUME_MAX)
+    return v
+
+
+def pcm16k(path):
+    """argparse type: the PCM of a 16 kHz mono 16-bit WAV file."""
+    try:
+        w = wave.open(path, "rb")
+    except (OSError, wave.Error) as e:
+        raise argparse.ArgumentTypeError("cannot read %s: %s" % (path, e))
+    with w:
+        if w.getframerate() != 16000 or w.getnchannels() != 1 or w.getsampwidth() != 2:
+            raise argparse.ArgumentTypeError("%s is not 16 kHz mono s16" % path)
+        return w.readframes(w.getnframes())
+
+
+def knob_eff(p):
+    """Return the effective volume of a 'knob vol=' LOG line, or None."""
+    m = re.search(rb"knob vol=\d+ eff=(\d+)", p)
+    return int(m.group(1)) if m else None
+
+
+def wait_eff(link, vol):
+    """True once a knob LOG line shows the effective volume vol within EFF_WAIT_S."""
+    end, ping = time.monotonic() + EFF_WAIT_S, Keepalive(link)
+    while time.monotonic() < end:
+        ping.tick()
+        if any(t == T_LOG and knob_eff(p) == vol for t, p in link.poll()):
+            return True
+    return False
+
+
+def gate_run(link, args):
+    """The measured part of gate-anim; returns True when a judged rule failed or a step could not run."""
+    link.send(T_SET_STATE, bytes([STATES["speaking"]]))
+    link.send(T_SET_VOLUME, bytes([args.volume, 0]))
+    if not wait_eff(link, args.volume):
+        print("gate-anim: the board did not confirm volume %d; not streaming" % args.volume)
+        return True
+    a, sa = wait_sample(link, GATE_SAMPLE_WAIT_S)
+    if a is None:
+        print("gate-anim: no anim and stats lines before the run")
+        return True
+    if not stream_pcm(link, args.wav):
+        print("gate-anim: playback stalled or was not confirmed")
+        return True
+    b, sb = wait_sample(link, GATE_SAMPLE_WAIT_S, after=time.monotonic())
+    if b is None:
+        print("gate-anim: no anim and stats lines after the run")
+        return True
+    lines, failed = anim_report(a, b, sa, sb)
+    for line in lines:
+        print(line)
+    return failed
+
+
+def cmd_gate_anim(link, args):
+    """Gate 0 speech run: SPEAKING at a capped transient volume, stream the WAV, end the override, print the anim rule deltas."""
+    try:
+        failed = gate_run(link, args)
+    finally:
+        ended = end_override(link)
+    if failed or not ended:
+        sys.exit(1)
+
+
+def end_override(link):
+    """Flush queued audio, end the transient volume with HOST_HELLO and go IDLE; True once eff equals the reply's vol."""
+    link.send(T_SPK_FLUSH)
+    link.wait_for(T_SPK_STATUS, 1.0, show=False)
+    link.hellos.clear()
+    link.send(T_HOST_HELLO, b'{"proto":%d}' % PROTO)
+    link.wait_for(T_HELLO, 2.0, show=False)
+    link.send(T_SET_STATE, bytes([STATES["idle"]]))
+    vol = link.hellos[-1].get("vol") if link.hellos else None
+    if not isinstance(vol, int) or not wait_eff(link, vol):
+        print("gate-anim: the end of the transient volume was not confirmed (HELLO vol %r)" % vol)
+        return False
+    print("gate-anim: transient volume ended; effective volume %d" % vol)
+    return True
 
 
 def brt_snap(pct):
@@ -882,10 +1134,11 @@ def main():
     s = sub.add_parser("bench"); s.add_argument("mode", type=int); s.add_argument("state", nargs="?", default="idle"); s.add_argument("seconds", type=float, nargs="?", default=8); s.set_defaults(fn=cmd_bench)
     s = sub.add_parser("perf"); s.add_argument("state"); s.add_argument("mode", type=int); s.add_argument("--angle", type=float); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_perf)
     s = sub.add_parser("imu-dump"); s.add_argument("seconds", type=int); s.add_argument("out"); s.set_defaults(fn=cmd_imu_dump)
-    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--arc"); s.add_argument("--bench"); s.add_argument("--brt"); s.add_argument("--brt-arc", dest="brt_arc"); s.add_argument("--arc-over", dest="arc_over"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
+    s = sub.add_parser("disp"); s.add_argument("--scale"); s.add_argument("--force"); s.add_argument("--orbit"); s.add_argument("--fill"); s.add_argument("--arc"); s.add_argument("--bench"); s.add_argument("--brt"); s.add_argument("--brt-arc", dest="brt_arc"); s.add_argument("--arc-over", dest="arc_over"); s.add_argument("--anim-clip", dest="anim_clip"); s.add_argument("--seconds", type=float, default=10); s.set_defaults(fn=cmd_disp)
     s = sub.add_parser("brightness"); s.add_argument("value", type=int, nargs="?"); s.set_defaults(fn=cmd_brightness)
     s = sub.add_parser("swipecheck"); s.add_argument("seconds", type=float); s.add_argument("--label", choices=("grip", "wipe", "free"), required=True); s.set_defaults(fn=cmd_swipecheck)
     s = sub.add_parser("v3check"); s.set_defaults(fn=cmd_v3check)
+    s = sub.add_parser("gate-anim"); s.add_argument("--wav", type=pcm16k, required=True); s.add_argument("--volume", type=gate_volume, required=True); s.set_defaults(fn=cmd_gate_anim)
     args = ap.parse_args()
     link = Link(args.port, args.serial)
     try:

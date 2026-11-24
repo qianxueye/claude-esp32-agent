@@ -69,7 +69,7 @@ class TimedLink(MarkerLink):
 
 
 def disp_args(**kw):
-    base = dict(scale=None, force=None, orbit=None, fill=None, arc=None, bench=None, brt=None, brt_arc=None, arc_over=None, seconds=0)
+    base = dict(scale=None, force=None, orbit=None, fill=None, arc=None, bench=None, brt=None, brt_arc=None, arc_over=None, anim_clip=None, seconds=0)
     base.update(kw)
     return SimpleNamespace(**base)
 

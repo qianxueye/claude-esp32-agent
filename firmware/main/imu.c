@@ -2,6 +2,7 @@
 #include "imu.h"
 #include <math.h>
 #include <string.h>
+#include "aglue.h"
 #include "app_config.h"
 #include "audio.h"
 #include "bsp/esp-bsp.h"
@@ -164,11 +165,9 @@ static void imu_task(void *arg)
             ESP_LOGI(TAG, "motion: ev=%s D=%.1fmg th=%.1f/%.1f/%.1f amp=%d%s", ev & MOTION_EV_PICKUP ? "pickup" : (ev & MOTION_EV_MOVING ? "moving" : "rest"), s_motion.d * 1000.0f, s_motion.cfg.theta_on * 1000.0f,
                      s_motion.cfg.theta_off * 1000.0f, s_motion.cfg.theta_pickup * 1000.0f, (int)audio_pa_active(), extra);
         }
-        if (s_motion.state == MOTION_LIFTED) {
-            ui_wake(DP_CAUSE_MOTION);
-        }
-        if (ev & MOTION_EV_SETDOWN) {
-            ui_wake(DP_CAUSE_SETDOWN);
+        const uint32_t bits = ag_imu_bits(ev, s_motion.state == MOTION_LIFTED);
+        if (bits) {
+            ui_wake_bits(bits);
         }
         if (t - last_log >= IMU_LOG_PERIOD_MS) {
             last_log = t;

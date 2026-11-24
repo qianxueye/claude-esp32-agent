@@ -115,11 +115,15 @@ The touch frame is a board fact. A frame turned 180° reverses the swipe at ever
 
 The drawing moves one lattice step every `ORBIT_DWELL_MS` to spread edge wear. The lattice is `ORBIT_COLS` × `ORBIT_ROWS` points at `ORBIT_PITCH_PX`, walked as a closed cycle that visits every point once: along row 0 and back in snake rows over columns 1 to 5, then up column 0. With 6 × 8 that is 48 steps, 48 minutes, x from −12 to +8 px and y from −4 to +24 px. The top row is bounded by the THINKING bubble: above y = −4 its top edge would leave the 320 px scene and be clipped (`test_orbit_keeps_drawing_in_scene` repeats the extents of `draw_mascot` and `draw_bubble`).
 
+Sticker art uses the same lattice with its mid-point on the scene centre: the offset is the lattice point plus (2, −10) px, at most ±10 px in x and ±14 px in y (`mascot.md`, Sticker layout). The pixel mascot keeps the raw lattice.
+
 The orbit spreads edges only. The interior of the body is lit as long as the stage is ACTIVE; the level and the time in ACTIVE are the lever.
 
 ## Counters
 
 The `wakes touch= button= state= motion= power= pwr_err=` log line, printed with the stats line, gives cumulative counts of brightening stage changes by cause; LOG frames can be dropped, so counts are cumulative. `power` counts brightenings caused by a USB plug-in (see `mascot.md`, Battery icon). A brightening with no activity behind it (OFF to DIM in an attention state) is attributed to the state. `pwr_err` counts failed reads of the PWR key input (cumulative; a failed read counts as not pressed).
+
+The `animt:` line, printed every 2 s after the `anim:` line, is cumulative except where noted: `dec_us=` and `work_us=` are the total and the worst of the decode and of the decode-to-refresh time of art frames, `cut_ms=` last and worst, `boot_ms=` the first refresh after start (the boot frame, kept out of `work_us`), `patch_us=` the mean over the 2 s window and the worst so far of the time spent composing art into the flush chunks of one refresh, `ring_defer=` the ticks of the window in which a ring change waited (`mascot.md`, Sticker layout), and `id=` the period number both lines share, so a reader can drop a period that lost one of them.
 
 ## Refresh while OFF
 

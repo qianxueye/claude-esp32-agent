@@ -16,6 +16,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "core/lv_refr_private.h"
+#include "acomp.h"
+#include "aglue.h"
 #include "arcvis.h"
 #include "battstate.h"
 #include "bright.h"
@@ -23,6 +25,8 @@
 #include "orient.h"
 #include "proto.h"
 #include "rotblit.h"
+#include "scenepal.h"
+#include "skin.h"
 #include "transport.h"
 #include "volarc.h"
 #include "volknob.h"
@@ -35,18 +39,19 @@ static const char *TAG = "ui";
 #define U BUBBLE_UNIT_PX
 #define C MASCOT_CELL_PX
 #define SCENE SCENE_SIZE_PX
-#define TEXT_ROWS_PX 48
+#define TEXT_ROWS_PX AG_TEXT_ROWS_PX
 #define CANVAS_OFF ((LCD_SIZE - SCENE_OUT_PX) / 2)
+_Static_assert(CANVAS_OFF == 0, "the flush hook and the snapshot compose in panel coordinates");
 
 typedef struct {
     int state, dx, dy, gx, gy, shift;
     int eye_mode, eye_dx, eye_row, eye_h;
     int claw_l, claw_r, legs_up, dim;
     int pop, bub, dot_phase, spin, batt;
+    int anim_clip, anim_frame;
 } scene_t;
 
 enum { EYES_OPEN, EYES_CLOSED, EYES_CROSS };
-enum { PAL_BG, PAL_MASCOT, PAL_FILL, PAL_INK, PAL_ERROR, PAL_OFFLINE_FILL, PAL_N };
 
 typedef struct {
     const char *text;
@@ -64,7 +69,7 @@ static const bubble_def_t BUBBLES[ST_COUNT] = {
 };
 
 #define SPINNER_N 6
-#define SPINNER_PX 7
+#define SPINNER_PX AG_SPINNER_UNITS
 static const char *const SPINNER[SPINNER_N][SPINNER_PX] = {
     {".......", ".......", ".......", "...#...", ".......", ".......", "......."},
     {"...#...", "...#...", "...#...", "###.###", "...#...", "...#...", "...#..."},
@@ -83,7 +88,7 @@ static int s_inval_n;
 static SemaphoreHandle_t s_te_sem;
 static volatile uint32_t s_te_edges;
 static uint8_t *s_model;
-static uint16_t s_pal[PAL_N];
+static uint16_t s_pal[PAL_N], s_pal_be[PAL_N]; /* the swapped copy is what the flush hook writes */
 static lv_draw_buf_t *s_out;
 static uint8_t *s_mask[ST_COUNT];
 static irect_t s_bb, s_prev_bb;
@@ -114,6 +119,24 @@ static dp_touch_t s_touch;
 static volatile uint32_t s_wakes[DP_CAUSE_N];
 static const char *const STAGE_NAME[] = {"active", "dim", "off"};
 static const char *const CAUSE_NAME[DP_CAUSE_N] = {"none", "boot", "touch", "button", "state", "motion", "timer", "force", "setdown", "power"};
+static aplay_t s_ap;
+static bool s_ap_ready, s_skin_on = true;
+static int s_anim_pin = -1, s_pal_clip = -1;
+static aplay_out_t s_anim = {APLAY_NOTHING, 0};
+static uint8_t *s_abuf;
+static ag_held_t s_held = {-1, -1, 0, 0};
+static volatile uint32_t s_dec_sum, s_dec_max, s_cut_last, s_cut_max, s_ring_defer;
+static ag_work_t s_work;
+static ag_acc_t s_patch;
+static uint32_t s_patch_acc_us; /* patch time of the refresh in progress */
+static int64_t s_work_t0, s_work_tick_us, s_refr_t0_us, s_cut_t0;
+static int s_work_stage; /* 1: frame decoded, 2: presented, waiting for its flush */
+static bool s_cut_pending;
+static acomp_art_t s_art;
+static acomp_state_t s_ac;
+static bool s_art_ready, s_art_wanted_last;
+static int s_tick_bands;
+static bool s_tick_screen, s_ring_waited; /* this tick invalidated the whole screen; a ring redraw waited last tick */
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -193,26 +216,20 @@ static void draw_mascot(const scene_t *s)
     draw_eyes(s, ox, oy, PAL_BG);
 }
 
-static void draw_sprite(int ux, int uy, const char *const rows[SPINNER_PX], uint8_t color)
+static void draw_sprite(int x, int y, const char *const rows[SPINNER_PX], uint8_t color)
 {
     for (int r = 0; r < SPINNER_PX; r++) {
         for (int c = 0; c < SPINNER_PX; c++) {
             if (rows[r][c] == '#') {
-                fill_u(ux + c, uy + r, 1, 1, color);
+                fill(x + c * U, y + r * U, U, U, color);
             }
         }
     }
 }
 
-static int even_up(int v)
+static ag_content_t bubble_content(const bubble_def_t *b)
 {
-    return (v + 1) & ~1;
-}
-
-static void bubble_size_units(const bubble_def_t *b, int *w, int *content)
-{
-    *content = (b->spinner ? SPINNER_PX + 2 : 0) + 12 * b->glyphs + (b->dots ? 10 : 0);
-    *w = even_up(*content + 2 * BUBBLE_PAD_UNITS + 2);
+    return (ag_content_t){b->glyphs, b->spinner, b->dots};
 }
 
 static void draw_bubble_frame(int x0, int y0, int w, int h, uint8_t ink, uint8_t fill_c)
@@ -223,33 +240,56 @@ static void draw_bubble_frame(int x0, int y0, int w, int h, uint8_t ink, uint8_t
     fill_u(x0 + 1, y0 + 2, w - 2, h - 4, fill_c);
 }
 
-typedef struct {
-    int x0, y0, ws, hs, cx, bottom_u;
-} bubble_box_t;
-
-static bubble_box_t bubble_box(const scene_t *s, const bubble_def_t *b)
+static void draw_mask(const bubble_def_t *b, int st, int ox, int oy)
 {
-    int w, content;
-    bubble_size_units(b, &w, &content);
-    const int h = BUBBLE_HEIGHT_UNITS;
-    int ws = s->pop == 3 ? w : even_up(w * s->pop / 3), hs = s->pop == 3 ? h : even_up(h * s->pop / 3);
-    int below = b->thought ? 8 : 2;
-    int anchor_top = SCENE / 2 - 5 * C + BUBBLE_SHIFT_UNITS * U + s->gy;
-    int bottom_u = (anchor_top - BUBBLE_GAP_UNITS * U) / U - below;
-    int cx = (SCENE / 2 + s->gx) / U;
-    return (bubble_box_t){cx - ws / 2, bottom_u - hs, ws, hs, cx, bottom_u};
+    const uint8_t *mask = s_mask[st];
+    const int mw = 12 * b->glyphs * U;
+    for (int j = 0; j < TEXT_ROWS_PX; j++) {
+        for (int i = 0; i < mw; i++) {
+            if (mask[j * mw + i]) {
+                s_model[(size_t)(oy + j) * SCENE + ox + i] = b->text_color;
+            }
+        }
+    }
+    grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
 }
 
-static void draw_bubble(const scene_t *s)
+static ag_bubble_t side_bubble(const scene_t *s, const ap_clip_t *clip)
 {
     const bubble_def_t *b = &BUBBLES[s->bub];
-    if (s->pop == 0 || !b->text) {
-        return;
+    return ag_side_bubble(bubble_content(b), b->thought, clip->bubble_left, clip->bubble_y, s->gx, s->gy, s->pop, s->dot_phase, SCENE);
+}
+
+/* The sticker skin's bubble beside the art, every cell from ag_side_bubble placed to the pixel. */
+static void draw_side_bubble(const scene_t *s, const ap_clip_t *clip)
+{
+    const bubble_def_t *b = &BUBBLES[s->bub];
+    const ag_bubble_t g = side_bubble(s, clip);
+    const irect_t box = ag_bubble_bbox(&g);
+    grow_bb(box.x0, box.y0, box.x1, box.y1);
+    for (int i = 0; i < g.n_frame; i++) {
+        fill(g.frame[i].r.x, g.frame[i].r.y, g.frame[i].r.w, g.frame[i].r.h, g.frame[i].ink ? PAL_INK : b->fill);
     }
-    int w, content;
-    bubble_size_units(b, &w, &content);
-    const bubble_box_t bb = bubble_box(s, b);
-    const int x0 = bb.x0, y0 = bb.y0, ws = bb.ws, hs = bb.hs, cx = bb.cx, bottom_u = bb.bottom_u;
+    for (int i = 0; i < g.n_cells; i++) {
+        fill(g.cells[i].r.x, g.cells[i].r.y, g.cells[i].r.w, g.cells[i].r.h, g.cells[i].ink ? PAL_INK : b->fill);
+    }
+    if (g.spinner) {
+        draw_sprite(g.spin.x, g.spin.y, SPINNER[s->spin], PAL_INK);
+    }
+    for (int i = 0; i < g.n_dots; i++) {
+        fill(g.dots[i].x, g.dots[i].y, g.dots[i].w, g.dots[i].h, PAL_INK);
+    }
+    if (g.mask.w > 0) {
+        draw_mask(b, s->bub, g.mask.x, g.mask.y);
+    }
+}
+
+static void draw_top_bubble(const scene_t *s)
+{
+    const bubble_def_t *b = &BUBBLES[s->bub];
+    const int content = ag_content_units(bubble_content(b)), w = ag_bubble_w_units(content);
+    const ag_top_bubble_t t = ag_top_bubble(w, b->thought, s->pop, s->gx, s->gy, SCENE);
+    const int cx = t.cx_u, bottom_u = t.bottom_u, x0 = t.body.x / U, y0 = t.body.y / U, ws = t.body.w / U, hs = t.body.h / U;
     const uint8_t ink = PAL_INK, fillc = b->fill;
     draw_bubble_frame(x0, y0, ws, hs, ink, fillc);
     if (s->pop < 3) {
@@ -264,30 +304,33 @@ static void draw_bubble(const scene_t *s)
         fill_u(cx - 1, bottom_u, 2, 1, fillc);
         fill_u(cx - 1, bottom_u + 1, 2, 1, ink);
     }
-    int left = x0 + 1 + BUBBLE_PAD_UNITS + (w - 2 - 2 * BUBBLE_PAD_UNITS - content) / 2;
-    int text_y = y0 + 3;
+    const int left = x0 + 1 + BUBBLE_PAD_UNITS + (w - 2 - 2 * BUBBLE_PAD_UNITS - content) / 2;
+    const int text_y = y0 + 3;
     int tx = left;
     if (b->spinner) {
-        draw_sprite(left, text_y + 2, SPINNER[s->spin], ink);
+        draw_sprite(left * U, (text_y + 2) * U, SPINNER[s->spin], ink);
         tx += SPINNER_PX + 2;
     }
     if (b->dots) {
-        int dx = tx + 12 * b->glyphs + 2;
+        const int dx = tx + 12 * b->glyphs + 2;
         for (int i = 0; i < 3; i++) {
-            int size = i == s->dot_phase ? 2 : 1;
+            const int size = i == s->dot_phase ? 2 : 1;
             fill_u(dx + i * 3, text_y + 11 - size, size, size, ink);
         }
     }
-    const uint8_t *mask = s_mask[s->bub];
-    const int mw = 12 * b->glyphs * U, ox = tx * U, oy = text_y * U;
-    for (int j = 0; j < TEXT_ROWS_PX; j++) {
-        for (int i = 0; i < mw; i++) {
-            if (mask[j * mw + i]) {
-                s_model[(size_t)(oy + j) * SCENE + ox + i] = b->text_color;
-            }
-        }
+    draw_mask(b, s->bub, tx * U, text_y * U);
+}
+
+static void draw_bubble(const scene_t *s)
+{
+    if (s->pop == 0 || !BUBBLES[s->bub].text) {
+        return;
     }
-    grow_bb(ox, oy, ox + mw, oy + TEXT_ROWS_PX);
+    if (s_art_ready) {
+        draw_side_bubble(s, &s_ap.pack->clip[s->anim_clip]);
+    } else {
+        draw_top_bubble(s);
+    }
 }
 
 /* Whether the icon sits beside the bubble of this state; the other bubbles hide it. */
@@ -298,22 +341,28 @@ static void draw_battery(const scene_t *s)
     batt_rect_t r[BATT_RECTS_MAX];
     int w, h, n = batt_layout((batt_look_t)BATT_LOOK(s->batt), BATT_BARS(s->batt), r, &w, &h);
     const bool below = s->pop == 0, beside = s->pop == 3 && BATT_BESIDE_BUBBLE[s->bub];
-    int bx, by;
     if (n == 0 || (!below && !beside)) {
         return;
     }
+    ag_rect_t at;
     if (below) {
-        bx = SCENE / 2 + BATT_CENTER_DX_PX + s->gx - w / 2;
-        by = SCENE / 2 + 5 * C + BATT_GAP_UNITS * U + s->gy - (h - BATT_PLAIN_H);
+        at = ag_batt_below(w, h, s->gx, s->gy, SCENE);
+    } else if (s_art_ready) {
+        const ap_clip_t *clip = &s_ap.pack->clip[s->anim_clip];
+        const ag_bubble_t g = side_bubble(s, clip);
+        at = ag_batt_beside_side(&g, clip->bubble_left, w, h);
     } else {
-        const bubble_box_t bb = bubble_box(s, &BUBBLES[s->bub]);
-        bx = (bb.x0 + bb.ws) * U + 2 * U;
-        bx = bx < SCENE - w ? bx : SCENE - w;
-        by = (bb.y0 + BUBBLE_HEIGHT_UNITS / 2) * U - h / 2;
+        const bubble_def_t *b = &BUBBLES[s->bub];
+        const ag_top_bubble_t t = ag_top_bubble(ag_bubble_w_units(ag_content_units(bubble_content(b))), b->thought, s->pop, s->gx, s->gy, SCENE);
+        at = ag_batt_beside_top(&t, w, h, SCENE);
+    }
+    if (s_art_ready) {
+        const ag_rect_t p = ag_batt_plate(at);
+        fill(p.x, p.y, p.w, p.h, PAL_INK);
     }
     static const uint8_t COL[] = {[BATT_C_GREY] = PAL_OFFLINE_FILL, [BATT_C_CREAM] = PAL_FILL, [BATT_C_RED] = PAL_ERROR};
     for (int i = 0; i < n; i++) {
-        fill(bx + r[i].x, by + r[i].y, r[i].w, r[i].h, COL[r[i].color]);
+        fill(at.x + r[i].x, at.y + r[i].y, r[i].w, r[i].h, COL[r[i].color]);
     }
 }
 
@@ -354,6 +403,58 @@ static void render_masks(lv_obj_t *scr)
     }
 }
 
+static void anim_reset_held(void)
+{
+    s_held.clip = s_held.frame = -1;
+    s_pal_clip = -1;
+}
+
+/* Decodes the frame if the buffer holds another, loads the clip's palette on a change, and describes the art for present(). */
+static void draw_anim(const scene_t *s)
+{
+    const ap_pack_t *p = s_ap.pack;
+    int shown = s->anim_clip;
+    if (s_held.clip != s->anim_clip || s_held.frame != s->anim_frame) {
+        const int64_t t0 = esp_timer_get_time();
+        const ag_bring_t br = ag_bring(p, s->anim_clip, s->anim_frame, p->clip[s->anim_clip].frames, s_abuf, &s_held);
+        if (br == AG_FAIL) {
+            skin_fail(AP_DECODE_ERROR);
+            aplay_init(&s_ap, NULL);
+            anim_reset_held();
+            return;
+        }
+        if (br == AG_NOT_READY) {
+            if (s_held.clip < 0) {
+                return;
+            }
+            shown = s_held.clip;
+        } else {
+            const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+            s_dec_sum += us;
+            s_dec_max = us > s_dec_max ? us : s_dec_max;
+            s_work_t0 = t0;
+            s_work_stage = 1;
+        }
+    }
+    const ap_clip_t *c = &p->clip[shown];
+    if (s_pal_clip != shown) {
+        for (int i = 0; i < c->colors; i++) {
+            s_pal[PAL_PACK_FIRST + i] = (uint16_t)(c->palette[2 * i] | (c->palette[2 * i + 1] << 8));
+            s_pal_be[PAL_PACK_FIRST + i] = __builtin_bswap16(s_pal[PAL_PACK_FIRST + i]);
+        }
+        s_pal_clip = shown;
+    }
+    const ag_place_t pl = ag_sticker_place(p, c, s->gx, s->gy, SCENE);
+    s_art = (acomp_art_t){s_abuf, c->w, c->h, c->w, p->scale, pl.ox, pl.oy, 0, SCENE, SCENE_OUT_PX};
+    s_art_ready = true;
+}
+
+/* Whether the flush hook and the snapshot draw the art now. */
+static bool art_wanted(void)
+{
+    return s_art_ready && s_fill < 0 && s_panel_on;
+}
+
 static void compute_scene(scene_t *s, uint32_t now)
 {
     memset(s, 0, sizeof(*s));
@@ -373,6 +474,12 @@ static void compute_scene(scene_t *s, uint32_t now)
         s->spin = SPINNER_PINGPONG[pingpong(t, SPINNER_STEP_MS, 10)];
     }
     dp_orbit(s_orbit_force >= 0 ? s_orbit_force : (int)((now / ORBIT_DWELL_MS) % (ORBIT_COLS * ORBIT_ROWS)), &s->gx, &s->gy);
+    s->anim_clip = s_anim.clip;
+    s->anim_frame = s_anim.frame;
+    if (s_anim.clip != APLAY_CLAWD) {
+        s->shift = 0;
+        return;
+    }
     switch (s_state) {
     case ST_IDLE: {
         s->dy += (t % IDLE_BOB_PERIOD_MS) >= IDLE_BOB_PERIOD_MS / 2 ? U : 0;
@@ -446,10 +553,15 @@ static void redraw(const scene_t *s)
 {
     int64_t t0 = esp_timer_get_time();
     if (s_prev_bb.x1 > s_prev_bb.x0) {
-        fill(s_prev_bb.x0, s_prev_bb.y0, s_prev_bb.x1 - s_prev_bb.x0, s_prev_bb.y1 - s_prev_bb.y0, 0);
+        fill(s_prev_bb.x0, s_prev_bb.y0, s_prev_bb.x1 - s_prev_bb.x0, s_prev_bb.y1 - s_prev_bb.y0, PAL_BG);
     }
     s_bb = (irect_t){SCENE, SCENE, 0, 0};
-    draw_mascot(s);
+    s_art_ready = false;
+    if (s->anim_clip == APLAY_CLAWD) {
+        draw_mascot(s);
+    } else if (s->anim_clip >= 0) {
+        draw_anim(s);
+    }
     draw_bubble(s);
     draw_battery(s);
     s_prev_bb = s_bb;
@@ -459,13 +571,21 @@ static void redraw(const scene_t *s)
 }
 
 typedef struct {
-    int tenths, y0, y1;
+    bool patch;               /* a flush-chunk patch, else a scene blit */
+    int tenths, y0, y1;       /* blit rows, or patch rows */
+    uint16_t *dst;            /* patch: pixel (x0, y0) of the chunk */
+    int stride, x0, x1;       /* patch: chunk width and columns */
 } blit_job_t;
 
 static blit_job_t s_job;
 static TaskHandle_t s_blit_task;
 static SemaphoreHandle_t s_blit_done;
 static xspan_t s_span_new[SCENE_OUT_PX], s_span_prev[SCENE_OUT_PX], s_span_clear[SCENE_OUT_PX];
+
+static void run_patch(const blit_job_t *j)
+{
+    acomp_rows(&s_art, s_ac.art, s_pal_be, j->dst, j->stride, j->x0, j->y0, j->x1, j->y1);
+}
 
 static void run_blit(int tenths, int y0, int y1)
 {
@@ -477,7 +597,11 @@ static void blit_worker(void *arg)
 {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        run_blit(s_job.tenths, s_job.y0, s_job.y1);
+        if (s_job.patch) {
+            run_patch(&s_job);
+        } else {
+            run_blit(s_job.tenths, s_job.y0, s_job.y1);
+        }
         xSemaphoreGive(s_blit_done);
     }
 }
@@ -508,27 +632,30 @@ static void present(int tenths)
     }
     if (ymin < ymax) {
         int mid = (ymin + ymax) / 2;
-        s_job = (blit_job_t){tenths, mid, ymax};
+        s_job = (blit_job_t){.tenths = tenths, .y0 = mid, .y1 = ymax};
         xTaskNotifyGive(s_blit_task);
         run_blit(tenths, ymin, mid);
         xSemaphoreTake(s_blit_done, portMAX_DELAY);
     }
     uint32_t px = 0;
     s_inval_n = 0;
+    s_art.tenths = tenths;
+    s_art_wanted_last = art_wanted();
+    s_tick_bands = acomp_step(&s_ac, s_art_wanted_last, &s_art, s_span_clear);
+    lv_display_t *disp = lv_obj_get_display(s_canvas);
     const int shrink = s_bench == UI_BENCH_SHRINK ? 8 : 0;
-    for (int y0 = ymin; y0 < ymax; y0 += DIRTY_BAND_ROWS) {
-        int y1 = y0 + DIRTY_BAND_ROWS < ymax ? y0 + DIRTY_BAND_ROWS : ymax, xa = SCENE_OUT_PX, xb = 0;
-        for (int y = y0; y < y1; y++) {
-            if (!span_empty(s_span_clear[y])) {
-                xa = s_span_clear[y].x0 < xa ? s_span_clear[y].x0 : xa;
-                xb = s_span_clear[y].x1 > xb ? s_span_clear[y].x1 : xb;
-            }
-        }
-        if (xa < xb) {
-            lv_area_t inv = {xa + shrink + CANVAS_OFF, y0 + CANVAS_OFF, xb - 1 - shrink + CANVAS_OFF, y1 - 1 + CANVAS_OFF};
-            lv_inv_area(lv_obj_get_display(s_canvas), &inv);
-            px += (uint32_t)((xb - xa) * (y1 - y0));
-        }
+    const bool overflow = s_tick_bands > ACOMP_MAX_BANDS || volarc_ring_takes_screen(s_tick_bands, s_ring_waited);
+    s_tick_screen = overflow;
+    if (overflow) {
+        lv_area_t all = {CANVAS_OFF, CANVAS_OFF, CANVAS_OFF + SCENE_OUT_PX - 1, CANVAS_OFF + SCENE_OUT_PX - 1};
+        lv_inv_area(disp, &all);
+        px = SCENE_OUT_PX * SCENE_OUT_PX;
+    }
+    for (int i = 0; i < s_tick_bands && !overflow; i++) {
+        const irect_t b = s_ac.bands[i];
+        lv_area_t inv = {b.x0 + shrink + CANVAS_OFF, b.y0 + CANVAS_OFF, b.x1 - 1 - shrink + CANVAS_OFF, b.y1 - 1 + CANVAS_OFF};
+        lv_inv_area(disp, &inv);
+        px += (uint32_t)((b.x1 - b.x0) * (b.y1 - b.y0));
     }
     const int off = CANVAS_OFF;
     s_cover_frames++;
@@ -560,6 +687,40 @@ static void present(int tenths)
     s_blit_px += px;
 }
 
+static bool bench_spins(void)
+{
+    return s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK;
+}
+
+/* Composes the art into a packed, byte-swapped flush chunk, the rows split over both cores unless the bench forces one. */
+static void patch_chunk(uint16_t *chunk, int x0, int y0, int x1, int y1)
+{
+    int ya, mid, yb;
+    if (!acomp_split(s_ac.art, y0, y1, &ya, &mid, &yb)) {
+        return;
+    }
+    const int w = x1 - x0;
+    uint16_t *top = chunk + (size_t)(ya - y0) * w;
+    if (s_bench == UI_BENCH_SERIAL || yb - ya < 2) {
+        run_patch(&(blit_job_t){.y0 = ya, .y1 = yb, .dst = top, .stride = w, .x0 = x0, .x1 = x1});
+        return;
+    }
+    s_job = (blit_job_t){.patch = true, .y0 = mid, .y1 = yb, .dst = top + (size_t)(mid - ya) * w, .stride = w, .x0 = x0, .x1 = x1};
+    xTaskNotifyGive(s_blit_task);
+    run_patch(&(blit_job_t){.y0 = ya, .y1 = mid, .dst = top, .stride = w, .x0 = x0, .x1 = x1});
+    xSemaphoreTake(s_blit_done, portMAX_DELAY);
+}
+
+static esp_err_t flush_hook(lv_display_t *disp, esp_lcd_panel_handle_t panel, int x0, int y0, int x1, int y1, const void *map, void *ctx)
+{
+    if (art_wanted()) {
+        const int64_t t0 = esp_timer_get_time();
+        patch_chunk((uint16_t *)map, x0 - CANVAS_OFF, y0 - CANVAS_OFF, x1 - CANVAS_OFF, y1 - CANVAS_OFF);
+        s_patch_acc_us += (uint32_t)(esp_timer_get_time() - t0);
+    }
+    return esp_lcd_panel_draw_bitmap(panel, x0, y0, x1, y1, map);
+}
+
 static void apply_rotation(float deg)
 {
     int tenths = ((int)lroundf(deg * 10.0f)) % 3600;
@@ -578,6 +739,9 @@ static uint32_t dp_clock(void)
 
 static void ui_set_state_locked(dev_state_t s)
 {
+    if (s != s_state) {
+        s_cut_t0 = esp_timer_get_time();
+    }
     s_state = s;
     s_state_since = lv_tick_get();
     dp_state(&s_dp, dp_clock(), (int)s);
@@ -719,12 +883,25 @@ static void refr_cb(lv_event_t *e)
             s_te_missed++;
         }
         s_refr_start = lv_tick_get();
+        s_refr_t0_us = esp_timer_get_time();
     } else {
         uint32_t d = lv_tick_elaps(s_refr_start);
         s_refr_count++;
         s_refr_sum_ms += d;
         if (d > s_refr_worst_ms) {
             s_refr_worst_ms = d;
+        }
+        const int64_t t = esp_timer_get_time();
+        s_work_stage = ag_work_refresh(&s_work, s_work_stage, (uint32_t)s_work_tick_us, (uint32_t)(t - s_refr_t0_us));
+        if (s_patch_acc_us) {
+            ag_acc_add(&s_patch, s_patch_acc_us);
+            s_patch_acc_us = 0;
+        }
+        if (s_cut_pending) {
+            s_cut_last = (uint32_t)((t - s_cut_t0) / 1000);
+            s_cut_max = s_cut_last > s_cut_max ? s_cut_last : s_cut_max;
+            s_cut_pending = false;
+            s_cut_t0 = 0;
         }
     }
 }
@@ -884,20 +1061,28 @@ static int arc_update(uint32_t now)
     return areas;
 }
 
-static void update_ring(void)
+/* Redraws the listening ring when its width or opacity changed and the tick has room; counts a change that must wait. */
+static void update_ring(bool room)
 {
     int w = 0, opa = 0;
-    if (s_state == ST_LISTENING) {
+    if (s_state == ST_LISTENING && (ANIM_RING || s_anim.clip == APLAY_CLAWD)) {
         int lvl = audio_mic_level() * LISTEN_RING_STEPS / 1001 * 1000 / (LISTEN_RING_STEPS - 1);
         opa = LISTEN_RING_MIN_OPA + lvl * (255 - LISTEN_RING_MIN_OPA) / 1000;
         w = LISTEN_RING_MIN_WIDTH_PX + lvl * (LISTEN_RING_MAX_WIDTH_PX - LISTEN_RING_MIN_WIDTH_PX) / 1000;
     }
-    if (w != s_ring_width || opa != s_ring_opa) {
-        s_ring_width = w;
-        s_ring_opa = opa;
-        draw_ring(w, opa);
-        invalidate_ring();
+    s_ring_waited = false;
+    if (w == s_ring_width && opa == s_ring_opa) {
+        return;
     }
+    if (!room) {
+        s_ring_waited = true;
+        s_ring_defer++;
+        return;
+    }
+    s_ring_width = w;
+    s_ring_opa = opa;
+    draw_ring(w, opa);
+    invalidate_ring();
 }
 
 static void power_tick(void)
@@ -911,6 +1096,9 @@ static void power_tick(void)
     }
     if (bits & (1u << DP_CAUSE_SETDOWN)) {
         dp_setdown(&s_dp, t);
+    }
+    if (bits & AG_PICKUP_BIT) {
+        aplay_pickup(&s_ap);
     }
     dp_out_t o = dp_update(&s_dp, t);
     if (o.panel_on && !s_panel_on) {
@@ -939,6 +1127,38 @@ static void power_tick(void)
     }
 }
 
+/* Hands the player the pack once verified, then picks this tick's clip and frame; nothing is drawn while the check runs. */
+static void anim_tick(uint32_t now)
+{
+    if (skin_status() == AP_VERIFYING) {
+        s_anim = (aplay_out_t){APLAY_NOTHING, 0};
+        return;
+    }
+    if (!s_ap_ready) {
+        s_ap_ready = true;
+        const ap_pack_t *p = skin_pack();
+        if (p) {
+            s_abuf = heap_caps_malloc(p->max_area, MALLOC_CAP_SPIRAM);
+            if (!s_abuf) {
+                ESP_LOGW(TAG, "anim: no frame buffer of %u bytes", (unsigned)p->max_area);
+                p = NULL;
+            }
+        }
+        aplay_init(&s_ap, p);
+        aplay_enable(&s_ap, s_skin_on);
+        aplay_pin(&s_ap, s_anim_pin);
+    }
+    const uint32_t cuts = s_ap.cuts;
+    s_anim = aplay_tick(&s_ap, now, (int)s_state, ag_stage(s_panel_on, s_logged_stage, ANIM_DIM_PLAYS));
+    s_cut_pending = s_cut_pending || (s_ap.cuts != cuts && s_cut_t0 != 0);
+    if (!s_cut_pending) {
+        s_cut_t0 = 0;
+    }
+    if (s_anim.clip < 0) {
+        anim_reset_held();
+    }
+}
+
 static void tick_cb(lv_timer_t *t)
 {
     uint32_t now = lv_tick_get();
@@ -950,25 +1170,34 @@ static void tick_cb(lv_timer_t *t)
         s_pop_at = now;
     }
     power_tick();
+    anim_tick(now);
     scene_t sc;
     compute_scene(&sc, now);
-    if (memcmp(&sc, &s_drawn, sizeof(sc)) != 0 || s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK || s_bench == UI_BENCH_REDRAW) {
+    if (memcmp(&sc, &s_drawn, sizeof(sc)) != 0 || bench_spins() || s_bench == UI_BENCH_REDRAW) {
         s_drawn = sc;
         redraw(&sc);
+    }
+    s_tick_bands = 0;
+    s_tick_screen = false;
+    if (art_wanted() != s_art_wanted_last) {
+        s_model_dirty = true;
     }
     if (s_bench == UI_BENCH_CANVAS) {
         lv_obj_invalidate(s_canvas);
     } else if (s_bench == UI_BENCH_SCREEN) {
         lv_obj_invalidate(lv_screen_active());
     }
-    if (arc_update(now) <= VOLARC_RING_MAX_AREAS) {
-        update_ring();
-    }
-    if ((s_bench == UI_BENCH_SPIN || s_bench == UI_BENCH_SHRINK)) {
+    if (bench_spins()) {
         s_bench_angle = fmodf(s_bench_angle + 0.18f * (float)dt, 360.0f);
         apply_rotation(s_bench_angle);
     } else {
         apply_rotation(orient_step(dt, s_panel_on));
+    }
+    const int arc_areas = arc_update(now);
+    update_ring(s_tick_screen || volarc_ring_ok(arc_areas, s_tick_bands));
+    if (s_work_stage == 1) {
+        s_work_tick_us = esp_timer_get_time() - s_work_t0;
+        s_work_stage = 2;
     }
     static uint32_t last_log;
     if (now - last_log >= UI_FPS_LOG_PERIOD_MS) {
@@ -1048,6 +1277,8 @@ static lv_display_t *display_start(void)
     };
     lv_display_t *disp = esp_lv_adapter_register_display(&dcfg);
     ESP_ERROR_CHECK(disp ? ESP_OK : ESP_FAIL);
+    const esp_lv_adapter_draw_bitmap_callbacks_t hook = {.custom_draw_bitmap = flush_hook};
+    ESP_ERROR_CHECK(esp_lv_adapter_set_draw_bitmap_callbacks(disp, &hook, NULL));
     te_init();
     lv_display_add_event_cb(disp, round_area_cb, LV_EVENT_INVALIDATE_AREA, NULL);
     esp_lcd_touch_handle_t tp;
@@ -1071,7 +1302,7 @@ void ui_start(void)
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
 
-    s_model = heap_caps_calloc(SCENE * SCENE, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_model = heap_caps_calloc(SCENE * SCENE, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_out = lv_draw_buf_create(SCENE_OUT_PX, SCENE_OUT_PX, LV_COLOR_FORMAT_RGB565, 0);
     ESP_ERROR_CHECK(s_model && s_out ? ESP_OK : ESP_ERR_NO_MEM);
     lv_draw_buf_clear(s_out, NULL);
@@ -1120,6 +1351,7 @@ void ui_start(void)
     s_last_tick = lv_tick_get();
     dp_start();
     ui_set_state_locked(ST_IDLE);
+    anim_tick(s_last_tick);
     scene_t sc;
     compute_scene(&sc, s_last_tick);
     s_drawn = sc;
@@ -1173,6 +1405,10 @@ lv_draw_buf_t *ui_snapshot_take(void)
 {
     bsp_display_lock(-1);
     lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
+    if (buf && art_wanted()) {
+        const int w = buf->header.w < ACOMP_ROWS ? buf->header.w : ACOMP_ROWS, h = buf->header.h < ACOMP_ROWS ? buf->header.h : ACOMP_ROWS;
+        acomp_rows(&s_art, s_ac.art, s_pal, (uint16_t *)buf->data, buf->header.stride / 2, 0, 0, w, h);
+    }
     bsp_display_unlock();
     return buf;
 }
@@ -1187,6 +1423,11 @@ void ui_snapshot_free(lv_draw_buf_t *buf)
 void ui_wake(dp_cause_t cause)
 {
     __atomic_fetch_or(&s_wake_bits, 1u << cause, __ATOMIC_RELAXED);
+}
+
+void ui_wake_bits(uint32_t bits)
+{
+    __atomic_fetch_or(&s_wake_bits, bits, __ATOMIC_RELAXED);
 }
 
 void ui_set_disp_force(int stage)
@@ -1253,6 +1494,53 @@ void ui_wake_counts(uint32_t out[DP_CAUSE_N])
     for (int i = 0; i < DP_CAUSE_N; i++) {
         out[i] = s_wakes[i];
     }
+}
+
+void ui_set_skin(bool on)
+{
+    bsp_display_lock(-1);
+    s_skin_on = on;
+    if (s_ap_ready) {
+        aplay_enable(&s_ap, on);
+    }
+    bsp_display_unlock();
+}
+
+void ui_set_anim_pin(int clip)
+{
+    bsp_display_lock(-1);
+    s_anim_pin = clip;
+    if (s_ap_ready) {
+        aplay_pin(&s_ap, clip);
+    }
+    bsp_display_unlock();
+}
+
+void ui_anim_stats(ui_anim_stats_t *out)
+{
+    bsp_display_lock(-1); /* the UI task updates these counters under this lock */
+    *out = (ui_anim_stats_t){
+        .pack = (int)skin_status(),
+        .skin = s_skin_on,
+        .clip = s_anim.clip,
+        .frames = s_held.frames,
+        .dec_sum = s_dec_sum,
+        .dec_max = s_dec_max,
+        .work_sum = s_work.work.sum,
+        .work_max = s_work.work.max,
+        .boot_ms = ag_work_boot_ms(&s_work),
+        .patch_n = s_patch.n,
+        .patch_sum = s_patch.sum,
+        .patch_max = s_patch.max,
+        .ring_defer = s_ring_defer,
+        .late = s_ap.late,
+        .cuts = s_ap.cuts,
+        .cut_last = s_cut_last,
+        .cut_max = s_cut_max,
+        .seeks = s_held.seeks,
+        .verify_ms = skin_verify_ms(),
+    };
+    bsp_display_unlock();
 }
 
 void ui_set_battery(int packed)

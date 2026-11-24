@@ -12,7 +12,7 @@
 #define PROTO_SPK_STATUS_PERIOD_MS 100
 #define STATS_LOG_PERIOD_MS 2000
 #define LIFE_PERIOD_MS 100
-#define HELLO_JSON_BYTES 160
+#define HELLO_JSON_BYTES 192 /* plain configuration: the longest HELLO plus room for later fields; send_hello clamps */
 #define HOST_JSON_BYTES 128
 #define SNAPSHOT_QUEUE_DEPTH 8
 
@@ -127,6 +127,17 @@
 #define BRT_ARC_TRACK_COLOR BUBBLE_OFFLINE_FILL_COLOR /* plain configuration */
 #define BRT_NVS_KEY "brt" /* plain configuration: NVS key in VOL_NVS_NAMESPACE */
 
+/* Animation pack; format limits are in apack.h */
+#define ANIM_PARTITION_LABEL "animpack" /* plain configuration: data partition of firmware/partitions.csv that holds the pack */
+#define ANIM_DIM_PLAYS 0 /* plain configuration: 0 holds the frame while dim, 1 keeps playing */
+#define ANIM_RING 1 /* plain configuration: 1 keeps the listening ring in pack mode */
+#define ANIM_HEAD_MS 250 /* mathematical model: playback runway a clip head must cover while its slot starts, apsrc_test SR1 and SR9 */
+#define ANIM_CARD_PIECE 4096 /* mathematical model: card read size, the largest that keeps the model's rate margin, apsrc_test SR9 */
+#define ANIM_CARD_DEADLINE_MS 2000 /* plain configuration: how long the card may keep the pick waiting for flash */
+#define ANIM_CARD_RETRY_S {60, 60, 300, 7200, 21600} /* plain configuration: waits before each card reopen after a read error */
+#define ANIM_CARD_READ_RETRIES 2 /* plain configuration: in-line retries of a failed card read */
+#define ANIM_CARD_READ_RETRY_MS 20 /* plain configuration: gap between in-line read retries */
+
 /* Selftest */
 #define SELFTEST_BEFORE_MS 400
 #define SELFTEST_TONE_HZ 1000
@@ -154,9 +165,11 @@
 #define LCD_SIZE 466
 #define MASCOT_CELL_PX 16
 #define BUBBLE_UNIT_PX 4 /* font design pixel at 48 px; one quarter cell */
-#define SCENE_SIZE_PX 320 /* square the group is drawn into before rotation */
+#define SCENE_SIZE_PX 480 /* square the group is drawn into before rotation; half of it is a multiple of MASCOT_CELL_PX and it covers the panel */
+_Static_assert(SCENE_SIZE_PX % 32 == 0 && (SCENE_SIZE_PX / 32) % 2 == 1, "mathematical model: data-cache sets for the 90 degree column walk"); /* tested by aglue_test S1 */
 #define DIRTY_BAND_ROWS 40 /* rotated output is invalidated in horizontal bands of this height */
 #define SCENE_OUT_PX 466 /* rotated output square; must cover SCENE_MAX_RADIUS_PX of content */
+#define SCENE_RING_CLEAR_PX (LISTEN_RING_DIAMETER / 2 - LISTEN_RING_MAX_WIDTH_PX - 1) /* derived: inner radius of the ring's rewrite zone, ui.c draw_ring */
 #define SCENE_MAX_RADIUS_PX 225 /* glass bound; content also stays inside VOL_ARC_R_IN_PX, checked by volarc_test A2 */
 #define MASCOT_COLOR 0xD97757
 #define MASCOT_DIM_PERCENT 30
@@ -169,6 +182,9 @@
 #define BUBBLE_HEIGHT_UNITS 18 /* bubble body height */
 #define BATT_GAP_UNITS 6 /* plain configuration: space between the legs and the battery outline */
 #define BATT_CENTER_DX_PX -2 /* plain configuration: icon centre relative to the scene centre */
+#define BATT_BESIDE_GAP_UNITS 2 /* plain configuration: space between a bubble and the icon beside it */
+#define BATT_PLATE_UNITS 1 /* plain configuration: margin of the ink plate behind the icon over sticker art */
+#define BATT_BESIDE_MAX_DX_PX 160 /* plain configuration: farthest right edge of the icon beside the top bubble, from the scene centre */
 #define BUBBLE_PAD_UNITS 2
 #define BUBBLE_POP_STEP_MS 60
 #define BUBBLE_DOT_PULSE_MS 300
@@ -218,7 +234,12 @@
 #define ORBIT_COLS 6 /* plain configuration */
 #define ORBIT_ROWS 8 /* plain configuration */
 #define ORBIT_X0_PX -12 /* plain configuration: leftmost lattice column */
-#define ORBIT_Y0_PX -4 /* plain configuration: topmost lattice row; the THINKING bubble reaches the scene top at this offset */
+#define ORBIT_Y0_PX -4 /* plain configuration: topmost lattice row */
+#define ORBIT_HALF_X_PX ((ORBIT_COLS - 1) * ORBIT_PITCH_PX / 2) /* derived: half range of the lattice in x */
+#define ORBIT_HALF_Y_PX ((ORBIT_ROWS - 1) * ORBIT_PITCH_PX / 2) /* derived: half range in y */
+#define ORBIT_RECENTRE_X_PX (-(ORBIT_X0_PX + ORBIT_HALF_X_PX)) /* derived: moves the lattice mid-point to the scene centre; sticker art only */
+#define ORBIT_RECENTRE_Y_PX (-(ORBIT_Y0_PX + ORBIT_HALF_Y_PX)) /* derived, as above */
+_Static_assert((ORBIT_COLS - 1) * ORBIT_PITCH_PX % 2 == 0 && (ORBIT_ROWS - 1) * ORBIT_PITCH_PX % 2 == 0, "the lattice mid-point is a whole pixel");
 
 /* IMU orientation (docs/mascot.md "Screen orientation") */
 #define IMU_I2C_ADDR_PRIMARY 0x6B
@@ -270,6 +291,7 @@
 #define PRIO_IMU 3
 #define PRIO_BLIT 5
 #define PRIO_WORKER 5
+#define PRIO_SKIN_VERIFY 3 /* plain configuration: below the UI, audio and rx tasks */
 #define PRIO_NET 5
 #define STACK_RX 6144 /* PAIR parsing and its NVS write run on it */
 #define STACK_TX 4096
@@ -280,4 +302,5 @@
 #define STACK_IMU 4096
 #define STACK_BLIT 3072
 #define STACK_WORKER 6144
+#define STACK_SKIN_VERIFY 3072
 #define STACK_NET 12288 /* inner and outer mbedTLS calls nest on it */

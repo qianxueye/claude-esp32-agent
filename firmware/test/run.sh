@@ -4,6 +4,7 @@ set -eu
 cd "$(dirname "$0")"
 SRCS="../main/proto.c ../main/dpower.c ../main/keydebounce.c ../main/volknob.c ../main/volarc.c ../main/arcvis.c ../main/volstate.c ../main/brtmap.c ../main/netcfg.c ../main/linkstate.c ../main/netplan.c ../main/wsmap.c ../main/netwrite.c ../main/pairrec.c ../main/battstate.c"
 [ -f ../main/motion.c ] && SRCS="$SRCS ../main/motion.c"
+SRCS="$SRCS ../main/apack.c ../main/apsrc.c ../main/aplay.c ../main/aglue.c ../main/rotblit.c ../main/acomp.c"
 OUT="${TMPDIR:-/tmp}/clawd_host_tests.$$"
 mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT

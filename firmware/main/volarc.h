@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 #include "app_config.h"
 
@@ -6,7 +7,21 @@
 
 #define VOLARC_CAP (((VOL_ARC_R_OUT_PX * VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX * VOL_ARC_R_IN_PX) * 26) / 10 + 128)
 #define VOLARC_MAX_AREAS 10 /* one area per VOL_ARC_CHUNK_THR percent of the whole arc */
-#define VOLARC_RING_MAX_AREAS 1 /* mathematical model: LVGL's 32 areas less the scene's 10 and the ring's 21; the ring redraws only when the arc change has at most this many */
+#define VOLARC_RING_AREAS 21 /* mathematical model: the areas invalidate_ring emits for the ring band at the configured diameter and band height */
+#define VOLARC_RING_MAX_AREAS 1 /* mathematical model: the ring redraws only when the arc change has at most this many areas */
+#define VOLARC_RING_MAX_BANDS (32 - VOLARC_RING_AREAS - VOLARC_RING_MAX_AREAS) /* mathematical model: LVGL's 32 areas less the ring and one arc area; the ring also needs a tick of at most this many scene bands */
+
+/* Whether the ring may redraw in a tick whose arc change has arc_areas areas and whose scene has bands bands. */
+static inline bool volarc_ring_ok(int arc_areas, int bands)
+{
+    return arc_areas <= VOLARC_RING_MAX_AREAS && bands <= VOLARC_RING_MAX_BANDS;
+}
+
+/* Whether a tick with bands scene strips invalidates the whole screen instead, so a ring redraw owed since the last tick lands now. */
+static inline bool volarc_ring_takes_screen(int bands, bool ring_waited)
+{
+    return ring_waited && bands > VOLARC_RING_MAX_BANDS;
+}
 
 /* Mathematical model: the two stretch runs take 2 * ARC_OVER_CELLS percent of the sweep, either arc, plus a half-disc (pi/8 of the band width squared, bounded by 4/10, and one band width of edge pixels) at each tip. */
 #define VOLARC_OVER_CAP (VOLARC_CAP * 2 * ARC_OVER_CELLS / 100 + 2 * (((VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * 4) / 10 + (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX)))
