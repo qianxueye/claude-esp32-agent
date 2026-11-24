@@ -328,18 +328,23 @@ async def test_cloudflared_starts_only_with_a_binary_and_a_listening_tunnel(tmp_
             await sup.close()
 
 
-async def test_set_remote_after_hello_on_usb_and_again_on_change():
-    h = make()
+@pytest.mark.parametrize("hello_delay", [0.0, 0.3], ids=["fast-board", "slow-board"])
+async def test_set_remote_after_hello_on_usb_and_again_on_change(hello_delay):
+    h = make(hello_delay=hello_delay)
     h.link.set_remote(url(1))
     await h.up()
     try:
-        assert h.dev.hellos == ["boot", "reply"] and h.dev.remotes == [{"url": url(1)}] * 2
+        d = h.dev
+        await until(lambda: {"boot", "reply"} <= set(d.hellos) and len(d.remotes) >= len(d.hellos), timeout=10)
+        await asyncio.sleep(0.2)
+        first = list(d.remotes)
+        assert len(first) >= 2 and all(r == {"url": url(1)} for r in first)
         h.link.set_remote(url(1))
         h.link.set_remote(url(2))
-        await until(lambda: len(h.dev.remotes) == 3)
+        await until(lambda: len(d.remotes) > len(first), timeout=10)
         h.link.set_remote(None)
         await asyncio.sleep(0.1)
-        assert h.dev.remotes == [{"url": url(1)}] * 2 + [{"url": url(2)}]
+        assert d.remotes == first + [{"url": url(2)}]
     finally:
         await h.down()
 
@@ -355,22 +360,26 @@ async def test_no_set_remote_while_no_url_is_known():
         await h.down()
 
 
-async def test_set_remote_after_hello_on_lan_and_never_on_an_inactive_session():
-    async with WifiHarness() as w:
+@pytest.mark.parametrize("hello_delay", [0.0, 0.3], ids=["fast-board", "slow-board"])
+async def test_set_remote_after_hello_on_lan_and_never_on_an_inactive_session(hello_delay):
+    async with WifiHarness(hello_delay=hello_delay) as w:
         w.h.link.set_remote(url(1))
         d = await w.board()
         await until(lambda: d.remotes)
         assert d.remotes == [{"url": url(1)}]
         w.h.allow_open = True
-        await until(lambda: w.h.devices and len(w.h.dev.remotes) == 2)
-        assert w.h.link.active_kind == "usb" and w.h.dev.remotes == [{"url": url(1)}] * 2
+        await until(lambda: w.h.devices and len(w.h.dev.remotes) >= 2, timeout=10)
+        assert w.h.link.active_kind == "usb" and all(r == {"url": url(1)} for r in w.h.dev.remotes)
         t = await tls_connect(w.srv.port, IDENTITY, KEY)
         late = FakeDevice(t, link="wifi")
         late.start()
         w.boards.append(late)
         late.hello("boot")
+        await asyncio.sleep(0.2)
+        before = len(w.h.dev.remotes)
         w.h.link.set_remote(url(2))
-        await until(lambda: len(w.h.dev.remotes) == 3)
+        await until(lambda: len(w.h.dev.remotes) > before, timeout=10)
+        assert w.h.dev.remotes[-1] == {"url": url(2)}
         with pytest.raises(TransportClosed):
             for _ in range(40):
                 await t.read(0.05)

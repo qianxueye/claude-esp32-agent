@@ -63,6 +63,7 @@ class FakeDevice:
         proto: int = 3,
         vol: int | None = None,
         boot_delay: float | None = 0.05,
+        hello_delay: float = 0.0,
         consumed0: int = 0,
         relay_connector: Callable[[dict], Awaitable[str]] | None = None,
     ) -> None:
@@ -72,6 +73,7 @@ class FakeDevice:
         self.link = link
         self.proto = proto
         self.boot_delay = boot_delay
+        self.hello_delay = hello_delay  # the `boot` HELLO leaves this late, so the host's retries get replies
         self.consumed0 = consumed0
         self.relay_connector = relay_connector
         self.leaky_log = False
@@ -157,7 +159,10 @@ class FakeDevice:
         self.ended = False
         if self.link == "usb":
             self.t.write(ROM_TEXT)
-        self.hello("boot")
+        if self.hello_delay:
+            asyncio.get_running_loop().call_later(self.hello_delay, self.hello, "boot")
+        else:
+            self.hello("boot")
 
     def inject(self, code: Input) -> None:
         self.send(T.INPUT, bytes([int(code)]))
