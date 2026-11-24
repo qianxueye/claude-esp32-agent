@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import random
+import re
 import ssl
 import struct
 import time
@@ -75,10 +76,12 @@ class FakeDevice:
         self.relay_connector = relay_connector
         self.leaky_log = False
         self.refuse_pair = False
+        self.refuse_reason = "nvs full"  # "storage error" or "storage unknown" as the board sends them
         self.pair_reply = True  # False: save and join without sending PAIR_RESULT
         self.ignore_pair = False
         self.forget_reply: bytes | None = b'{"ok":true}'  # None: erase without FORGET_RESULT
         self.forget_erases = True
+        self.store: str | None = "ok"  # HELLO `store`: "error" when the board cannot read its storage; None omits it
         self.wifi = "off"
         self.relay = "none"
         self.dec = Decoder(0.2 if link == "usb" else None)
@@ -102,6 +105,7 @@ class FakeDevice:
         self.forgets = 0
         self.received: list[int] = []
         self.set_volumes: list[bytes] = []
+        self.remotes: list[dict] = []
         self._booting = False
         self._mic_pos = 0
         self._tasks: list[asyncio.Task] = []
@@ -138,6 +142,8 @@ class FakeDevice:
         self.hellos.append(reason)
         info = {"proto": self.proto, "fw": "fake", "rate": 16000, "reason": reason, "link": self.link,
                 "paired": self.paired is not None, "vol": self.vol, "vol_set": self.vol_set}
+        if self.store is not None:
+            info["store"] = self.store
         self.send(T.HELLO, json.dumps(info).encode())
 
     def reset(self) -> None:
@@ -193,6 +199,8 @@ class FakeDevice:
             self.state = new
         elif ftype == T.SET_VOLUME:
             self._set_volume(payload)
+        elif ftype == T.SET_REMOTE:
+            self.remotes.append(json.loads(payload))
         elif ftype == T.SPK_AUDIO:
             self.queued += len(payload)
             self.max_queued = max(self.max_queued, self.queued)
@@ -246,6 +254,7 @@ class FakeDevice:
         try:
             info = json.loads(payload)
             ok = len(bytes.fromhex(info["psk"])) == 32 and bool(info["ssid"]) and bool(info["relay_port"])
+            ok = ok and re.fullmatch(r"[0-9A-F]{8}", info["key_id"]) is not None
         except (ValueError, KeyError, TypeError):
             ok = False
         if not ok:
@@ -253,9 +262,10 @@ class FakeDevice:
             return
         self.send(T.LOG, f"pair: ssid={info['ssid']}".encode())
         if self.leaky_log:
-            self.send(T.LOG, f"careless: {info['password']} {info['psk']}".encode())
+            extra = " ".join(n["password"] for n in info.get("networks", []))
+            self.send(T.LOG, f"careless: {info['password']} {info['psk']} {extra}".encode())
         if self.refuse_pair:
-            self.send(T.PAIR_RESULT, b'{"ok":false,"error":"nvs full"}')
+            self.send(T.PAIR_RESULT, json.dumps({"ok": False, "error": self.refuse_reason}).encode())
             return
         self.paired = info
         if self.pair_reply:
@@ -295,4 +305,9 @@ class FakeDevice:
             await asyncio.sleep(tick)
 
 
-__all__ = ["FAKE_SERIAL", "FakeDevice", "MemoryTransport", "client_context", "speech_pcm", "tls_connect"]
+def board_identity(info: dict) -> str:
+    """The handshake identity a board uses for a PAIR text: psk_identity, "-" and key_id."""
+    return f"{info['psk_identity']}-{info['key_id']}"
+
+
+__all__ = ["FAKE_SERIAL", "FakeDevice", "MemoryTransport", "board_identity", "client_context", "speech_pcm", "tls_connect"]

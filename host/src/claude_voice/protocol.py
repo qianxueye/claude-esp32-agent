@@ -12,6 +12,8 @@ SAMPLE_RATE = 16000
 PROTO_VERSION = 3
 WIFI_PORT = 47801
 PSK_IDENTITY_PREFIX = "clawd-"
+PAIR_PAYLOAD_MAX = 1023  # the device keeps 1024 bytes for the PAIR text and its terminator
+PAIR_NETWORKS_MAX = 4
 
 
 class T(enum.IntEnum):
@@ -34,6 +36,7 @@ class T(enum.IntEnum):
     SET_VOLUME = 0x83
     PAIR = 0x84
     FORGET = 0x85
+    SET_REMOTE = 0x86
     SPK_AUDIO = 0x90
     SPK_FLUSH = 0x91
     SPK_END = 0x92

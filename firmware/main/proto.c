@@ -32,8 +32,14 @@ size_t proto_encode(uint8_t *out, uint8_t type, const void *payload, size_t len)
 void proto_parser_init(proto_parser_t *p, uint8_t *storage, size_t cap)
 {
     memset(p, 0, sizeof(*p));
+    memset(storage, 0, cap);
     p->buf = storage;
     p->cap = cap;
+}
+
+void proto_parser_set_stream(proto_parser_t *p, bool stream)
+{
+    p->stream = stream;
 }
 
 size_t proto_parser_feed(proto_parser_t *p, const uint8_t *data, size_t len)
@@ -45,10 +51,12 @@ size_t proto_parser_feed(proto_parser_t *p, const uint8_t *data, size_t len)
     return n;
 }
 
+/* The only place bytes leave the buffer: it zeroes the vacated tail, so no discarded or released byte remains. */
 static void drop(proto_parser_t *p, size_t n)
 {
     p->fill -= n;
     memmove(p->buf, p->buf + n, p->fill);
+    memset(p->buf + p->fill, 0, n);
     p->wait_since_ms = 0;
 }
 
@@ -100,6 +108,9 @@ int proto_parser_next(proto_parser_t *p, uint32_t now_ms, proto_frame_t *f)
         return 1;
 
     incomplete:
+        if (p->stream) {
+            return 0;
+        }
         if (p->wait_since_ms == 0) {
             p->wait_since_ms = now_ms ? now_ms : 1;
         } else if (now_ms - p->wait_since_ms >= PROTO_PARTIAL_FRAME_TIMEOUT_MS) {

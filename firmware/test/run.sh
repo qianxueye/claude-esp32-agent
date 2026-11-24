@@ -2,7 +2,7 @@
 # Compiles and runs every host test with the pure firmware modules.
 set -eu
 cd "$(dirname "$0")"
-SRCS="../main/proto.c ../main/dpower.c ../main/keydebounce.c ../main/volknob.c ../main/volarc.c ../main/arcvis.c ../main/volstate.c ../main/brtmap.c"
+SRCS="../main/proto.c ../main/dpower.c ../main/keydebounce.c ../main/volknob.c ../main/volarc.c ../main/arcvis.c ../main/volstate.c ../main/brtmap.c ../main/netcfg.c ../main/linkstate.c ../main/netplan.c ../main/wsmap.c ../main/netwrite.c ../main/pairrec.c"
 [ -f ../main/motion.c ] && SRCS="$SRCS ../main/motion.c"
 OUT="${TMPDIR:-/tmp}/clawd_host_tests.$$"
 mkdir -p "$OUT"

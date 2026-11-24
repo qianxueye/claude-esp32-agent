@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
+import re
 import socket
 import ssl
 import time
 from collections.abc import Awaitable, Callable
 
 from .config import Config
-from .keychain import PskStore, psk_identity, valid_identity
+from .keychain import KeychainError, KeychainValueError, PskStore, earlier_account, key_id, psk_identity, wire_identity
 from .link import Transport, TransportClosed
+from .protocol import PSK_IDENTITY_PREFIX
 
 log = logging.getLogger("claude_voice.wifi")
 CIPHER = "ECDHE-PSK-CHACHA20-POLY1305"
 PSK_BYTES = 32
+_WIRE = re.compile(f"({re.escape(PSK_IDENTITY_PREFIX)}[0-9A-Fa-f]{{12}})-([0-9A-F]{{8}})")
+
+
+def parse_wire_identity(identity: str | None) -> tuple[str, str] | None:
+    """The board identity and key id of a handshake identity `clawd-<MAC>-<KID>`, or None."""
+    m = _WIRE.fullmatch(identity) if identity else None
+    return (m.group(1), m.group(2)) if m else None
 
 
 class WarnLimiter:
@@ -53,7 +63,25 @@ class WarnLimiter:
         self._suppressed = 0
 
 
-def server_context(keys: dict[str, bytes], warn: Callable[..., None] = log.warning) -> ssl.SSLContext:
+class Keyring:
+    """PSKs by wire identity, shared by the listeners; `removed` counts key removals (docs/protocol.md, Revocation)."""
+
+    def __init__(self, keys: dict[str, bytes] | None = None) -> None:
+        self.keys = {} if keys is None else keys
+        self.removed = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.keys)
+
+
+def as_keyring(keys: Keyring | dict[str, bytes]) -> Keyring:
+    """`keys` itself, or a keyring over the same dict."""
+    return keys if isinstance(keys, Keyring) else Keyring(keys)
+
+
+def server_context(
+    keys: dict[str, bytes], warn: Callable[..., None] = log.warning, name: str = "Wi-Fi"
+) -> ssl.SSLContext:
     """TLS 1.2 only, one cipher suite, PSK from `keys`; any other identity fails the handshake."""
     if not ssl.HAS_PSK:
         raise RuntimeError("this Python's OpenSSL has no PSK support")
@@ -64,9 +92,9 @@ def server_context(keys: dict[str, bytes], warn: Callable[..., None] = log.warni
     ctx.options |= ssl.OP_NO_TICKET
 
     def lookup(identity: str | None) -> bytes:
-        key = keys.get(identity) if valid_identity(identity) else None
+        key = keys.get(identity) if parse_wire_identity(identity) else None
         if key is None:
-            warn("Wi-Fi handshake with unknown PSK identity %r", (identity or "")[:40])
+            warn("%s handshake with unknown PSK identity %r", name, (identity or "")[:40])
             return b""
         return key
 
@@ -74,15 +102,126 @@ def server_context(keys: dict[str, bytes], warn: Callable[..., None] = log.warni
     return ctx
 
 
+def acceptable(tls: ssl.SSLObject | None, on_resumed: Callable[[], None]) -> bool:
+    """True for a TLS 1.2 session with the one suite that is not a resumption."""
+    if tls is None or tls.version() != "TLSv1.2" or tls.cipher()[0] != CIPHER:
+        return False
+    if tls.session_reused:
+        on_resumed()
+        return False
+    return True
+
+
+class Admission:
+    """Counts connections still in the handshake, in total and per peer key, and refuses those over a cap."""
+
+    def __init__(self, logger: logging.Logger, name: str, total_max: int, per_key_max: int, interval_s: float) -> None:
+        self._name = name
+        self._max = total_max
+        self._per_key_max = per_key_max
+        self._warn_cap, self._warn_key = (WarnLimiter(logger, interval_s) for _ in range(2))
+        self.count = 0
+        self._by: dict[str, int] = {}
+
+    def admit(self, key: str) -> bool:
+        if self.count >= self._max:
+            self._warn_cap.warn("%s connection refused: %d already in the TLS handshake", self._name, self.count)
+            return False
+        if self._by.get(key, 0) >= self._per_key_max:
+            self._warn_key.warn("%s connection from %s refused: its handshake limit is reached", self._name, key)
+            return False
+        self.count += 1
+        self._by[key] = self._by.get(key, 0) + 1
+        return True
+
+    def release(self, key: str) -> None:
+        self.count -= 1
+        left = self._by.pop(key) - 1
+        if left:
+            self._by[key] = left
+
+    def flush(self) -> None:
+        self._warn_cap.flush()
+        self._warn_key.flush()
+
+
+@dataclasses.dataclass
+class BoardKeys:
+    """What the store holds for one board; `keys` is empty unless the current key is valid."""
+
+    current: str | None  # wire identity of the valid current key
+    keys: dict[str, bytes]  # the current key and every earlier key read, by wire identity
+    listed: bool  # the earlier keys were listed
+    unread: set[str] = dataclasses.field(default_factory=set)  # wires of listed earlier keys whose read failed
+
+
+def board_keys(store: PskStore, identity: str, bad: Callable[[str], None]) -> BoardKeys:
+    """Every PSK the store keeps for one board, by wire identity with the key id derived from the key.
+    A board is served only while its current key is valid (docs/network.md, Keys); a `get` error propagates."""
+    try:
+        current = store.get(identity)
+    except KeychainValueError:
+        current = b""
+    if current is not None and len(current) != PSK_BYTES:
+        bad(identity)
+        current = None
+    if current is None:
+        return BoardKeys(None, {}, True)
+    found = BoardKeys(wire_identity(identity, key_id(current)), {wire_identity(identity, key_id(current)): current}, True)
+    try:
+        kids = store.earlier(identity)
+    except KeychainError:
+        kids, found.listed = [], False
+    for kid in kids:
+        try:
+            key = store.get_earlier(identity, kid)
+        except KeychainValueError:
+            key = b""
+        except KeychainError:
+            found.unread.add(wire_identity(identity, kid))
+            continue
+        if key is not None and (len(key) != PSK_BYTES or key_id(key) != kid):
+            bad(earlier_account(identity, kid))
+        elif key is not None:
+            found.keys.setdefault(wire_identity(identity, kid), key)
+    return found
+
+
+def served_board(cfg: Config, store: PskStore) -> str | None:
+    """`device_serial`'s board, else the only listed board with a valid current key."""
+    if cfg.device_serial:
+        return psk_identity(cfg.device_serial)
+    try:
+        boards = store.identities()
+    except KeychainError as e:
+        first = store.find_any()
+        log.warning("could not list the boards in the Keychain (%s); trying %s", e, first)
+        boards = [first] if first else []
+    valid = []
+    for board in boards:
+        try:
+            key = store.get(board)
+        except KeychainValueError:
+            continue
+        if key is not None and len(key) == PSK_BYTES:
+            valid.append(board)
+    if len(valid) > 1:
+        log.error("Keychain holds keys of %d boards (%s); set device_serial in config.toml", len(valid), ", ".join(valid))
+    return valid[0] if len(valid) == 1 else None
+
+
 def load_keys(cfg: Config, store: PskStore) -> dict[str, bytes]:
-    """The paired board's identity and PSK, or nothing when it is not paired."""
-    identity = psk_identity(cfg.device_serial) if cfg.device_serial else store.find_any()
+    """The served board's PSKs by wire identity, or nothing when no board has a valid current key.
+    When earlier keys cannot be listed the current key still loads; the reloader adds them later."""
+    identity = served_board(cfg, store)
     if not identity:
         return {}
-    key = store.get(identity)
-    if key is None or len(key) != PSK_BYTES:
-        return {}
-    return {identity: key}
+    found = board_keys(store, identity, lambda name: log.warning("Keychain item %s is not a %d-byte hex key matching its key id", name, PSK_BYTES))
+    if not found.listed:
+        log.warning("could not list the earlier keys of %s; loading the current key only", identity)
+    elif found.unread:
+        log.warning("could not read %d earlier keys of %s; loading the others", len(found.unread), identity)
+    return found.keys
 
 
 class TcpTransport:
@@ -157,19 +296,24 @@ class WifiServer:
     """Accepts TLS-PSK connections and hands each authenticated one to `run_session`."""
 
     def __init__(
-        self, cfg: Config, keys: dict[str, bytes], run_session: SessionRunner, peer_key: PeerKey = peer_ip
+        self, cfg: Config, keys: Keyring | dict[str, bytes], run_session: SessionRunner, peer_key: PeerKey = peer_ip
     ) -> None:
         self._cfg = cfg
-        self._warn_cap, self._warn_addr, self._warn_identity, self._warn_resumed = (
-            WarnLimiter(log, cfg.wifi_warn_interval_s) for _ in range(4)
+        self._ring = as_keyring(keys)
+        self._admission = Admission(
+            log, "Wi-Fi", cfg.wifi_preauth_max, cfg.wifi_preauth_per_addr_max, cfg.wifi_warn_interval_s
         )
-        self._ctx = server_context(keys, self._warn_identity.warn)
+        self._warn_identity, self._warn_resumed = (WarnLimiter(log, cfg.wifi_warn_interval_s) for _ in range(2))
+        self._ctx = server_context(self._ring.keys, self._warn_identity.warn)
         self._run_session = run_session
         self._server: asyncio.Server | None = None
-        self._preauth = 0
-        self._preauth_by: dict[str, int] = {}
         self._peer_key = peer_key
         self._handshakes: set[asyncio.Task] = set()
+        self._live: set[TcpTransport] = set()
+
+    @property
+    def _preauth(self) -> int:
+        return self._admission.count
 
     @property
     def port(self) -> int:
@@ -183,30 +327,16 @@ class WifiServer:
         )
 
     def _admit(self, key: str) -> bool:
-        if self._preauth >= self._cfg.wifi_preauth_max:
-            self._warn_cap.warn("Wi-Fi connection refused: %d already in the TLS handshake", self._preauth)
-            return False
-        if self._preauth_by.get(key, 0) >= self._cfg.wifi_preauth_per_addr_max:
-            self._warn_addr.warn("Wi-Fi connection from %s refused: its handshake limit is reached", key)
-            return False
-        self._preauth += 1
-        self._preauth_by[key] = self._preauth_by.get(key, 0) + 1
-        return True
-
-    def _release(self, key: str) -> None:
-        self._preauth -= 1
-        left = self._preauth_by.pop(key) - 1
-        if left:
-            self._preauth_by[key] = left
+        return self._admission.admit(key)
 
     def _spawn(self, transport: asyncio.BaseTransport, key: str) -> None:
-        task = asyncio.get_running_loop().create_task(self._handshake(transport, key))
+        task = asyncio.get_running_loop().create_task(self._handshake(transport, key, self._ring.removed))
         self._handshakes.add(task)
         task.add_done_callback(self._handshakes.discard)
 
-    async def _handshake(self, raw: asyncio.BaseTransport, key: str) -> None:
+    async def _handshake(self, raw: asyncio.BaseTransport, key: str, admitted: int) -> None:
         reader = asyncio.StreamReader()
-        proto = asyncio.StreamReaderProtocol(reader, self._client)
+        proto = asyncio.StreamReaderProtocol(reader, lambda r, w: self._client(r, w, admitted))
         try:
             tls = await asyncio.get_running_loop().start_tls(
                 raw, proto, self._ctx, server_side=True, ssl_handshake_timeout=self._cfg.wifi_handshake_timeout_s,
@@ -214,7 +344,7 @@ class WifiServer:
         except Exception:
             tls = None
         finally:
-            self._release(key)
+            self._admission.release(key)
         # start_tls returns None when the peer closes during the handshake
         if tls is None or not self._acceptable(tls.get_extra_info("ssl_object")):
             (tls or raw).abort()  # type: ignore[attr-defined]
@@ -222,21 +352,29 @@ class WifiServer:
         proto.connection_made(tls)
 
     def _acceptable(self, tls: ssl.SSLObject | None) -> bool:
-        if tls is None or tls.version() != "TLSv1.2" or tls.cipher()[0] != CIPHER:
-            return False
-        if tls.session_reused:
-            self._warn_resumed.warn("Wi-Fi session resumption refused")
-            return False
-        return True
+        return acceptable(tls, lambda: self._warn_resumed.warn("Wi-Fi session resumption refused"))
 
-    async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, admitted: int) -> None:
+        if self._ring.removed != admitted:
+            log.info("Wi-Fi session refused: a key was removed during its handshake")
+            writer.transport.abort()
+            return
+        cfg = self._cfg
+        transport = TcpTransport(reader, writer, cfg.wifi_write_buffer_max, cfg.wifi_close_timeout_s)
+        self._live.add(transport)
         sock = writer.get_extra_info("socket")
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         peer = writer.get_extra_info("peername")
         log.info("Wi-Fi session authenticated from %s", peer[0] if peer else "?")
-        cfg = self._cfg
-        await self._run_session(TcpTransport(reader, writer, cfg.wifi_write_buffer_max, cfg.wifi_close_timeout_s))
+        try:
+            await self._run_session(transport)
+        finally:
+            self._live.discard(transport)
+
+    async def close_sessions(self) -> None:
+        """Close every authenticated session, including one still waiting to become the active link."""
+        await asyncio.gather(*(t.close() for t in list(self._live)))
 
     async def close(self) -> None:
         if self._server is not None:
@@ -245,5 +383,6 @@ class WifiServer:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._server.wait_closed(), self._cfg.wifi_close_timeout_s)
             self._server = None
-        for limiter in (self._warn_cap, self._warn_addr, self._warn_identity, self._warn_resumed):
+        self._admission.flush()
+        for limiter in (self._warn_identity, self._warn_resumed):
             limiter.flush()

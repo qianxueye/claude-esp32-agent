@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import dataclasses
 from types import SimpleNamespace
@@ -211,3 +212,131 @@ def test_config_rejects_volume_out_of_range(tmp_path):
             load(p)
     p.write_text("volume = 100\n", encoding="utf-8")
     assert load(p).volume == 100
+
+
+STOP_SCRIPT = r'''
+import asyncio, sys
+from claude_voice.cli import run_until_signal
+
+async def main():
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(60)",
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    print(child.pid, flush=True)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        print("cleanup", flush=True)
+        await asyncio.sleep(float(sys.argv[1]))
+        child.terminate()
+        await child.wait()
+        print("stopped", flush=True)
+
+try:
+    run_until_signal(main())
+except KeyboardInterrupt:
+    pass
+print("exit", flush=True)
+'''
+
+
+class Lines:
+    """Unbuffered line reader on a pipe, so nothing read ahead is lost."""
+
+    def __init__(self, pipe):
+        self.fd, self.buf = pipe.fileno(), b""
+
+    def line(self, timeout):
+        import os
+        import select
+
+        while b"\n" not in self.buf:
+            ready, _, _ = select.select([self.fd], [], [], timeout)
+            assert ready, "no output within the timeout"
+            chunk = os.read(self.fd, 4096)
+            assert chunk, f"output ended: {self.buf!r}"
+            self.buf += chunk
+        line, self.buf = self.buf.split(b"\n", 1)
+        return line.decode().strip()
+
+    def rest(self):
+        import os
+
+        while chunk := os.read(self.fd, 4096):
+            self.buf += chunk
+        return self.buf.decode()
+
+
+def _alive(pid):
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(
+    "signals, slow",
+    [(["SIGTERM"], 0.0), (["SIGHUP"], 0.0), (["SIGHUP", "SIGTERM"], 0.5), (["SIGINT", "SIGHUP", "SIGTERM"], 0.5)],
+    ids=["term", "hup", "second-signal-during-cleanup", "signal-after-ctrl-c"],
+)
+def test_stop_signal_runs_the_cleanup_and_exits_quietly(tmp_path, signals, slow):
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    script = tmp_path / "stop.py"
+    script.write_text(STOP_SCRIPT)
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(slow)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+    )
+    out_lines, child = Lines(proc.stdout), None
+    try:
+        child = int(out_lines.line(30))
+        assert _alive(child)
+        proc.send_signal(getattr(signal, signals[0]))
+        assert out_lines.line(10) == "cleanup"
+        for name in signals[1:]:
+            proc.send_signal(getattr(signal, name))
+        proc.wait(timeout=10)
+        out, err = out_lines.rest(), proc.stderr.read().decode()
+        assert proc.returncode == 0 and "Traceback" not in err, err
+        assert out.split() == ["stopped", "exit"], out
+        assert not _alive(child)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+        if child is not None and _alive(child):
+            os.kill(child, signal.SIGKILL)
+
+
+def test_run_command_runs_under_the_signal_helper(monkeypatch, tmp_path):
+    import sys
+
+    from claude_voice import cli
+
+    conf = tmp_path / "c.toml"
+    conf.write_text(f'log_dir = "{tmp_path}"\n', encoding="utf-8")
+    ran = []
+
+    async def stub(cfg):
+        ran.append("run")
+
+    def helper(main):
+        ran.append("helper")
+        asyncio.run(main)
+
+    monkeypatch.setattr(sys, "argv", ["claude-voice", "--config", str(conf)])
+    monkeypatch.setattr(cli, "run", stub)
+    monkeypatch.setattr(cli, "run_until_signal", helper)
+    monkeypatch.setattr(cli, "setup_logging", lambda c, console: None)
+    monkeypatch.setattr(cli, "raise_open_files_limit", lambda target: None)
+    cli.main()
+    assert ran == ["helper", "run"]

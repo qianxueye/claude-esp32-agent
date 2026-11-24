@@ -1,0 +1,116 @@
+#include "pairrec.h"
+#include <string.h>
+
+size_t pr_encode(uint32_t id, const void *data, size_t len, size_t max, uint8_t *out, size_t cap)
+{
+    if (id == 0 || len > max || len > 0xFFFF || cap < PR_HEADER_BYTES + len) {
+        return 0;
+    }
+    out[0] = PR_VERSION;
+    for (int i = 0; i < 4; i++) {
+        out[1 + i] = (uint8_t)(id >> (8 * i));
+    }
+    out[5] = (uint8_t)len;
+    out[6] = (uint8_t)(len >> 8);
+    memcpy(out + PR_HEADER_BYTES, data, len);
+    return PR_HEADER_BYTES + len;
+}
+
+bool pr_decode(const uint8_t *blob, size_t n, size_t max, uint32_t *id, const uint8_t **data, size_t *len)
+{
+    if (n < PR_HEADER_BYTES || blob[0] != PR_VERSION) {
+        return false;
+    }
+    uint32_t v = 0;
+    for (int i = 0; i < 4; i++) {
+        v |= (uint32_t)blob[1 + i] << (8 * i);
+    }
+    size_t l = (size_t)blob[5] | (size_t)blob[6] << 8;
+    if (v == 0 || l > max || n != PR_HEADER_BYTES + l) {
+        return false;
+    }
+    *id = v;
+    *data = blob + PR_HEADER_BYTES;
+    *len = l;
+    return true;
+}
+
+uint32_t pr_next_id(uint32_t pair_id, uint32_t remote_id)
+{
+    uint32_t next = (pair_id > remote_id ? pair_id : remote_id) + 1;
+    return next ? next : 1;
+}
+
+const char *pr_effective_remote(uint32_t pair_id, const netcfg_t *cfg, uint32_t remote_id, const char *remote_url)
+{
+    if (pair_id != 0 && remote_url && remote_id == pair_id) {
+        return remote_url;
+    }
+    return cfg->has_remote ? cfg->remote_url : NULL;
+}
+
+pr_remote_plan_t pr_remote_plan(const char *stored, const char *in_use, const char *url)
+{
+    pr_remote_plan_t p;
+    p.save = !stored || strcmp(stored, url) != 0;
+    p.apply = !in_use || strcmp(in_use, url) != 0;
+    return p;
+}
+
+static bool same(pr_view_t a, pr_view_t b)
+{
+    if (a.present != b.present) {
+        return false;
+    }
+    if (!a.present) {
+        return true;
+    }
+    return a.id == b.id && a.len == b.len && (!a.data || !b.data || memcmp(a.data, b.data, a.len) == 0);
+}
+
+int pr_write_outcome(int32_t err, bool read_ok, pr_view_t got, pr_view_t want, pr_view_t prev)
+{
+    if (err == 0) {
+        return PR_WRITE_DONE;
+    }
+    if (!read_ok) {
+        return PR_WRITE_UNKNOWN;
+    }
+    if (same(got, want)) {
+        return PR_WRITE_DONE;
+    }
+    /* After REMOVE_FAILED the new value is in flash, and the next init may still pick it. */
+    return err != PR_ERR_NVS_REMOVE_FAILED && same(got, prev) ? PR_WRITE_KEPT : PR_WRITE_UNKNOWN;
+}
+
+int pr_read_class(int32_t err, bool decoded)
+{
+    if (err == PR_ERR_NVS_NOT_FOUND) {
+        return PR_READ_ABSENT;
+    }
+    return err == 0 && decoded ? PR_READ_FOUND : PR_READ_FAILED;
+}
+
+pr_load_t pr_load_result(int pair_class, int remote_class, bool text_ok)
+{
+    pr_load_t r;
+    r.known = pair_class != PR_READ_FAILED && remote_class != PR_READ_FAILED;
+    r.paired = pair_class == PR_READ_FOUND && text_ok;
+    return r;
+}
+
+int pr_boot_action(int32_t init_err)
+{
+    if (init_err == 0) {
+        return PR_BOOT_OK;
+    }
+    if (init_err == PR_ERR_NVS_NO_FREE_PAGES || init_err == PR_ERR_NVS_NEW_VERSION_FOUND) {
+        return PR_BOOT_REFORMAT;
+    }
+    return PR_BOOT_UNUSABLE;
+}
+
+bool pr_save_current(uint32_t stored_id, uint32_t want_id, uint32_t gen, uint32_t want_gen)
+{
+    return want_id != 0 && stored_id == want_id && gen == want_gen;
+}
