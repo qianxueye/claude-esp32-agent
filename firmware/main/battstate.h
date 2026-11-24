@@ -28,7 +28,7 @@ typedef struct {
 } batt_out_t;
 
 typedef struct {
-    bool seen, vbus_seen, vbus, low, failing, logged;
+    bool seen, vbus_seen, vbus, low, failing, logged, stale_logged;
     uint32_t last_ok_ms, last_log_ms;
     batt_look_t look, logged_look;
     int bars, logged_key;

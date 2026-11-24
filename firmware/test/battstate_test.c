@@ -97,6 +97,14 @@ static void test_done_shows_four_bars(void)
     assert(o.look == BATT_DONE && o.bars == 4);
 }
 
+static void test_done_with_unknown_percentage_still_draws_full_bars(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    batt_out_t o = read_at(&s, 0, PRESENT | VBUS, DIR(STANDBY) | 4, BATT_UNKNOWN_PCT);
+    assert(o.look == BATT_DONE && o.bars == BATT_BARS_MAX);
+}
+
 static void test_plug_in_wakes_from_reg00_alone(void)
 {
     batt_state_t s;
@@ -137,6 +145,33 @@ static void test_stale_logs_once_and_recovery_forces_a_fresh_line(void)
     assert(!read_at(&s, BATT_STALE_MS + 6000, PRESENT, DIR(DISCHARGE), 60).log);
     fail_at(&s, BATT_STALE_MS + 8000);
     assert(read_at(&s, BATT_STALE_MS + 10000, PRESENT, DIR(DISCHARGE), 60).log);
+}
+
+static void test_reg00_absence_clears_the_low_latch(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    assert(read_at(&s, 0, PRESENT, DIR(DISCHARGE), 15).look == BATT_LOW);
+    reg00_only_at(&s, 2000, 0);
+    assert(read_at(&s, 4000, PRESENT, DIR(DISCHARGE), 22).look == BATT_NORMAL);
+}
+
+static void test_stale_logs_once_even_when_the_icon_was_hidden(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    assert(read_at(&s, 0, 0, DIR(DISCHARGE), 0).look == BATT_HIDDEN);
+    assert(!fail_at(&s, BATT_STALE_MS - 1).log_stale);
+    assert(fail_at(&s, BATT_STALE_MS).log_stale);
+    assert(!fail_at(&s, BATT_STALE_MS + 2000).log_stale);
+}
+
+static void test_failure_before_any_read_logs_fail_but_not_stale(void)
+{
+    batt_state_t s;
+    batt_init(&s);
+    batt_out_t o = fail_at(&s, 0);
+    assert(o.log_fail && !o.log_stale);
 }
 
 static void test_vbus_not_charging_is_normal(void)
@@ -229,7 +264,11 @@ int main(void)
     test_low_leaves_at_25_not_24();
     test_charging_overrides_low();
     test_done_shows_four_bars();
+    test_done_with_unknown_percentage_still_draws_full_bars();
     test_plug_in_wakes_from_reg00_alone();
+    test_reg00_absence_clears_the_low_latch();
+    test_stale_logs_once_even_when_the_icon_was_hidden();
+    test_failure_before_any_read_logs_fail_but_not_stale();
     test_absent_battery_resets_the_low_latch();
     test_charging_with_unknown_percentage_resets_the_low_latch();
     test_stale_logs_once_and_recovery_forces_a_fresh_line();

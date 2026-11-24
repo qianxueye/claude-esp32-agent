@@ -53,14 +53,21 @@ batt_out_t batt_step(batt_state_t *s, const batt_in_t *in)
         o.log_fail = !s->failing;
         s->failing = true;
         s->logged = false;
+        if (in->reg00_ok && !batt_present(in->reg00)) {
+            s->low = false;
+        }
         if (!s->seen || in->now_ms - s->last_ok_ms >= BATT_STALE_MS) {
-            o.log_stale = s->look != BATT_HIDDEN;
+            o.log_stale = s->seen && !s->stale_logged;
+            if (o.log_stale) {
+                s->stale_logged = true;
+            }
             s->look = o.look = BATT_HIDDEN;
             s->bars = o.bars = 0;
         }
         return o;
     }
     s->failing = false;
+    s->stale_logged = false;
     const bool vbus = batt_vbus(in->reg00), present = batt_present(in->reg00);
     const int dir = batt_dir(in->reg01), chg = batt_chg(in->reg01), pct = in->pct;
     const bool known = pct < BATT_UNKNOWN_PCT;
@@ -78,7 +85,7 @@ batt_out_t batt_step(batt_state_t *s, const batt_in_t *in)
         o.bars = 0;
     } else if (done) {
         o.look = BATT_DONE;
-        o.bars = known ? BATT_BARS_MAX : 0;
+        o.bars = BATT_BARS_MAX;
     } else if (charging) {
         o.look = BATT_CHARGING;
         o.bars = known ? bars_of(pct) : 0;

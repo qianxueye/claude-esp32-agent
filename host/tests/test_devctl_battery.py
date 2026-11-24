@@ -18,3 +18,7 @@ def test_parse_batt_keeps_a_missing_voltage_as_minus_one():
 
 def test_parse_batt_ignores_other_lines():
     assert devctl.parse_batt(b"I (5000) app: bright lvl=49 eff=49 panel=49 set=1") is None
+
+
+def test_parse_batt_reports_a_stale_line():
+    assert devctl.parse_batt(b"W (123) clawd: batt: stale") == {"look": "stale"}

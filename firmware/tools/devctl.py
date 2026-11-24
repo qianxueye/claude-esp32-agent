@@ -587,7 +587,9 @@ def parse_bright(p):
 
 
 def parse_batt(p):
-    """Return the fields of a 'batt pct=' LOG line as a dict (look as str), or None."""
+    """Return the fields of a 'batt pct=' LOG line as a dict (look as str), {"look": "stale"} for 'batt: stale', or None."""
+    if b"batt: stale" in p:
+        return {"look": "stale"}
     m = BATT_LINE.search(p)
     return dict(zip(BATT_KEYS, (int(v) for v in m.groups()[:-1])), look=m.group(len(BATT_KEYS) + 1).decode()) if m else None
 

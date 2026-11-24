@@ -67,7 +67,7 @@ A small battery below the legs, read from the AXP2101 every 2 s. The firmware on
 | Low | at or below 20 %, not charging; ends at 25 % or on charge | grey outline, one red `#D14343` bar |
 | Normal | otherwise | grey `#8A877F` outline and bars |
 
-- Bars are `ceil(percentage / 25)`, 1 to 4. A percentage above 100 is unknown: the outline is drawn without bars, and the bolt still shows while charging because the charge status is known. The low state starts only from a known percentage; an absent battery or a confirmed charge or done state clears it whether or not the percentage is known.
+- Bars are `ceil(percentage / 25)`, 1 to 4. Done always shows four bars, because the charger reports a full battery. A percentage above 100 is unknown: the outline is drawn without bars, and the bolt still shows while charging because the charge status is known. The low state starts only from a known percentage; an absent battery or a confirmed charge or done state clears it whether or not the percentage is known.
 - The icon is drawn into the scene, so it rotates with the mascot and follows the burn-in orbit, not the idle bob. Outline top: 24 px below the legs, centred 2 px left of the scene centre.
 - With a bubble up it is hidden, except beside the 离线 and 出错了 bubbles: 8 px right of the bubble frame, centred on its body, and never past the scene edge. One table in `ui.c` (`BATT_BESIDE_BUBBLE`) holds this choice per state; below the legs applies only with no bubble.
 - Plugging in USB (VBUS 0 to 1 between two successful REG00 reads, even if the other registers failed) wakes the screen once (`power` in the `wakes` line). The first successful REG00 read after boot only sets the baseline. Only complete reads change the icon or the low state.
