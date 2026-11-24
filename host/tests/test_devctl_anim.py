@@ -287,3 +287,44 @@ def test_gate_does_not_stream_when_the_board_never_shows_the_volume(monkeypatch,
         devctl.cmd_gate_anim(link, SimpleNamespace(wav=bytes(3200), volume=25))
     assert e.value.code == 1 and not streams and ends_override(link, devctl.T_SET_VOLUME)
     assert "did not confirm volume 25" in capsys.readouterr().out
+
+
+class SpeakerLink:
+    """A link for stream_pcm whose speaker consumes `rate` bytes per poll and reports drained when `drains`."""
+
+    def __init__(self, rate, drains):
+        self.rate, self.drains, self.sent_bytes, self.spk_consumed, self.spk_flags, self.polls = rate, drains, 0, 0, 0, 0
+
+    def poll(self):
+        self.polls += 1
+        if self.polls > 2_000_000:
+            raise RuntimeError("stream_pcm has no bound")
+        self.spk_consumed = min(self.sent_bytes, self.spk_consumed + self.rate)
+        return []
+
+    def outstanding(self):
+        return self.sent_bytes - self.spk_consumed
+
+    def send_audio(self, chunk):
+        self.sent_bytes += len(chunk)
+
+    def send(self, ftype, payload=b""):
+        if ftype == devctl.T_SPK_END and self.drains:
+            self.spk_flags = 2
+
+
+def test_stream_returns_false_on_a_stall_or_a_drain_timeout(monkeypatch, board, capsys):
+    monkeypatch.setattr(devctl, "STREAM_STALL_S", 0.05)
+    monkeypatch.setattr(devctl, "STREAM_DRAIN_S", 0.05)
+    pcm = bytes(devctl.OUTSTANDING_LIMIT * 2)
+    assert devctl.stream_pcm(SpeakerLink(4096, True), pcm, tail=0) is True
+    assert devctl.stream_pcm(SpeakerLink(0, True), pcm, tail=0) is False
+    assert devctl.stream_pcm(SpeakerLink(4096, False), pcm, tail=0) is False
+    out = capsys.readouterr().out
+    assert "stalled" in out and "drain timeout" in out
+    # The gate fails on such a stream and still ends the override.
+    monkeypatch.setattr(devctl, "stream_pcm", lambda link, pcm, **kw: link.sent.append(("stream", b"")) or False)
+    link = FakeBoard()
+    with pytest.raises(SystemExit) as e:
+        devctl.cmd_gate_anim(link, SimpleNamespace(wav=bytes(3200), volume=25))
+    assert e.value.code == 1 and ends_override(link, "stream")

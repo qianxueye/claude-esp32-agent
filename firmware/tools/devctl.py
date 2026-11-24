@@ -44,6 +44,8 @@ ANIM_KEYS = ("pack", "skin", "clip", "frames", "late", "cuts", "seek", "verify_m
 ANIMT_KEYS = ("dec_us", "work_us", "cut_ms", "boot_ms", "patch_us", "ring_defer", "id")  # AG_TIME_LINE_FMT
 AUDIO_KEYS = ("spkovf", "under", "slow", "micgap", "micdrop")  # stats line counters that gate G3 needs unchanged
 STATS_PAIR_MS = 1000  # mathematical model: half the 2 s log period; one period's stats and anim lines share a tick
+STREAM_STALL_S = 5.0  # plain configuration: no speaker progress for this long ends a stream as stalled
+STREAM_DRAIN_S = 30.0  # plain configuration: longest wait for the drained flag after SPK_END
 KEEPALIVE_S = 1.0  # plain configuration: below the board's 5 s host-silence timeout
 GATE_VOLUME_MAX = 30  # Owner rule: speech volume during a gate run
 GATE_VERIFY_MS_MAX = 1000  # gate G7, plain configuration, placeholder
@@ -360,10 +362,13 @@ def cmd_play(link, args):
 
 
 def stream_pcm(link, pcm, record=None, tail=1.0):
-    """Stream PCM with the 64000-byte outstanding limit; optionally collect MIC_AUDIO into record (list)."""
+    """Stream PCM with the 64000-byte outstanding limit; optionally collect MIC_AUDIO into record (list).
+
+    Returns True once the board reports the queue drained, False on a stall or a drain timeout."""
     sent = 0
     t0 = time.monotonic()
     drain_at = None
+    progress = (link.spk_consumed, t0)
     while True:
         frames = link.poll()
         if record is not None:
@@ -378,9 +383,18 @@ def stream_pcm(link, pcm, record=None, tail=1.0):
             link.send(T_SPK_END)
             drain_at = time.monotonic()
         if drain_at is not None and (link.spk_flags & 2):
+            ok = True
             break
-        if drain_at is not None and time.monotonic() - drain_at > 30:
+        now = time.monotonic()
+        if link.spk_consumed != progress[0]:
+            progress = (link.spk_consumed, now)
+        elif now - progress[1] > STREAM_STALL_S:
+            print("stream stalled: no speaker progress for %.0f s" % STREAM_STALL_S)
+            ok = False
+            break
+        if drain_at is not None and now - drain_at > STREAM_DRAIN_S:
             print("drain timeout")
+            ok = False
             break
     t_play = time.monotonic() - t0
     end = time.monotonic() + tail
@@ -389,6 +403,7 @@ def stream_pcm(link, pcm, record=None, tail=1.0):
             if record is not None and t == T_MIC:
                 record.append(p)
     print("played %d bytes in %.2fs (audio %.2fs)" % (len(pcm), t_play, len(pcm) / 32000))
+    return ok
 
 
 def save_wav(path, pcm):
@@ -820,7 +835,9 @@ def gate_run(link, args):
     if a is None:
         print("gate-anim: no anim and stats lines before the run")
         return True
-    stream_pcm(link, args.wav)
+    if not stream_pcm(link, args.wav):
+        print("gate-anim: playback stalled or was not confirmed")
+        return True
     b, sb = wait_sample(link, GATE_SAMPLE_WAIT_S, after=time.monotonic())
     if b is None:
         print("gate-anim: no anim and stats lines after the run")
