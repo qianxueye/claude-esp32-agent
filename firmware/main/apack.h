@@ -44,7 +44,7 @@ typedef struct {
 typedef struct {
     const uint8_t *data; /* NULL unless the frame bytes are mapped */
     uint32_t off, len, crc;
-    uint16_t ms;
+    uint16_t ms, colors; /* colors: the clip's palette size; valid indices are 0..colors */
     bool key;
 } ap_frame_t;
 
@@ -57,7 +57,8 @@ uint32_t ap_crc32(uint32_t crc, const uint8_t *p, size_t n);
 bool ap_frame_crc_ok(const ap_frame_t *f);
 /* Looks up one frame of a parsed pack; false when clip or frame is out of range. */
 bool ap_frame(const ap_pack_t *p, int clip, int frame, ap_frame_t *out);
-/* Applies one frame's tokens to a w x h index buffer; false on a malformed frame or unmapped data, never touching bytes past area. */
+/* Applies one frame's tokens to a w x h index buffer; false on a malformed frame, an index above colors or unmapped data,
+   never touching bytes past area. */
 bool ap_decode(const ap_frame_t *f, uint8_t *buf, uint32_t area);
 /* True when the crop lies on the canvas, the canvas and the reach fit the caps, and reach agrees with the crop. */
 bool ap_layout_ok(uint16_t canvas_w, uint16_t canvas_h, uint8_t scale, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t reach);

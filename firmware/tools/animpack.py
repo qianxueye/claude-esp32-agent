@@ -132,8 +132,8 @@ def encode_frame(prev, cur):
     return bytes(out)
 
 
-def decode_frame(data, buf, key):
-    """Mirror of ap_decode; raises PackError where the C decoder returns false."""
+def decode_frame(data, buf, key, colors):
+    """Mirror of ap_decode; raises PackError where the C decoder returns false, including an index above colors."""
     if key:
         buf[:] = bytes(len(buf))
     area, s, p = len(buf), 0, 0
@@ -151,6 +151,8 @@ def decode_frame(data, buf, key):
             n = c - 0x7F
             if n > len(data) - s or n > area - p:
                 raise PackError("LIT runs past the frame or the buffer")
+            if max(data[s : s + n]) > colors:
+                raise PackError("LIT index outside the clip's palette")
             buf[p : p + n] = data[s : s + n]
             s += n
             p += n
@@ -162,6 +164,8 @@ def decode_frame(data, buf, key):
             s += 1
             if n > area - p:
                 raise PackError("FILL runs past the buffer")
+            if v > colors:
+                raise PackError("FILL index outside the clip's palette")
             buf[p : p + n] = bytes([v]) * n
             p += n
             continue
@@ -499,7 +503,7 @@ def decode_clips(pack, info):
         x, y, w, h = c["crop"]
         buf, planes = bytearray(w * h), []
         for doff, dlen, _, meta, _ in c["entries"]:
-            decode_frame(pack[doff : doff + dlen], buf, bool(meta & KEY))
+            decode_frame(pack[doff : doff + dlen], buf, bool(meta & KEY), len(c["palette"]))
             planes.append(bytes(buf))
         out.append(planes)
     return out

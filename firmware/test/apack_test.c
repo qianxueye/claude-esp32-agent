@@ -532,7 +532,7 @@ static bool decode_guarded(const uint8_t *tok, uint16_t len, bool key, bool *gua
     uint8_t *t = dup(tok, len), *buf = malloc(AREA + GUARD);
     assert(buf);
     memset(buf, 0xA5, AREA + GUARD);
-    ap_frame_t f = {.data = t, .len = len, .ms = 10, .key = key};
+    ap_frame_t f = {.data = t, .len = len, .ms = 10, .key = key, .colors = AP_MAX_COLORS};
     bool ok = ap_decode(&f, buf, AREA);
     *guard_ok = true;
     for (int i = AREA; i < AREA + GUARD; i++) {
@@ -581,14 +581,14 @@ static void test_p5_decoder_bounds(void)
     /* Red proof: without the checks the overlong LIT and FILL write into the guard. */
     assert(!unchecked_keeps_guard(LIT_OVER, sizeof LIT_OVER));
     assert(!unchecked_keeps_guard(FILL_OVER, sizeof FILL_OVER));
-    ap_frame_t f = {.data = EXACT, .len = sizeof EXACT, .ms = 10, .key = true};
+    ap_frame_t f = {.data = EXACT, .len = sizeof EXACT, .ms = 10, .key = true, .colors = AP_MAX_COLORS};
     assert(!ap_decode(NULL, (uint8_t[1]){0}, 1) && !ap_decode(&f, NULL, AREA));
 }
 
 static bool run_tokens(const uint8_t *tok, uint16_t len, bool key, uint8_t *buf, uint32_t area)
 {
     uint8_t *t = dup(tok, len);
-    ap_frame_t f = {.data = t, .len = len, .ms = 10, .key = key};
+    ap_frame_t f = {.data = t, .len = len, .ms = 10, .key = key, .colors = AP_MAX_COLORS};
     bool ok = ap_decode(&f, buf, area);
     free(t);
     return ok;
@@ -634,6 +634,26 @@ static void test_p6_token_semantics(void)
     memset(buf, 0x55, sizeof buf);
     assert(run_tokens(NONE, 0, false, buf, 300) && buf[0] == 0x55);
     assert(run_tokens(NONE, 0, true, buf, 300) && buf[0] == 0 && buf[299] == 0);
+}
+
+/* P10: LIT and FILL indices above the clip's palette size are rejected; ap_frame carries that size. */
+static void test_p10_palette_bounds(void)
+{
+    static const uint8_t LIT_OK[] = {0x81, 0, 3}, LIT_OVER[] = {0x81, 1, 4}, FILL_OK[] = {0xC0, 3}, FILL_OVER[] = {0xC0, 4};
+    static const struct { const uint8_t *t; uint16_t n; bool ok; } CASES[] = {
+        {LIT_OK, sizeof LIT_OK, true}, {LIT_OVER, sizeof LIT_OVER, false}, {FILL_OK, sizeof FILL_OK, true}, {FILL_OVER, sizeof FILL_OVER, false},
+    };
+    uint8_t buf[8];
+    for (size_t i = 0; i < sizeof CASES / sizeof CASES[0]; i++) {
+        ap_frame_t f = {.data = CASES[i].t, .len = CASES[i].n, .ms = 10, .key = true, .colors = 3};
+        assert(ap_decode(&f, buf, sizeof buf) == CASES[i].ok);
+    }
+    ap_pack_t p;
+    ap_frame_t f;
+    assert(ap_parse(APACK_GOLDEN_PACK, sizeof APACK_GOLDEN_PACK, sizeof APACK_GOLDEN_PACK, &p) == AP_OK);
+    for (int c = 0; c < p.clip_count; c++) {
+        assert(ap_frame(&p, c, 0, &f) && f.colors == p.clip[c].colors);
+    }
 }
 
 static void test_layout_boundaries(void)
@@ -764,6 +784,7 @@ int main(void)
     test_p4_payload();
     test_p5_decoder_bounds();
     test_p6_token_semantics();
+    test_p10_palette_bounds();
     test_layout_boundaries();
     test_l1_art_reach_in_scene();
     test_p7_long_frame();

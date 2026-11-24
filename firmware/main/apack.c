@@ -197,6 +197,7 @@ bool ap_frame(const ap_pack_t *p, int clip, int frame, ap_frame_t *out)
     out->crc = rd32(fe + 8);
     out->ms = meta & AP_FRAME_MS_MASK;
     out->key = (meta & AP_FRAME_KEY) != 0;
+    out->colors = p->clip[clip].colors;
     return true;
 }
 
@@ -228,6 +229,11 @@ bool ap_decode(const ap_frame_t *f, uint8_t *buf, uint32_t area)
             if (n > left || n > area - p) {
                 return false;
             }
+            for (uint32_t i = 0; i < n; i++) {
+                if (s[i] > f->colors) {
+                    return false;
+                }
+            }
             memcpy(buf + p, s, n);
             s += n;
             left -= n;
@@ -240,7 +246,7 @@ bool ap_decode(const ap_frame_t *f, uint8_t *buf, uint32_t area)
             n = (uint32_t)c - 0xBE;
             const uint8_t v = *s++;
             left--;
-            if (n > area - p) {
+            if (n > area - p || v > f->colors) {
                 return false;
             }
             memset(buf + p, v, n);

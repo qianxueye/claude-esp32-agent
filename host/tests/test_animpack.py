@@ -214,7 +214,7 @@ def test_encoder_rules(prev, cur, want):
     tok = animpack.encode_frame(bytes(prev), bytes(cur))
     assert list(tok) == want
     buf = bytearray(prev)
-    animpack.decode_frame(tok, buf, False)
+    animpack.decode_frame(tok, buf, False, animpack.MAX_COLORS)
     assert bytes(buf) == bytes(cur)
 
 
@@ -249,7 +249,7 @@ def test_random_frames_round_trip():
             base = bytes(n) if key else prev
             tok = animpack.encode_frame(base, cur)
             buf = bytearray(prev)
-            animpack.decode_frame(tok, buf, key)
+            animpack.decode_frame(tok, buf, key, animpack.MAX_COLORS)
             assert bytes(buf) == cur
 
 
@@ -260,7 +260,7 @@ def test_random_frames_round_trip():
 def test_decoder_refuses_overlong_tokens(tok):
     buf = bytearray(10)
     with pytest.raises(animpack.PackError):
-        animpack.decode_frame(tok, buf, False)
+        animpack.decode_frame(tok, buf, False, animpack.MAX_COLORS)
     assert len(buf) == 10
 
 
@@ -325,7 +325,7 @@ def test_skip_beyond_u16_becomes_two_tokens():
     tokens = animpack._skip(70000)
     assert tokens == animpack._skip(animpack.SKIP_MAX) + animpack._skip(70000 - animpack.SKIP_MAX) and len(tokens) == 6
     buf = bytearray(70001)
-    animpack.decode_frame(tokens + bytes([0x80, 7]), buf, True)
+    animpack.decode_frame(tokens + bytes([0x80, 7]), buf, True, animpack.MAX_COLORS)
     assert buf[70000] == 7 and not any(buf[:70000])
     assert animpack._skip(animpack.SKIP_MAX) == bytes([0x7F, 0xFF, 0xFF])
 
@@ -464,3 +464,18 @@ def test_pickup_without_idle_is_refused(tmp_path):
     one = [frame(16, {(4, 4): A})]
     err = build_error(tmp_path, 'canvas = 16\n[states]\nlistening = "k"\n[once]\npickup = "k"\n[clips.k]\nfile = "a.gif"\n', [("a.gif", one)])
     assert "[once].pickup" in err and "[states].idle" in err
+
+
+def test_indices_above_the_clip_palette_are_refused(tmp_path):
+    for tok, ok in ((bytes([0x81, 0, 3]), True), (bytes([0x81, 1, 4]), False), (bytes([0xC0, 3]), True), (bytes([0xC0, 4]), False)):
+        if ok:
+            animpack.decode_frame(tok, bytearray(8), True, 3)
+        else:
+            with pytest.raises(animpack.PackError):
+                animpack.decode_frame(tok, bytearray(8), True, 3)
+    pack, _ = emit_golden(tmp_path)
+    info = animpack.parse(pack)
+    animpack.decode_clips(pack, info)
+    info["clips"][0]["palette"] = info["clips"][0]["palette"][:1]
+    with pytest.raises(animpack.PackError):
+        animpack.decode_clips(pack, info)
