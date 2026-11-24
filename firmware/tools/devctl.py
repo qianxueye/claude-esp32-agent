@@ -364,12 +364,13 @@ def cmd_play(link, args):
 def stream_pcm(link, pcm, record=None, tail=1.0):
     """Stream PCM with the 64000-byte outstanding limit; optionally collect MIC_AUDIO into record (list).
 
-    Returns True once the board reports the queue drained, False on a stall or a drain timeout."""
+    Pings while waiting so the board stays online; returns True once it reports the queue drained, False on a stall or a drain timeout."""
     sent = 0
     t0 = time.monotonic()
     drain_at = None
-    progress = (link.spk_consumed, t0)
+    progress, ping = (link.spk_consumed, t0), Keepalive(link)
     while True:
+        ping.tick()
         frames = link.poll()
         if record is not None:
             for t, p in frames:
@@ -399,6 +400,7 @@ def stream_pcm(link, pcm, record=None, tail=1.0):
     t_play = time.monotonic() - t0
     end = time.monotonic() + tail
     while time.monotonic() < end:
+        ping.tick()
         for t, p in link.poll():
             if record is not None and t == T_MIC:
                 record.append(p)

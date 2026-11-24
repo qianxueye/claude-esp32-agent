@@ -293,7 +293,7 @@ class SpeakerLink:
     """A link for stream_pcm whose speaker consumes `rate` bytes per poll and reports drained when `drains`."""
 
     def __init__(self, rate, drains):
-        self.rate, self.drains, self.sent_bytes, self.spk_consumed, self.spk_flags, self.polls = rate, drains, 0, 0, 0, 0
+        self.rate, self.drains, self.sent_bytes, self.spk_consumed, self.spk_flags, self.polls, self.pings = rate, drains, 0, 0, 0, 0, 0
 
     def poll(self):
         self.polls += 1
@@ -309,16 +309,20 @@ class SpeakerLink:
         self.sent_bytes += len(chunk)
 
     def send(self, ftype, payload=b""):
+        self.pings += ftype == devctl.T_PING
         if ftype == devctl.T_SPK_END and self.drains:
             self.spk_flags = 2
 
 
 def test_stream_returns_false_on_a_stall_or_a_drain_timeout(monkeypatch, board, capsys):
     monkeypatch.setattr(devctl, "STREAM_STALL_S", 0.05)
-    monkeypatch.setattr(devctl, "STREAM_DRAIN_S", 0.05)
+    monkeypatch.setattr(devctl, "STREAM_DRAIN_S", 5.0)
     pcm = bytes(devctl.OUTSTANDING_LIMIT * 2)
     assert devctl.stream_pcm(SpeakerLink(4096, True), pcm, tail=0) is True
-    assert devctl.stream_pcm(SpeakerLink(0, True), pcm, tail=0) is False
+    stalled = SpeakerLink(0, True)
+    assert devctl.stream_pcm(stalled, pcm, tail=0) is False and stalled.pings > 0
+    monkeypatch.setattr(devctl, "STREAM_STALL_S", 5.0)
+    monkeypatch.setattr(devctl, "STREAM_DRAIN_S", 0.05)
     assert devctl.stream_pcm(SpeakerLink(4096, False), pcm, tail=0) is False
     out = capsys.readouterr().out
     assert "stalled" in out and "drain timeout" in out
