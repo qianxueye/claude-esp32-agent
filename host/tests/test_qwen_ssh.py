@@ -306,6 +306,9 @@ FAKE_SSH = r'''
 import json, os, socket, subprocess, sys, threading, time
 here = os.path.dirname(os.path.abspath(__file__))
 mode = json.load(open(os.path.join(here, "mode.json")))
+if "-G" in sys.argv:
+    print("hostname 127.0.0.1\nuser clawd\n" + mode.get("ssh_config", ""), end="", flush=True)
+    sys.exit(0)
 runs_path = os.path.join(here, "runs")
 n = int(open(runs_path).read()) + 1 if os.path.exists(runs_path) else 1
 open(runs_path, "w").write(str(n))
@@ -468,7 +471,7 @@ async def remotes():
 
 
 async def engine(tmp_path, remotes, say=None, **over):
-    remote = Remote(tmp_path, plan=over.pop("plan", []))
+    remote = Remote(tmp_path, plan=over.pop("plan", []), ssh_config=over.pop("ssh_config", ""))
     if over.pop("hold", False):
         (remote.srv / "hold").touch()
     q = QwenTts(remote.cfg(tmp_path, **over), say or FakeSay(), grace_s=0.3, stop_margin_s=10.0)
@@ -757,6 +760,17 @@ async def test_listener_outside_the_server_group_gets_no_speech(tmp_path, remote
         await q.close()
     finally:
         rival.close()
+
+
+async def test_alias_with_its_own_forward_is_refused(tmp_path, remotes, caplog):
+    q, remote = await engine(tmp_path, remotes, ssh_config="remoteforward 52698 [127.0.0.1]:52698\n",
+                             qwen_restart_min_s=30.0, qwen_restart_max_s=30.0)
+    await q.start()
+    await until(lambda: any(r.levelname == "ERROR" for r in caplog.records), timeout=30)
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert "speech-mac" in errors[0] and "remoteforward" in errors[0], errors
+    assert remote.runs() == []
+    await q.close()
 
 
 async def test_shutdown_during_startup_keeps_ownership(tmp_path, remotes, monkeypatch):

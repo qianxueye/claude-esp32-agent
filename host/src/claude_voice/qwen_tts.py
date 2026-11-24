@@ -35,6 +35,16 @@ GRACE_S = 5.0  # the guard's SIGTERM-to-SIGKILL wait for the server group
 STOP_MARGIN_S = 2.0  # the relay waits GRACE_S + this for ssh, so it never cuts the guard's stop short
 BEATS = 5  # heartbeats per qwen_link_timeout_s; ssh's ServerAliveCountMax uses the same count
 STATUS_POLL_S = 0.2
+FORWARDS = ("localforward", "remoteforward", "dynamicforward")  # keywords of `ssh -G` output
+
+
+class Outage(TtsError):
+    """Why an ssh session failed; `reason` groups failures for logging, `level` is the first report's level."""
+
+    def __init__(self, reason: str, message: str, level: int = logging.WARNING) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.level = level
 
 
 def heartbeat(pipe, interval_s: float, stop: threading.Event) -> None:
@@ -164,6 +174,11 @@ class QwenTts:
 
     def _ssh_argv(self, lport: int) -> list[str]:
         cfg = self._cfg
+        forward = f"127.0.0.1:{lport}:127.0.0.1:{cfg.qwen_remote_port}"
+        return [cfg.qwen_ssh_bin, "-T", *self._ssh_opts(), "-L", forward, "--", cfg.qwen_ssh_host, self._remote_cmd()]
+
+    def _ssh_opts(self) -> list[str]:
+        cfg = self._cfg
         opts = {
             "BatchMode": "yes", "StrictHostKeyChecking": "yes", "UpdateHostKeys": "no", "ExitOnForwardFailure": "yes",
             "ConnectTimeout": math.ceil(cfg.qwen_ssh_connect_timeout_s),
@@ -173,11 +188,32 @@ class QwenTts:
             "SessionType": "default", "StdinNull": "no", "ForkAfterAuthentication": "no",
             "ForwardAgent": "no", "ForwardX11": "no", "PermitLocalCommand": "no",
         }
-        argv = [cfg.qwen_ssh_bin, "-T"]
-        for key, value in opts.items():
-            argv += ["-o", f"{key}={value}"]
-        forward = f"127.0.0.1:{lport}:127.0.0.1:{cfg.qwen_remote_port}"
-        return [*argv, "-L", forward, "--", cfg.qwen_ssh_host, self._remote_cmd()]
+        return [arg for key, value in opts.items() for arg in ("-o", f"{key}={value}")]
+
+    async def _check_forwards(self, log_file) -> None:
+        """Refuse an alias whose config adds forwards; `ssh -G` prints the effective config without connecting."""
+        cfg = self._cfg
+        proc = await asyncio.create_subprocess_exec(
+            cfg.qwen_ssh_bin, "-G", *self._ssh_opts(), "--", cfg.qwen_ssh_host,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=log_file,
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), cfg.qwen_ssh_connect_timeout_s)
+        except TimeoutError as e:
+            raise TtsError("ssh -G did not finish in time") from e
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+        if proc.returncode != 0:
+            raise TtsError(f"ssh -G exited with {proc.returncode} (see qwen-tts-server.log)")
+        for line in out.decode(errors="replace").splitlines():
+            word = line.split(maxsplit=1)[0].lower() if line.strip() else ""
+            if word in FORWARDS:
+                raise Outage(
+                    "forward", f"the ssh config of {cfg.qwen_ssh_host} sets {word}; remove it from that alias",
+                    logging.ERROR,
+                )
 
     def _remote_cmd(self) -> str:
         """The remote shell's command: fixed text, the validated python path and two base64 words."""
@@ -203,7 +239,8 @@ class QwenTts:
             except Exception as e:
                 if not self._warned:
                     self._warned = True
-                    log.warning("qwen3 speech on %s unavailable; using say and retrying: %s", cfg.qwen_ssh_host, e)
+                    log.log(getattr(e, "level", logging.WARNING),
+                            "qwen3 speech on %s unavailable; using say and retrying: %s", cfg.qwen_ssh_host, e)
                 else:
                     log.debug("qwen3 speech attempt failed: %s", e)
             finally:
@@ -220,6 +257,7 @@ class QwenTts:
         log_file = self._open_log()
         log_file.write(f"--- qwen3 speech over ssh, {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n".encode())
         log_file.flush()
+        await self._check_forwards(log_file)
         lport = free_port()
         statuses: list[str] = []
         changed = asyncio.Event()

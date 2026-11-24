@@ -78,7 +78,7 @@ uv run claude-voice [--config config.toml]
   - 本机能用别名里配置的密钥登录那台 Mac，不需要输入密码。
   - 已经用 `ssh <别名>` 手动登录过一次，那台 Mac 的主机密钥已记入本机的 `known_hosts`。
   - 中继不会输入密码，也不会接受新的主机密钥。以上任何一项没有准备好，连接都会失败，中继一直使用 `say`，并在日志里记警告。
-  - 允许 SSH 端口转发（`AllowTcpForwarding`，默认允许）。别名里不要写 `LocalForward`。
+  - 允许 SSH 端口转发（`AllowTcpForwarding`，默认允许）。别名里不要写 `LocalForward`、`RemoteForward` 或 `DynamicForward`；写了其中任何一项，中继都不连接，并在日志里记错误。
   - 有 `/usr/bin/python3`（随命令行工具安装）；没有时用 `qwen_remote_python` 指定那台 Mac 上 Python 的绝对路径。
   - 服务的虚拟环境已经装好。
 - 中继不在那台 Mac 上安装或写入文件。服务在那台 Mac 上使用端口 `qwen_remote_port`（默认 47803）。
