@@ -31,6 +31,7 @@ BUBBLE_RECT = (28, 188, -36, 36)  # plain configuration: default bubble rectangl
 FLAG_LOOP, FLAG_BUBBLE_LEFT = 1, 2
 SKIP_MAX = 128 + 0xFFFF
 CARD_FILE = "ANIMPACK.BIN"
+FLASH_PACK_MAX = 0x800000  # plain configuration: the animpack partition size in firmware/partitions.csv, checked by test_animpack
 STATES = ("idle", "listening", "thinking", "speaking", "error", "offline")
 EVENTS = ("pickup",)
 HEAD_FMT = "<8sHBBHHIII8s4sI"
@@ -421,6 +422,8 @@ def build(mapping_path, colors=None, fps_div=1, scale=1):
             if key not in number:
                 raise PackError(f"unknown clip key: {key}")
             slots[names.index(name)] = number[key]
+    if event_clip[EVENTS.index("pickup")] != NO_CLIP and state_clip[STATES.index("idle")] == NO_CLIP:
+        raise PackError("[once].pickup needs [states].idle: the pickup clip plays only over an idle sticker")
     clips, loops = [], []
     for key in keys:
         frames, durations = read_clip(mapping_path.parent, specs[key], canvas)
@@ -527,6 +530,33 @@ def _guard(path, allow):
         raise PackError(f"refusing to write inside a git work tree (pass --allow-in-repo): {path}")
 
 
+def _input_paths(mapping_path):
+    """The mapping and every clip source it names, resolved; the mapping is read again so nothing is written first."""
+    mapping_path = Path(mapping_path)
+    try:
+        specs = tomllib.loads(mapping_path.read_text()).get("clips", {})
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise PackError(f"cannot read mapping: {e}") from e
+    files = [spec["file"] for spec in specs.values() if isinstance(spec, dict) and "file" in spec]
+    return {mapping_path.resolve()} | {(mapping_path.parent / f).resolve() for f in files}
+
+
+def _check_outputs(inputs, outputs):
+    """Raise PackError when an output resolves to an input, or two outputs to one file."""
+    outs = [Path(o).resolve() for o in outputs]
+    for o in outs:
+        if o in inputs:
+            raise PackError(f"refusing to overwrite an input: {o}")
+    if len(set(outs)) < len(outs):
+        raise PackError(f"the pack and the C header resolve to one file: {outs[0]}")
+
+
+def _c_prefix(path):
+    """A C identifier prefix from a header file name: other characters become '_', a leading digit gains 'PACK_'."""
+    prefix = re.sub(r"\W", "_", Path(path).stem, flags=re.ASCII).upper()
+    return prefix if prefix[:1].isalpha() else "PACK_" + prefix
+
+
 def _summary(info):
     lines = [f"canvas {info['canvas'][0]}x{info['canvas'][1]} scale {info['scale']} bytes {info['total']}"]
     lines.append("states " + " ".join(f"{n}={'-' if v == NO_CLIP else v}" for n, v in zip(STATES, info["states"])))
@@ -547,7 +577,7 @@ def main(argv=None):
     b.add_argument("--map", required=True)
     target = b.add_mutually_exclusive_group(required=True)
     target.add_argument("--out")
-    target.add_argument("--card", metavar="DIR", help=f"write DIR/{CARD_FILE}")
+    target.add_argument("--card", metavar="DIR", help=f"write DIR/{CARD_FILE} for a later card reader; this firmware does not load it yet")
     b.add_argument("--colors", type=int)
     b.add_argument("--fps-div", type=int, default=1)
     b.add_argument("--scale", type=int, default=1)
@@ -567,13 +597,16 @@ def main(argv=None):
             _guard(out, args.allow_in_repo)
             if args.emit_c:
                 _guard(args.emit_c, args.allow_in_repo)
+            _check_outputs(_input_paths(args.map), [out] + ([args.emit_c] if args.emit_c else []))
             pack, _ = build(args.map, args.colors, args.fps_div, args.scale)
+            if not args.card and len(pack) > FLASH_PACK_MAX:
+                raise PackError(f"the pack is {len(pack)} bytes; the animpack partition holds {FLASH_PACK_MAX} bytes")
             info = parse(pack)
             planes = decode_clips(pack, info)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(pack)
             if args.emit_c:
-                Path(args.emit_c).write_text(emit_c(pack, planes, Path(args.emit_c).stem.upper()))
+                Path(args.emit_c).write_text(emit_c(pack, planes, _c_prefix(args.emit_c)))
             print(_summary(info))
             return 0
         pack = Path(args.pack).read_bytes()

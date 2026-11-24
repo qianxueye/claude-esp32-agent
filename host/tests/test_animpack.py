@@ -1,5 +1,6 @@
 import importlib.util
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -423,3 +424,43 @@ if __name__ == "__main__" and sys.argv[1:] == ["--write-golden"]:
     with tempfile.TemporaryDirectory() as d:
         GOLDEN.write_text(emit_golden(Path(d))[1])
     print(f"wrote {GOLDEN}")
+
+
+def test_outputs_that_alias_an_input_are_refused(tmp_path):
+    m = golden_inputs(tmp_path)
+    src = tmp_path / "first_clip_src.gif"
+    before = {p: p.read_bytes() for p in (m, src)}
+    link = tmp_path / "link.clawdpack"
+    link.symlink_to(src)
+    out = tmp_path / "x.clawdpack"
+    assert animpack.main(["build", "--map", str(m), "--out", str(link)]) == 2
+    assert animpack.main(["build", "--map", str(m), "--out", str(out), "--emit-c", str(tmp_path / "mapping.toml")]) == 2
+    assert animpack.main(["build", "--map", str(m), "--out", str(out), "--emit-c", str(tmp_path / "." / "x.clawdpack")]) == 2
+    assert all(p.read_bytes() == b for p, b in before.items()) and not out.exists()
+
+
+def test_flash_pack_over_the_partition_is_refused(tmp_path, monkeypatch, capsys):
+    rows = [r.split(",") for r in (Path(__file__).parents[2] / "firmware" / "partitions.csv").read_text().splitlines() if r.startswith("animpack")]
+    assert int(rows[0][4], 0) == animpack.FLASH_PACK_MAX
+    m = golden_inputs(tmp_path)
+    pack, _ = animpack.build(m)
+    monkeypatch.setattr(animpack, "FLASH_PACK_MAX", len(pack) - 1)
+    out = tmp_path / "x.clawdpack"
+    assert animpack.main(["build", "--map", str(m), "--out", str(out)]) == 2 and not out.exists()
+    err = capsys.readouterr().err
+    assert f"{len(pack)} bytes" in err and f"{len(pack) - 1} bytes" in err
+
+
+def test_emit_c_names_are_c_identifiers(tmp_path):
+    m = golden_inputs(tmp_path)
+    for name, prefix in (("my-pack.h", "MY_PACK"), ("9 lives.h", "PACK_9_LIVES")):
+        header = tmp_path / name
+        assert animpack.main(["build", "--map", str(m), "--out", str(tmp_path / "x.clawdpack"), "--emit-c", str(header)]) == 0
+        names = re.findall(r"\b(\S+)\[\d*\] = ", header.read_text())
+        assert names and all(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", n) for n in names) and names[0] == prefix + "_PACK"
+
+
+def test_pickup_without_idle_is_refused(tmp_path):
+    one = [frame(16, {(4, 4): A})]
+    err = build_error(tmp_path, 'canvas = 16\n[states]\nlistening = "k"\n[once]\npickup = "k"\n[clips.k]\nfile = "a.gif"\n', [("a.gif", one)])
+    assert "[once].pickup" in err and "[states].idle" in err
