@@ -223,9 +223,34 @@ static void sticker_sweep(void)
     assert(worst <= ACOMP_MAX_BANDS);
 }
 
+/* R1: a ring redraw owed on every tick of a scene over the ring's strip limit waits at most one tick. */
+static void ring_wait(void)
+{
+    for (int bands = 0; bands <= ACOMP_MAX_BANDS; bands++) {
+        for (int arc = 0; arc <= VOLARC_RING_MAX_AREAS; arc++) {
+            bool waited = false, old_waited = false;
+            int run = 0, worst = 0, old_run = 0, old_worst = 0;
+            for (int tick = 0; tick < 8; tick++) {
+                const bool room = volarc_ring_takes_screen(bands, waited) || volarc_ring_ok(arc, bands);
+                waited = !room;
+                run = room ? 0 : run + 1;
+                worst = run > worst ? run : worst;
+                old_waited = !volarc_ring_ok(arc, bands);
+                old_run = old_waited ? old_run + 1 : 0;
+                old_worst = old_run > old_worst ? old_run : old_worst;
+            }
+            assert(worst <= 1);
+            /* Red proof: without the whole-screen tick the ring waits on every tick above the limit. */
+            assert(bands <= VOLARC_RING_MAX_BANDS || old_worst == 8);
+        }
+    }
+    printf("R1: above %d strips the ring waits at most one tick\n", VOLARC_RING_MAX_BANDS);
+}
+
 int main(void)
 {
     clawd_sweep();
     sticker_sweep();
+    ring_wait();
     return 0;
 }

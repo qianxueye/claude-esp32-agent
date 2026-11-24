@@ -17,6 +17,12 @@ static inline bool volarc_ring_ok(int arc_areas, int bands)
     return arc_areas <= VOLARC_RING_MAX_AREAS && bands <= VOLARC_RING_MAX_BANDS;
 }
 
+/* Whether a tick with bands scene strips invalidates the whole screen instead, so a ring redraw owed since the last tick lands now. */
+static inline bool volarc_ring_takes_screen(int bands, bool ring_waited)
+{
+    return ring_waited && bands > VOLARC_RING_MAX_BANDS;
+}
+
 /* Mathematical model: the two stretch runs take 2 * ARC_OVER_CELLS percent of the sweep, either arc, plus a half-disc (pi/8 of the band width squared, bounded by 4/10, and one band width of edge pixels) at each tip. */
 #define VOLARC_OVER_CAP (VOLARC_CAP * 2 * ARC_OVER_CELLS / 100 + 2 * (((VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX) * 4) / 10 + (VOL_ARC_R_OUT_PX - VOL_ARC_R_IN_PX)))
 

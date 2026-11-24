@@ -136,6 +136,7 @@ static acomp_art_t s_art;
 static acomp_state_t s_ac;
 static bool s_art_ready, s_art_wanted_last;
 static int s_tick_bands;
+static bool s_tick_screen, s_ring_waited; /* this tick invalidated the whole screen; a ring redraw waited last tick */
 
 static uint16_t rgb565(uint32_t hex)
 {
@@ -643,7 +644,8 @@ static void present(int tenths)
     s_tick_bands = acomp_step(&s_ac, s_art_wanted_last, &s_art, s_span_clear);
     lv_display_t *disp = lv_obj_get_display(s_canvas);
     const int shrink = s_bench == UI_BENCH_SHRINK ? 8 : 0;
-    const bool overflow = s_tick_bands > ACOMP_MAX_BANDS;
+    const bool overflow = s_tick_bands > ACOMP_MAX_BANDS || volarc_ring_takes_screen(s_tick_bands, s_ring_waited);
+    s_tick_screen = overflow;
     if (overflow) {
         lv_area_t all = {CANVAS_OFF, CANVAS_OFF, CANVAS_OFF + SCENE_OUT_PX - 1, CANVAS_OFF + SCENE_OUT_PX - 1};
         lv_inv_area(disp, &all);
@@ -1059,7 +1061,8 @@ static int arc_update(uint32_t now)
     return areas;
 }
 
-static void update_ring(void)
+/* Redraws the listening ring when its width or opacity changed and the tick has room; counts a change that must wait. */
+static void update_ring(bool room)
 {
     int w = 0, opa = 0;
     if (s_state == ST_LISTENING && (ANIM_RING || s_anim.clip == APLAY_CLAWD)) {
@@ -1067,12 +1070,19 @@ static void update_ring(void)
         opa = LISTEN_RING_MIN_OPA + lvl * (255 - LISTEN_RING_MIN_OPA) / 1000;
         w = LISTEN_RING_MIN_WIDTH_PX + lvl * (LISTEN_RING_MAX_WIDTH_PX - LISTEN_RING_MIN_WIDTH_PX) / 1000;
     }
-    if (w != s_ring_width || opa != s_ring_opa) {
-        s_ring_width = w;
-        s_ring_opa = opa;
-        draw_ring(w, opa);
-        invalidate_ring();
+    s_ring_waited = false;
+    if (w == s_ring_width && opa == s_ring_opa) {
+        return;
     }
+    if (!room) {
+        s_ring_waited = true;
+        s_ring_defer++;
+        return;
+    }
+    s_ring_width = w;
+    s_ring_opa = opa;
+    draw_ring(w, opa);
+    invalidate_ring();
 }
 
 static void power_tick(void)
@@ -1168,6 +1178,7 @@ static void tick_cb(lv_timer_t *t)
         redraw(&sc);
     }
     s_tick_bands = 0;
+    s_tick_screen = false;
     if (art_wanted() != s_art_wanted_last) {
         s_model_dirty = true;
     }
@@ -1182,11 +1193,8 @@ static void tick_cb(lv_timer_t *t)
     } else {
         apply_rotation(orient_step(dt, s_panel_on));
     }
-    if (volarc_ring_ok(arc_update(now), s_tick_bands)) {
-        update_ring();
-    } else {
-        s_ring_defer++;
-    }
+    const int arc_areas = arc_update(now);
+    update_ring(s_tick_screen || volarc_ring_ok(arc_areas, s_tick_bands));
     if (s_work_stage == 1) {
         s_work_tick_us = esp_timer_get_time() - s_work_t0;
         s_work_stage = 2;
